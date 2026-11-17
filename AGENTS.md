@@ -15,7 +15,7 @@ You are building **`nosrc`**, an experimental Rust service intended to turn a de
 1. **Zero External Runtime Dependencies:** Never shell out to `node`, `npm`, `cargo`, `rustc`, `gcc`, `python`, or external CLI tools at runtime. Everything must compile, snapshot, and execute in-process inside one static Rust binary (`musl`-compatible).
 2. **Strict Capability Isolation:** QuickJS guest code must have zero direct OS, filesystem, process, or socket access. The current component world exposes only the handler entrypoint; do not add capabilities without a narrow WIT interface and tests.
 3. **Honest State Semantics:** JavaScript module-level state is in-memory and generation-scoped. It is not durable across restarts or handler replacement. Do not claim SQLite, redb, PostgreSQL, or Redis persistence is wired into the QuickJS request path.
-4. **Never Route Unverified Code:** Never activate a QuickJS component until it compiles, instantiates, and passes 100% of its synthesized contract assertions in an isolated candidate instance. Instantiate a separate production instance after verification.
+4. **Never Route Unverified Code:** Never activate a QuickJS component until it compiles, instantiates, and passes 100% of the human-authored SPEC verification cases and the separate model-generated supplemental assertions. Run the suites in separate isolated candidate instances, then instantiate a separate production instance.
 5. **Deterministic Sandboxing:** Every QuickJS component store must enforce CPU fuel limits and a bounded linear-memory budget. Keep tests against the component runtime, not only the legacy core-module engine.
 
 ---
