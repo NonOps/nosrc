@@ -170,14 +170,67 @@ fn classify_component_trap(error: wasmtime::Error) -> EngineError {
 }
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use tokio::sync::OnceCell;
+
+    pub const HANDLER_SOURCE: &str = r#"
+        let count = 0;
+
+        export function handle(requestJson) {
+            const request = JSON.parse(requestJson);
+
+            if (request.path === "/loop") {
+                while (true) {}
+            }
+
+            if (request.path === "/error") {
+                return JSON.stringify({ status: 500, headers: {}, body: "failed" });
+            }
+
+            if (request.path === "/health") {
+                return JSON.stringify({
+                    status: 200,
+                    headers: { "content-type": "text/plain" },
+                    body: "healthy"
+                });
+            }
+
+            if (request.path === "/counter") {
+                count += 1;
+                return JSON.stringify({ status: 200, headers: {}, body: String(count) });
+            }
+
+            return JSON.stringify({
+                status: 200,
+                headers: { "content-type": "text/plain" },
+                body: request.method + " " + request.path
+            });
+        }
+    "#;
+
+    static FIXTURE: OnceCell<(QuickJsEngine, CompiledHandler)> = OnceCell::const_new();
+
+    pub async fn compiled() -> &'static (QuickJsEngine, CompiledHandler) {
+        FIXTURE
+            .get_or_init(|| async {
+                let engine = QuickJsEngine::new().unwrap();
+                let component = engine.compile_handler(HANDLER_SOURCE).await.unwrap();
+                (engine, component)
+            })
+            .await
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    fn request() -> RequestEnvelope {
+    fn request(path: &str) -> RequestEnvelope {
         RequestEnvelope {
             method: "GET".to_string(),
-            path: "/counter".to_string(),
+            path: path.to_string(),
             query: HashMap::new(),
             headers: HashMap::new(),
             body: None,
@@ -186,27 +239,13 @@ mod tests {
 
     #[tokio::test]
     async fn javascript_module_state_survives_multiple_requests() {
-        let engine = QuickJsEngine::new().unwrap();
-        let source = r#"
-            let count = 0;
-
-            export function handle(requestJson) {
-                count += 1;
-                return JSON.stringify({
-                    status: 200,
-                    headers: { "content-type": "text/plain" },
-                    body: String(count)
-                });
-            }
-        "#;
-
-        let compiled = engine.compile_handler(source).await.unwrap();
+        let (engine, compiled) = test_support::compiled().await;
         let mut handler = engine
-            .instantiate(&compiled, DEFAULT_COMPONENT_FUEL)
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
             .unwrap();
 
         assert_eq!(
-            handler.invoke(&request()).unwrap().body.as_deref(),
+            handler.invoke(&request("/counter")).unwrap().body.as_deref(),
             Some("1")
         );
         assert_eq!(
@@ -224,16 +263,9 @@ mod tests {
 
     #[tokio::test]
     async fn javascript_infinite_loop_is_stopped_by_fuel_budget() {
-        let engine = QuickJsEngine::new().unwrap();
-        let source = r#"
-            export function handle(requestJson) {
-                while (true) {}
-            }
-        "#;
-
-        let compiled = engine.compile_handler(source).await.unwrap();
-        let mut handler = engine.instantiate(&compiled, 100_000).unwrap();
-        let error = handler.invoke(&request()).unwrap_err();
+        let (engine, compiled) = test_support::compiled().await;
+        let mut handler = engine.instantiate(compiled, 100_000).unwrap();
+        let error = handler.invoke(&request("/loop")).unwrap_err();
         assert!(
             matches!(error, EngineError::Trap(SandboxTrap::FuelExhausted)),
             "Expected fuel exhaustion, got: {error}"
