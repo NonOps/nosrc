@@ -138,7 +138,10 @@ mod tests {
     #[tokio::test]
     async fn health_endpoint_reports_process_health() {
         let app = build_ingress_router(Arc::new(IngressState::new()));
-        let request = Request::builder().uri("/healthz").body(Body::empty()).unwrap();
+        let request = Request::builder()
+            .uri("/healthz")
+            .body(Body::empty())
+            .unwrap();
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
     }
