@@ -88,19 +88,34 @@ async fn main() -> anyhow::Result<()> {
     let trusted_assertions: Vec<ContractAssertion> = spec.verification.iter().map(|case| {
         Ok(ContractAssertion {
             name: format!("SPEC {} {}", case.method, case.path),
-            request: RequestEnvelope { method: case.method.clone(), path: case.path.clone(), query: std::collections::HashMap::new(), headers: case.headers.clone(), body: case.body.clone() },
-            expected_status: case.expected_status.ok_or_else(|| anyhow::anyhow!("verification case {} {} has no response status", case.method, case.path))?,
+            request: RequestEnvelope {
+                method: case.method.clone(),
+                path: case.path.clone(),
+                query: std::collections::HashMap::new(),
+                headers: case.headers.clone(),
+                body: case.body.clone(),
+            },
+            expected_status: case.expected_status.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "verification case {} {} has no response status",
+                    case.method,
+                    case.path
+                )
+            })?,
             body_contains: case.body_contains.clone(),
             header_matches: None,
         })
-    }).collect::<anyhow::Result<_>>()?;
+        })
+        .collect::<anyhow::Result<_>>()?;
 
     let mut trusted_candidate = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
-    let trusted_results = ShadowVerifier::new().verify_handler(&mut trusted_candidate, &trusted_assertions)?;
+    let trusted_results =
+        ShadowVerifier::new().verify_handler(&mut trusted_candidate, &trusted_assertions)?;
     drop(trusted_candidate);
 
     let mut generated_candidate = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
-    let generated_results = ShadowVerifier::new().verify_handler(&mut generated_candidate, &output.assertions)?;
+    let generated_results =
+        ShadowVerifier::new().verify_handler(&mut generated_candidate, &output.assertions)?;
     drop(generated_candidate);
 
     tracing::info!(
