@@ -22,6 +22,8 @@ The current implementation is a runnable single-process prototype, not a product
 - Trusted verification cases must be authored in `SPEC.md` and cover every declared endpoint. Model-generated assertions are supplemental and cannot replace the SPEC-authored suite. Neither suite proves correctness or security.
 - The first WIT world exposes only the handler entrypoint. Guest code has no filesystem, process, network, database, or key-value host capability.
 - Requests to one active handler instance are serialized to preserve its JavaScript state.
+- HTTP request bodies and serialized guest response envelopes are limited to 1 MiB. Non-UTF-8 request bodies remain unsupported by the current text-based handler ABI.
+- The LLM client limits serialized synthesis requests to 2 MiB, uses a 10-second connect timeout and 120-second total timeout, and caps success responses at 4 MiB and error responses at 8 KiB.
 - There is no automatic rebuild, file watching, self-healing, automatic rollback, external persistence, or Kubernetes orchestration.
 - Outbound HTTP, SQL, and durable KV capabilities are not exposed to generated code.
 

@@ -1,8 +1,16 @@
 use serde::{Deserialize, Serialize};
+use std::io::{self, Write};
+use std::time::Duration;
 
 use crate::engine::http_envelope::RequestEnvelope;
 use crate::error::EngineError;
 use crate::spec::ServiceSpec;
+
+const LLM_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+const LLM_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_LLM_REQUEST_BYTES: usize = 2 * 1024 * 1024;
+const MAX_LLM_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_LLM_ERROR_BYTES: usize = 8 * 1024;
 
 /// Configuration for the OpenAI-compatible LLM endpoint
 #[derive(Debug, Clone)]
@@ -58,6 +66,72 @@ pub struct SynthesisOutput {
     pub rationale: Option<String>,
 }
 
+/// A JSON serializer sink that refuses to retain more than the configured limit.
+struct LimitedBodyWriter {
+    bytes: Vec<u8>,
+    max_bytes: usize,
+    exceeded: bool,
+}
+
+impl LimitedBodyWriter {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(max_bytes.min(8 * 1024)),
+            max_bytes,
+            exceeded: false,
+        }
+    }
+}
+
+impl Write for LimitedBodyWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if self.bytes.len().saturating_add(buffer.len()) > self.max_bytes {
+            self.exceeded = true;
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "serialized request exceeds configured size limit",
+            ));
+        }
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Read a provider response without allowing an unbounded body allocation.
+async fn read_limited_body(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, EngineError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(EngineError::Internal(format!(
+            "provider response exceeds the {max_bytes} byte limit"
+        )));
+    }
+
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| EngineError::Internal(format!("Failed to read LLM response: {error}")))?
+    {
+        if body.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(EngineError::Internal(format!(
+                "LLM response exceeds the {max_bytes} byte limit"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    Ok(body)
+}
+
 /// Synthesizer service managing LLM prompt construction and schema enforcement
 pub struct Synthesizer {
     config: LlmConfig,
@@ -70,6 +144,8 @@ impl Synthesizer {
             config,
             client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::limited(3))
+                .connect_timeout(LLM_CONNECT_TIMEOUT)
+                .timeout(LLM_REQUEST_TIMEOUT)
                 .build()
                 .unwrap_or_default(),
         }
@@ -155,27 +231,43 @@ Assertions must cover every endpoint's documented success response and at least 
             ]
         });
 
+        let mut request_writer = LimitedBodyWriter::new(MAX_LLM_REQUEST_BYTES);
+        if let Err(error) = serde_json::to_writer(&mut request_writer, &body) {
+            if request_writer.exceeded {
+                return Err(EngineError::Internal(format!(
+                    "LLM request exceeds the {MAX_LLM_REQUEST_BYTES} byte limit"
+                )));
+            }
+            return Err(EngineError::Internal(format!(
+                "Failed to serialize LLM request: {error}"
+            )));
+        }
+        let request_bytes = request_writer.bytes;
+
         let resp = self
             .client
             .post(&endpoint)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
             .header("Content-Type", "application/json")
-            .json(&body)
+            .body(request_bytes)
             .send()
             .await
             .map_err(|e| EngineError::Internal(format!("LLM request failed: {e}")))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let err_text = resp.text().await.unwrap_or_default();
+            let error_bytes = read_limited_body(resp, MAX_LLM_ERROR_BYTES).await?;
+            let err_text = String::from_utf8_lossy(&error_bytes);
             return Err(EngineError::Internal(format!(
                 "LLM returned HTTP {status}: {err_text}"
             )));
         }
 
-        let resp_json: serde_json::Value = resp.json().await.map_err(|e| {
-            EngineError::Internal(format!("Failed to parse LLM response JSON: {e}"))
-        })?;
+        let response_bytes = read_limited_body(resp, MAX_LLM_RESPONSE_BYTES).await?;
+        let resp_json: serde_json::Value =
+            serde_json::from_slice(&response_bytes).map_err(|e| {
+                EngineError::Internal(format!("Failed to parse LLM response JSON: {e}"))
+            })?;
 
         let content_str = resp_json["choices"][0]["message"]["content"]
             .as_str()
@@ -187,5 +279,85 @@ Assertions must cover every endpoint's documented success response and at least 
             .map_err(|e| EngineError::Internal(format!("Malformed synthesis JSON payload: {e}")))?;
 
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::routing::get;
+    use axum::Router;
+
+    #[test]
+    fn serialized_request_writer_stops_at_configured_limit() {
+        let mut writer = LimitedBodyWriter::new(4);
+        writer.write_all(b"1234").unwrap();
+        assert!(writer.write_all(b"5").is_err());
+        assert!(writer.exceeded);
+        assert_eq!(writer.bytes, b"1234");
+    }
+
+    #[tokio::test]
+    async fn provider_response_content_length_is_checked_before_reading() {
+        let app = Router::new().route("/large", get(|| async { Body::from("0123456789") }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let response = reqwest::get(format!("http://{address}/large"))
+            .await
+            .unwrap();
+        let error = read_limited_body(response, 5).await.unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("provider response exceeds the 5 byte limit"));
+
+        let _ = shutdown_tx.send(());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn provider_response_without_content_length_is_bounded_while_streaming() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await.unwrap();
+
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            socket
+                .write_all(b"A\r\n0123456789\r\n0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let response = reqwest::get(format!("http://{address}/")).await.unwrap();
+        assert_eq!(response.content_length(), None);
+
+        let error = read_limited_body(response, 5).await.unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("LLM response exceeds the 5 byte limit"));
+
+        server.await.unwrap();
     }
 }

@@ -54,7 +54,7 @@ The verifier checks response status, configured body substrings, and expected he
 
 ### HTTP ingress
 
-The Axum router handles health and status endpoints itself. Other requests are converted to `RequestEnvelope`, serialized, and passed to the active QuickJS handler. A mutex serializes calls to the single handler instance to preserve module state. This is a deliberate first-milestone throughput limitation.
+The Axum router handles health and status endpoints itself. Other requests are converted to `RequestEnvelope`, serialized, and passed to the active QuickJS handler. A mutex serializes calls to the single handler instance to preserve module state. This is a deliberate first-milestone throughput limitation. Incoming request bodies are capped at 1 MiB, and serialized guest response envelopes are capped at 1 MiB before deserialization. The LLM client limits serialized synthesis requests to 2 MiB, has a 10-second connect timeout and a 120-second total request timeout, and caps success responses at 4 MiB and error responses at 8 KiB.
 
 ## Implemented test coverage
 
@@ -72,9 +72,9 @@ The Axum router handles health and status endpoints itself. Other requests are c
 
 1. Retain human-authored regression cases across handler revisions and add provenance records for SPEC hashes, model identifiers, component hashes, and verification outcomes.
 2. Add explicit WIT-backed embedded KV operations with bounded key/value sizes and isolated candidate state.
-3. Add bounded request/response sizes and preserve binary request bodies without lossy UTF-8 conversion.
+3. Preserve binary request bodies through a versioned or otherwise explicit handler ABI change; the current text ABI rejects non-UTF-8 bodies.
 4. Add safe generation replacement and in-flight request draining before any hot-reload feature.
-5. Harden the LLM client (timeouts, response-size limits, schema validation, and secret-safe diagnostics).
+5. Harden LLM schema validation and secret-safe diagnostics; client timeouts and response-size bounds are now implemented.
 
 Do not add autonomous self-healing, automatic regeneration from production failures, file watching, automatic rollback, external persistence, or Kubernetes orchestration in these milestones.
 
