@@ -75,26 +75,27 @@ impl Synthesizer {
         }
     }
 
-    /// Build the strict system prompt specifying the Host ABI and output schema
+    /// Build the strict JavaScript handler and contract-assertion prompt.
     pub fn build_system_prompt(&self) -> String {
-        r#"You are the nosrc autonomous runtime synthesizer.
-Your task is to synthesize an executable handler and test contract from a declarative SPEC.md.
+        r#"You are the nosrc service implementation synthesizer.
+Implement the supplied declarative SPEC.md as a self-contained ES module for the nosrc QuickJS runtime.
 
-Host ABI functions available to guest:
-- `host_kv_get(key_ptr, key_len) -> len | ERR_NOT_FOUND`
-- `host_kv_set(key_ptr, key_len, val_ptr, val_len) -> 0 | error`
-- `host_kv_delete(key_ptr, key_len) -> 1 | 0 | error`
-- `host_db_query(sql_ptr, sql_len, params_ptr, params_len) -> json_len`
-- `host_db_execute(sql_ptr, sql_len, params_ptr, params_len) -> affected_rows`
-- `host_set_response(ptr, len) -> len`
+Runtime contract:
+- Export exactly one function: `export function handle(requestJson)`.
+- `requestJson` is a JSON string encoding an object with method, path, query, headers, and optional body fields.
+- Return a JSON string encoding a response object with numeric status, headers object, and optional string body.
+- JavaScript module-level variables persist between requests handled by the same active generation.
+- Do not import modules or use filesystem, process, network, environment, timers, or other ambient capabilities. No WASI capabilities are available.
+- Keep request and response bodies as strings. For JSON APIs, parse request.body with JSON.parse and serialize response bodies with JSON.stringify.
+- Implement only behavior described by SPEC.md. Do not invent endpoints or capabilities.
 
 Return ONLY valid JSON matching this exact structure:
 {
-  "handler_code": "... source code ...",
-  "code_format": "wat",
+  "handler_code": "export function handle(requestJson) { /* implementation */ }",
+  "code_format": "javascript",
   "assertions": [
     {
-      "name": "test name",
+      "name": "descriptive test name",
       "request": {
         "method": "POST",
         "path": "/shorten",
@@ -107,7 +108,9 @@ Return ONLY valid JSON matching this exact structure:
     }
   ],
   "rationale": "Brief implementation summary"
-}"#
+}
+
+Assertions must cover every endpoint's documented success response and at least one relevant validation or error case where the SPEC defines one. Keep assertions deterministic and independent of external services."#
         .to_string()
     }
 
