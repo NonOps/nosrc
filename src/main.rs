@@ -183,9 +183,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tower::ServiceExt;
 
-    async fn mock_chat_completions(
-        State(request_count): State<Arc<AtomicUsize>>,
-    ) -> Json<Value> {
+    async fn mock_chat_completions(State(request_count): State<Arc<AtomicUsize>>) -> Json<Value> {
         request_count.fetch_add(1, Ordering::SeqCst);
 
         let synthesis = json!({
@@ -237,9 +235,7 @@ mod tests {
         let mock_provider = Router::new()
             .route("/v1/chat/completions", post(mock_chat_completions))
             .with_state(request_count.clone());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let provider_address = listener.local_addr().unwrap();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
