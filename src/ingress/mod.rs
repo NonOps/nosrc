@@ -134,7 +134,7 @@ mod tests {
                 (data (i32.const 1024) "{\"status\":200,\"headers\":{},\"body\":\"gen 1\"}")
 
                 (func (export "handle_request") (param i32 i32) (result i32)
-                    (call $set_resp (i32.const 1024) (i32.const 43))
+                    (call $set_resp (i32.const 1024) (i32.const 42))
                 )
             )
         "#;
@@ -163,7 +163,7 @@ mod tests {
                 (data (i32.const 1024) "{\"status\":201,\"headers\":{},\"body\":\"gen 2\"}")
 
                 (func (export "handle_request") (param i32 i32) (result i32)
-                    (call $set_resp (i32.const 1024) (i32.const 43))
+                    (call $set_resp (i32.const 1024) (i32.const 42))
                 )
             )
         "#;
