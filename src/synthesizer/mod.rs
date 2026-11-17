@@ -350,9 +350,7 @@ mod tests {
                 .unwrap();
         });
 
-        let response = reqwest::get(format!("http://{address}/"))
-            .await
-            .unwrap();
+        let response = reqwest::get(format!("http://{address}/")).await.unwrap();
         assert_eq!(response.content_length(), None);
 
         let error = read_limited_body(response, 5).await.unwrap_err();
