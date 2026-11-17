@@ -54,7 +54,7 @@ The verifier checks response status, configured body substrings, and expected he
 
 ### HTTP ingress
 
-The Axum router handles health and status endpoints itself. Other requests are converted to `RequestEnvelope`, serialized, and passed to the active QuickJS handler. A mutex serializes calls to the single handler instance to preserve module state. This is a deliberate first-milestone throughput limitation. Incoming request bodies are capped at 1 MiB, and serialized guest response envelopes are capped at 1 MiB before deserialization. The LLM client has a 10-second connect timeout, a 120-second total request timeout, a 4 MiB success-response cap, and an 8 KiB error-response cap.
+The Axum router handles health and status endpoints itself. Other requests are converted to `RequestEnvelope`, serialized, and passed to the active QuickJS handler. A mutex serializes calls to the single handler instance to preserve module state. This is a deliberate first-milestone throughput limitation. Incoming request bodies are capped at 1 MiB, and serialized guest response envelopes are capped at 1 MiB before deserialization. The LLM client limits serialized synthesis requests to 2 MiB, has a 10-second connect timeout and a 120-second total request timeout, and caps success responses at 4 MiB and error responses at 8 KiB.
 
 ## Implemented test coverage
 
