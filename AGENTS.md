@@ -1,10 +1,13 @@
 # `AGENTS.md` — AI Coding Agent Instructions for `nosrc`
 
 ## 1. Project Identity & Core Objective
-You are building **`nosrc`**, a **single-binary, zero-codebase, Spec-to-Wasm autonomous runtime** written in Rust.
-* **Core Premise:** Users drop one static Rust binary into a cluster or host with an OpenAI-compatible LLM endpoint (`LLM_API_KEY`, `LLM_BASE_URL`) and a declarative `SPEC.md`.
-* **Execution Model:** `nosrc` synthesizes ES2023 JavaScript handlers from `SPEC.md`, snapshots them into isolated WebAssembly (Wasm) modules in memory via `wasmtime` + embedded QuickJS, verifies them against contract assertions in a shadow sandbox, and atomically swaps live traffic using `ArcSwap`.
-* **Self-Healing:** Runtime `5xx` errors or Wasm traps are captured, deduplicated, promoted to regression tests, patched via LLM synthesis, verified in shadow mode, and hot-swapped without dropping requests.
+You are building **`nosrc`**, an experimental Rust service intended to turn a declarative `SPEC.md` into verified JavaScript request handlers executed in a WebAssembly sandbox.
+
+**Current implementation:** the CLI reads and parses `SPEC.md`, initializes the existing Wasmtime core-module engine, and serves HTTP health/status endpoints. The application request path returns `503` until a verified handler generation is explicitly activated. The complete synthesis-to-activation path is not implemented yet.
+
+**Chosen direction:** JavaScript remains the handler language. The planned runtime is embedded QuickJS componentized to WebAssembly and hosted by Wasmtime's component model. Implement and validate this as a coherent execution path; do not mix two Wasmtime major versions in the binary.
+
+**Explicitly out of scope:** autonomous self-healing, automatic regeneration from production failures, and automatic rollback.
 
 ---
 
@@ -15,7 +18,7 @@ You are building **`nosrc`**, a **single-binary, zero-codebase, Spec-to-Wasm aut
    * `--state embedded` (default): Enables bundled SQLite (`rusqlite`) and embedded KV (`redb`).
    * `--state external`: Explicitly disables embedded SQLite and `redb` at the host ABI level (returning `ERR_CAPABILITY_DISABLED`) and routes persistence to external endpoints (`DATABASE_URL`, `REDIS_URL`).
 4. **Never Route Unverified Bytecode:** Never swap an active `wasmtime::Module` pointer until 100% of synthesized contract assertions and historical regression tests pass inside an isolated shadow sandbox.
-5. **Deterministic Sandboxing:** Every Wasm execution `Store` must enforce CPU fuel limits (`consume_fuel(true)`) and linear memory caps (`ResourceLimiter`, default 64 MB).
+5. **Deterministic Sandboxing:** Every guest execution must enforce CPU fuel limits and a bounded memory budget. Prove that these limits apply to the final QuickJS component runtime before exposing it to requests.
 
 ---
 
@@ -61,5 +64,5 @@ When testing embedded vs. external state modes:
 ## 6. Agent Workflow When Implementing Features
 1. **Check `ARCHITECTURE.md` First:** Align module placement, CLI flags, and ABI signatures with `ARCHITECTURE.md`.
 2. **Design the Host ABI Contract Before Guest JS:** Whenever adding a capability (KV, SQL, HTTP, Crypto), define the Rust host function, error code, and capability gate first, then update the LLM system prompt schema in `src/synthesizer/`.
-3. **Write Shadow Sandbox Tests:** Every new capability or self-healing rule must include an integration test proving that invalid/malicious guest code traps cleanly without crashing the host process.
+3. **Write Shadow Sandbox Tests:** Every new capability or runtime behavior must include an integration test proving that invalid/malicious guest code traps cleanly without crashing the host process.
 4. **Keep Milestones Incremental:** Do not build UI dashboards or Kubernetes operators until Milestone 1 (Wasm execution + Host ABI) and Milestone 2 (LLM synthesis + shadow swap) pass end-to-end tests.
