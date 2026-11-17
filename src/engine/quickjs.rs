@@ -54,10 +54,7 @@ impl QuickJsEngine {
     ///
     /// The source is intentionally self-contained in this first runtime slice.
     /// Filesystem module imports and WASI capabilities are not granted.
-    pub async fn compile_handler(
-        &self,
-        javascript: &str,
-    ) -> Result<CompiledHandler, EngineError> {
+    pub async fn compile_handler(&self, javascript: &str) -> Result<CompiledHandler, EngineError> {
         let wit_dir = tempfile::tempdir().map_err(|error| {
             EngineError::Internal(format!("Failed to create temporary WIT directory: {error}"))
         })?;
@@ -66,26 +63,25 @@ impl QuickJsEngine {
             EngineError::Internal(format!("Failed to write handler WIT contract: {error}"))
         })?;
 
-        let component_bytes = componentize(
-            &ComponentizeOpts {
-                wit_path: &wit_path,
-                js_source: javascript,
-                js_path: None,
-                module_root: None,
-                world_name: Some("handler"),
-                stub_wasi: true,
-                disable_gc: false,
-                runtime: Runtime::DefaultSync,
-            },
-        )
+        let component_bytes = componentize(&ComponentizeOpts {
+            wit_path: &wit_path,
+            js_source: javascript,
+            js_path: None,
+            module_root: None,
+            world_name: Some("handler"),
+            stub_wasi: true,
+            disable_gc: false,
+            runtime: Runtime::DefaultSync,
+        })
         .await
         .map_err(|error| {
             EngineError::Internal(format!("QuickJS componentization failed: {error:#}"))
         })?;
 
         let module_hash = format!("{:x}", Sha256::digest(&component_bytes));
-        let component = Component::new(&self.engine, component_bytes)
-            .map_err(|error| EngineError::Internal(format!("Invalid handler component: {error}")))?;
+        let component = Component::new(&self.engine, component_bytes).map_err(|error| {
+            EngineError::Internal(format!("Invalid handler component: {error}"))
+        })?;
 
         Ok(CompiledHandler {
             component,
@@ -108,9 +104,9 @@ impl QuickJsEngine {
             .build();
 
         let mut store = Store::new(&self.engine, ComponentStoreState { limits });
-        store
-            .set_fuel(fuel_budget)
-            .map_err(|error| EngineError::Internal(format!("Failed to set component fuel: {error}")))?;
+        store.set_fuel(fuel_budget).map_err(|error| {
+            EngineError::Internal(format!("Failed to set component fuel: {error}"))
+        })?;
         store.limiter(|state| &mut state.limits);
         store.set_max_component_handles(1_024);
 
@@ -118,7 +114,9 @@ impl QuickJsEngine {
         let instance = linker
             .instantiate(&mut store, &compiled.component)
             .map_err(|error| {
-                EngineError::Instantiation(format!("Failed to instantiate handler component: {error}"))
+                EngineError::Instantiation(format!(
+                    "Failed to instantiate handler component: {error}"
+                ))
             })?;
         let handle = instance
             .get_typed_func::<(String,), (String,)>(&mut store, "handle")
@@ -139,10 +137,7 @@ impl QuickJsEngine {
 impl QuickJsHandler {
     /// Invoke the handler while retaining the same component instance between calls.
     /// This preserves JavaScript module state across HTTP requests.
-    pub fn invoke(
-        &mut self,
-        request: &RequestEnvelope,
-    ) -> Result<ResponseEnvelope, EngineError> {
+    pub fn invoke(&mut self, request: &RequestEnvelope) -> Result<ResponseEnvelope, EngineError> {
         let request_json = serde_json::to_string(request).map_err(|error| {
             EngineError::Internal(format!("Failed to serialize request envelope: {error}"))
         })?;
@@ -210,8 +205,14 @@ mod tests {
             .instantiate(&compiled, DEFAULT_COMPONENT_FUEL)
             .unwrap();
 
-        assert_eq!(handler.invoke(&request()).unwrap().body.as_deref(), Some("1"));
-        assert_eq!(handler.invoke(&request()).unwrap().body.as_deref(), Some("2"));
+        assert_eq!(
+            handler.invoke(&request()).unwrap().body.as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            handler.invoke(&request()).unwrap().body.as_deref(),
+            Some("2")
+        );
     }
 
     #[tokio::test]
