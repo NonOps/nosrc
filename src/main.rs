@@ -33,9 +33,12 @@ async fn main() -> anyhow::Result<()> {
 
     let spec_text = tokio::fs::read_to_string(&cli.spec)
         .await
-        .map_err(|error| anyhow::anyhow!("Failed to read SPEC at {}: {error}", cli.spec.display()))?;
-    let spec = spec::ServiceSpec::parse(&spec_text)
-        .map_err(|error| anyhow::anyhow!("Failed to parse SPEC at {}: {error}", cli.spec.display()))?;
+        .map_err(|error| {
+            anyhow::anyhow!("Failed to read SPEC at {}: {error}", cli.spec.display())
+        })?;
+    let spec = spec::ServiceSpec::parse(&spec_text).map_err(|error| {
+        anyhow::anyhow!("Failed to parse SPEC at {}: {error}", cli.spec.display())
+    })?;
 
     tracing::info!(
         service = %spec.name,
@@ -62,8 +65,8 @@ async fn main() -> anyhow::Result<()> {
     // Verify in a disposable candidate instance. The active instance is created
     // separately so verification requests cannot mutate production module state.
     let mut candidate = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
-    let verification = ShadowVerifier::new()
-        .verify_handler(&mut candidate, &output.assertions)?;
+    let verification = ShadowVerifier::new().verify_handler(&mut candidate, &output.assertions)?;
+    drop(candidate);
 
     tracing::info!(
         assertions = verification.len(),
