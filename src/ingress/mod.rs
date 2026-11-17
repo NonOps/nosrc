@@ -136,6 +136,29 @@ mod tests {
     use tower::ServiceExt;
 
     #[tokio::test]
+    async fn health_endpoint_reports_process_health() {
+        let engine = Arc::new(WasmEngine::new().unwrap());
+        let app = build_ingress_router(Arc::new(IngressState::new(engine)));
+        let request = Request::builder().uri("/healthz").body(Body::empty()).unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn status_endpoint_reports_no_active_generation_at_startup() {
+        let engine = Arc::new(WasmEngine::new().unwrap());
+        let app = build_ingress_router(Arc::new(IngressState::new(engine)));
+        let request = Request::builder().uri("/_nosrc/status").body(Body::empty()).unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let status: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status["status"], "running");
+        assert!(status["active_generation"].is_null());
+        assert!(status["module_hash"].is_null());
+    }
+
+    #[tokio::test]
     async fn test_ingress_wait_free_hot_swap() {
         let engine = Arc::new(WasmEngine::new().unwrap());
         let ingress_state = Arc::new(IngressState::new(engine.clone()));
