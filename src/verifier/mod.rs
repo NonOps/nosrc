@@ -1,13 +1,9 @@
-use std::sync::Arc;
-use wasmtime::Module;
-
-use crate::engine::host_abi::HostCapabilities;
 use crate::engine::http_envelope::ResponseEnvelope;
-use crate::engine::{WasmEngine, DEFAULT_FUEL_BUDGET};
+use crate::engine::quickjs::QuickJsHandler;
 use crate::error::EngineError;
 use crate::synthesizer::ContractAssertion;
 
-/// Result of evaluating a contract test assertion inside the shadow verifier
+/// Result of evaluating a contract assertion against an isolated candidate handler.
 #[derive(Debug, Clone)]
 pub struct AssertionResult {
     pub name: String,
@@ -17,51 +13,21 @@ pub struct AssertionResult {
     pub error_message: Option<String>,
 }
 
-/// Shadow Verifier that runs candidate Wasm modules against assertions in an isolated sandbox
-pub struct ShadowVerifier<'a> {
-    engine: &'a WasmEngine,
-    base_capabilities: HostCapabilities,
-}
+/// Runs the complete assertion suite against one isolated candidate instance.
+///
+/// All assertions share the candidate instance so module-scoped JavaScript state
+/// behaves exactly as it will across requests after activation. The caller must
+/// instantiate a fresh production handler after verification succeeds.
+pub struct ShadowVerifier;
 
-impl<'a> ShadowVerifier<'a> {
-    pub fn new(engine: &'a WasmEngine, base_capabilities: HostCapabilities) -> Self {
-        Self {
-            engine,
-            base_capabilities,
-        }
+impl ShadowVerifier {
+    pub fn new() -> Self {
+        Self
     }
 
-    /// Creates an isolated ephemeral capability set for shadow testing
-    /// (e.g. In-memory SQLite `:memory:` and temporary KV so production state is untouched)
-    fn create_shadow_capabilities(&self) -> Result<HostCapabilities, EngineError> {
-        if self.base_capabilities.state_mode == crate::engine::host_abi::StateMode::External {
-            Ok(HostCapabilities::new_external(
-                self.base_capabilities.allowlisted_domains.clone(),
-            ))
-        } else {
-            // Ephemeral in-memory SQLite clone
-            let shadow_db = rusqlite::Connection::open_in_memory()
-                .map_err(|e| EngineError::Internal(format!("Failed to open shadow db: {e}")))?;
-
-            // Temporary isolated redb database
-            let tmp_path =
-                std::env::temp_dir().join(format!("nosrc_shadow_kv_{}.redb", uuid::Uuid::now_v7()));
-            let shadow_kv = redb::Database::create(&tmp_path)
-                .map_err(|e| EngineError::Internal(format!("Failed to open shadow kv: {e}")))?;
-
-            Ok(HostCapabilities::new_embedded(
-                shadow_db,
-                Some(Arc::new(shadow_kv)),
-                self.base_capabilities.allowlisted_domains.clone(),
-            ))
-        }
-    }
-
-    /// Verifies candidate bytecode against 100% of assertions.
-    /// Rejects if ANY assertion fails, traps, or exceeds fuel budget.
-    pub fn verify_module(
+    pub fn verify_handler(
         &self,
-        module: &Module,
+        candidate: &mut QuickJsHandler,
         assertions: &[ContractAssertion],
     ) -> Result<Vec<AssertionResult>, EngineError> {
         if assertions.is_empty() {
@@ -71,51 +37,47 @@ impl<'a> ShadowVerifier<'a> {
         }
 
         let mut results = Vec::with_capacity(assertions.len());
-
         for assertion in assertions {
-            let shadow_caps = self.create_shadow_capabilities()?;
-
-            let invocation_res = self.engine.invoke_handler(
-                module,
-                shadow_caps,
-                &assertion.request,
-                DEFAULT_FUEL_BUDGET,
-            );
-
-            match invocation_res {
-                Ok(resp) => {
-                    let (passed, err_msg) = evaluate_response(&resp, assertion);
+            match candidate.invoke(&assertion.request) {
+                Ok(response) => {
+                    let (passed, error_message) = evaluate_response(&response, assertion);
                     results.push(AssertionResult {
                         name: assertion.name.clone(),
                         passed,
-                        actual_status: Some(resp.status),
+                        actual_status: Some(response.status),
                         expected_status: assertion.expected_status,
-                        error_message: err_msg,
+                        error_message,
                     });
                 }
-                Err(err) => {
-                    results.push(AssertionResult {
-                        name: assertion.name.clone(),
-                        passed: false,
-                        actual_status: None,
-                        expected_status: assertion.expected_status,
-                        error_message: Some(format!("Handler trapped or failed: {err}")),
-                    });
-                }
+                Err(error) => results.push(AssertionResult {
+                    name: assertion.name.clone(),
+                    passed: false,
+                    actual_status: None,
+                    expected_status: assertion.expected_status,
+                    error_message: Some(format!("Candidate execution failed: {error}")),
+                }),
             }
         }
 
-        // Hard Invariant Check: 100% of assertions must pass
-        let all_passed = results.iter().all(|r| r.passed);
-        if !all_passed {
-            let failed_names: Vec<String> = results
-                .iter()
-                .filter(|r| !r.passed)
-                .map(|r| format!("{}: {:?}", r.name, r.error_message))
-                .collect();
+        let failed: Vec<String> = results
+            .iter()
+            .filter(|result| !result.passed)
+            .map(|result| {
+                format!(
+                    "{}: {}",
+                    result.name,
+                    result
+                        .error_message
+                        .as_deref()
+                        .unwrap_or("assertion failed")
+                )
+            })
+            .collect();
+
+        if !failed.is_empty() {
             return Err(EngineError::Internal(format!(
-                "Shadow sandbox verification failed: {}",
-                failed_names.join("; ")
+                "Candidate verification failed: {}",
+                failed.join("; ")
             )));
         }
 
@@ -123,48 +85,54 @@ impl<'a> ShadowVerifier<'a> {
     }
 }
 
+impl Default for ShadowVerifier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn evaluate_response(
-    resp: &ResponseEnvelope,
+    response: &ResponseEnvelope,
     assertion: &ContractAssertion,
 ) -> (bool, Option<String>) {
-    if resp.status != assertion.expected_status {
+    if response.status != assertion.expected_status {
         return (
             false,
             Some(format!(
                 "Expected status {}, got {}",
-                assertion.expected_status, resp.status
+                assertion.expected_status, response.status
             )),
         );
     }
 
-    if let Some(expected_substr) = &assertion.body_contains {
-        let body = resp.body.as_deref().unwrap_or("");
-        if !body.contains(expected_substr) {
+    if let Some(expected_substring) = &assertion.body_contains {
+        let body = response.body.as_deref().unwrap_or("");
+        if !body.contains(expected_substring) {
             return (
                 false,
                 Some(format!(
-                    "Body does not contain expected substring '{expected_substr}'. Actual: '{body}'"
+                    "Body does not contain expected substring '{expected_substring}'. Actual: '{body}'"
                 )),
             );
         }
     }
 
     if let Some(headers) = &assertion.header_matches {
-        for (k, expected_v) in headers {
-            match resp.headers.get(k) {
-                Some(actual_v) if actual_v == expected_v => {}
-                Some(actual_v) => {
+        for (name, expected_value) in headers {
+            match response.headers.get(name) {
+                Some(actual_value) if actual_value == expected_value => {}
+                Some(actual_value) => {
                     return (
                         false,
                         Some(format!(
-                            "Header '{k}' value mismatch: expected '{expected_v}', got '{actual_v}'"
+                            "Header '{name}' value mismatch: expected '{expected_value}', got '{actual_value}'"
                         )),
                     );
                 }
                 None => {
                     return (
                         false,
-                        Some(format!("Missing expected header '{k}' in response")),
+                        Some(format!("Missing expected header '{name}' in response")),
                     );
                 }
             }
@@ -178,115 +146,98 @@ fn evaluate_response(
 mod tests {
     use super::*;
     use crate::engine::http_envelope::RequestEnvelope;
-    use std::collections::{HashMap, HashSet};
+    use crate::engine::quickjs::{test_support, DEFAULT_COMPONENT_FUEL};
+    use std::collections::HashMap;
 
-    #[test]
-    fn test_shadow_verifier_approves_valid_module() {
-        let engine = WasmEngine::new().unwrap();
-
-        let resp_json = r#"{"status":200,"headers":{},"body":"healthy"}"#;
-        let resp_len = resp_json.len();
-        let wat = format!(
-            r#"
-            (module
-                (import "nosrc_host" "host_set_response" (func $set_resp (param i32 i32) (result i32)))
-                (memory (export "memory") 1)
-                (data (i32.const 2048) "{}")
-
-                (func (export "handle_request") (param i32 i32) (result i32)
-                    (call $set_resp (i32.const 2048) (i32.const {}))
-                )
-            )
-            "#,
-            resp_json.replace('"', "\\\""),
-            resp_len
-        );
-
-        let module = engine.compile(wat.as_bytes()).unwrap();
-
-        let assertion = ContractAssertion {
-            name: "Health Check".to_string(),
+    fn assertion(expected_status: u16, body_contains: Option<&str>) -> ContractAssertion {
+        ContractAssertion {
+            name: "test assertion".to_string(),
             request: RequestEnvelope {
                 method: "GET".to_string(),
-                path: "/healthz".to_string(),
+                path: "/health".to_string(),
                 query: HashMap::new(),
                 headers: HashMap::new(),
                 body: None,
             },
-            expected_status: 200,
-            body_contains: Some("healthy".to_string()),
+            expected_status,
+            body_contains: body_contains.map(str::to_string),
             header_matches: None,
-        };
+        }
+    }
 
-        let verifier = ShadowVerifier::new(&engine, HostCapabilities::new_external(HashSet::new()));
+    #[tokio::test]
+    async fn verifier_approves_a_valid_javascript_candidate() {
+        let (engine, compiled) = test_support::compiled().await;
+        let mut candidate = engine
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .unwrap();
 
-        let results = verifier
-            .verify_module(&module, &[assertion])
-            .expect("Verification must pass");
+        let results = ShadowVerifier::new()
+            .verify_handler(&mut candidate, &[assertion(200, Some("healthy"))])
+            .unwrap();
 
         assert_eq!(results.len(), 1);
         assert!(results[0].passed);
     }
 
-    #[test]
-    fn test_shadow_verifier_rejects_empty_assertion_suite() {
-        let engine = WasmEngine::new().unwrap();
-        let module = engine.compile(b"(module)").unwrap();
-        let verifier = ShadowVerifier::new(&engine, HostCapabilities::new_external(HashSet::new()));
+    #[tokio::test]
+    async fn verifier_rejects_an_empty_assertion_suite() {
+        let (engine, compiled) = test_support::compiled().await;
+        let mut candidate = engine
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .unwrap();
 
-        let result = verifier.verify_module(&module, &[]);
+        let error = ShadowVerifier::new()
+            .verify_handler(&mut candidate, &[])
+            .unwrap_err();
 
-        let error = result.expect_err("An empty assertion suite must not pass verification");
-        assert!(
-            error
-                .to_string()
-                .contains("at least one contract assertion"),
-            "Unexpected verification error: {error}"
-        );
+        assert!(error
+            .to_string()
+            .contains("at least one contract assertion"));
     }
 
-    #[test]
-    fn test_shadow_verifier_rejects_failing_assertion() {
-        let engine = WasmEngine::new().unwrap();
+    #[tokio::test]
+    async fn verifier_rejects_a_candidate_that_fails_an_assertion() {
+        let (engine, compiled) = test_support::compiled().await;
+        let mut candidate = engine
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .unwrap();
+        let mut failing_assertion = assertion(200, None);
+        failing_assertion.request.path = "/error".to_string();
 
-        // Guest returns status 500
-        let resp_json = r#"{"status":500,"headers":{},"body":"database error"}"#;
-        let wat = format!(
-            r#"
-            (module
-                (import "nosrc_host" "host_set_response" (func $set_resp (param i32 i32) (result i32)))
-                (memory (export "memory") 1)
-                (data (i32.const 1024) "{}")
+        let result = ShadowVerifier::new().verify_handler(&mut candidate, &[failing_assertion]);
 
-                (func (export "handle_request") (param i32 i32) (result i32)
-                    (call $set_resp (i32.const 1024) (i32.const {}))
-                )
-            )
-            "#,
-            resp_json.replace('"', "\\\""),
-            resp_json.len()
-        );
+        assert!(result.is_err());
+    }
 
-        let module = engine.compile(wat.as_bytes()).unwrap();
+    #[tokio::test]
+    async fn assertions_share_candidate_module_state_in_order() {
+        let (engine, compiled) = test_support::compiled().await;
+        let mut candidate = engine
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .unwrap();
 
-        // Assertion requires status 200
-        let assertion = ContractAssertion {
-            name: "Strict Contract".to_string(),
-            request: RequestEnvelope {
-                method: "POST".to_string(),
-                path: "/action".to_string(),
-                query: HashMap::new(),
-                headers: HashMap::new(),
-                body: None,
-            },
+        let mut first_request = assertion(200, None).request;
+        first_request.path = "/counter".to_string();
+        let second_request = first_request.clone();
+        let first = ContractAssertion {
+            name: "first call".to_string(),
+            request: first_request,
             expected_status: 200,
-            body_contains: None,
+            body_contains: Some("1".to_string()),
+            header_matches: None,
+        };
+        let second = ContractAssertion {
+            name: "second call".to_string(),
+            request: second_request,
+            expected_status: 200,
+            body_contains: Some("2".to_string()),
             header_matches: None,
         };
 
-        let verifier = ShadowVerifier::new(&engine, HostCapabilities::new_external(HashSet::new()));
-
-        let res = verifier.verify_module(&module, &[assertion]);
-        assert!(res.is_err(), "Verification must reject status mismatch");
+        let results = ShadowVerifier::new()
+            .verify_handler(&mut candidate, &[first, second])
+            .unwrap();
+        assert!(results.iter().all(|result| result.passed));
     }
 }

@@ -18,45 +18,45 @@ pub struct RequestEnvelope {
 }
 
 impl RequestEnvelope {
-    /// Constructs a `RequestEnvelope` from raw incoming HTTP request components
-    pub fn from_parts(method: &Method, uri: &Uri, headers: &HeaderMap, body_bytes: Bytes) -> Self {
-        let mut query_map = HashMap::new();
-        if let Some(query_str) = uri.query() {
-            for pair in query_str.split('&') {
-                let mut parts = pair.splitn(2, '=');
-                if let Some(key) = parts.next() {
-                    let val = parts.next().unwrap_or("");
-                    query_map.insert(key.to_string(), val.to_string());
-                }
-            }
-        }
+    /// Constructs a UTF-8 request envelope from raw HTTP request components.
+    ///
+    /// The current guest ABI is text-based. Binary bodies are rejected instead
+    /// of being silently corrupted through lossy UTF-8 conversion.
+    pub fn try_from_parts(
+        method: &Method,
+        uri: &Uri,
+        headers: &HeaderMap,
+        body_bytes: Bytes,
+    ) -> Result<Self, std::string::FromUtf8Error> {
+        let query_map = uri
+            .query()
+            .map(|query| {
+                form_urlencoded::parse(query.as_bytes())
+                    .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                    .collect()
+            })
+            .unwrap_or_default();
 
         let mut header_map = HashMap::new();
-        for (name, val) in headers.iter() {
-            if let Ok(v_str) = val.to_str() {
-                header_map.insert(name.as_str().to_lowercase(), v_str.to_string());
+        for (name, value) in headers {
+            if let Ok(value) = value.to_str() {
+                header_map.insert(name.as_str().to_lowercase(), value.to_string());
             }
         }
 
         let body = if body_bytes.is_empty() {
             None
         } else {
-            match String::from_utf8(body_bytes.to_vec()) {
-                Ok(s) => Some(s),
-                Err(_) => {
-                    // Base64 or fallback representation if not valid UTF-8
-                    Some(String::from_utf8_lossy(&body_bytes).to_string())
-                }
-            }
+            Some(String::from_utf8(body_bytes.to_vec())?)
         };
 
-        Self {
+        Ok(Self {
             method: method.as_str().to_string(),
             path: uri.path().to_string(),
             query: query_map,
             headers: header_map,
             body,
-        }
+        })
     }
 }
 
@@ -173,5 +173,40 @@ impl ErrorEnvelope {
                 )
                     .into_response()
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_parameters_are_percent_decoded() {
+        let request = RequestEnvelope::try_from_parts(
+            &Method::GET,
+            &"/search?q=hello%20world&plus=a%2Bb".parse().unwrap(),
+            &HeaderMap::new(),
+            Bytes::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            request.query.get("q").map(String::as_str),
+            Some("hello world")
+        );
+        assert_eq!(request.query.get("plus").map(String::as_str), Some("a+b"));
+    }
+
+    #[test]
+    fn invalid_utf8_request_body_is_rejected() {
+        let error = RequestEnvelope::try_from_parts(
+            &Method::POST,
+            &"/submit".parse().unwrap(),
+            &HeaderMap::new(),
+            Bytes::from_static(&[0xff, 0xfe]),
+        )
+        .unwrap_err();
+
+        assert!(error.utf8_error().error_len().is_some());
     }
 }
