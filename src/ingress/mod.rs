@@ -1,6 +1,6 @@
 use arc_swap::ArcSwap;
 use axum::body::Bytes;
-use axum::extract::{OriginalUri, State};
+use axum::extract::{DefaultBodyLimit, OriginalUri, State};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::Response;
 use axum::routing::{any, get};
@@ -11,6 +11,8 @@ use std::sync::{Arc, Mutex};
 use crate::engine::http_envelope::{ErrorEnvelope, RequestEnvelope};
 use crate::engine::quickjs::QuickJsHandler;
 use crate::error::EngineError;
+
+const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 
 /// Active generation representing a compiled and contract-verified JavaScript handler.
 pub struct ActiveGeneration {
@@ -82,6 +84,7 @@ pub fn build_ingress_router(state: Arc<IngressState>) -> Router {
         .route("/healthz", get(healthz))
         .route("/_nosrc/status", get(runtime_status))
         .fallback(any(handle_http_request))
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .with_state(state)
 }
 
@@ -173,6 +176,18 @@ mod tests {
         assert_eq!(status["status"], "running");
         assert!(status["active_generation"].is_null());
         assert!(status["module_hash"].is_null());
+    }
+
+    #[tokio::test]
+    async fn oversized_request_body_is_rejected_before_handler_dispatch() {
+        let app = build_ingress_router(Arc::new(IngressState::new()));
+        let request = Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .body(Body::from(vec![120; MAX_REQUEST_BODY_BYTES + 1]))
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]
