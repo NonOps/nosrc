@@ -194,10 +194,7 @@ mod tests {
             request.query.get("q").map(String::as_str),
             Some("hello world")
         );
-        assert_eq!(
-            request.query.get("plus").map(String::as_str),
-            Some("a+b")
-        );
+        assert_eq!(request.query.get("plus").map(String::as_str), Some("a+b"));
     }
 
     #[test]
