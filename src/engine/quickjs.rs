@@ -1,4 +1,5 @@
 use componentize_qjs::{componentize, ComponentizeOpts, Runtime};
+use sha2::{Digest, Sha256};
 use wasmtime::component::{Component, Linker, TypedFunc};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
 
@@ -27,6 +28,7 @@ pub struct QuickJsEngine {
 
 pub struct CompiledHandler {
     component: Component,
+    pub module_hash: String,
 }
 
 pub struct QuickJsHandler {
@@ -81,10 +83,14 @@ impl QuickJsEngine {
             EngineError::Internal(format!("QuickJS componentization failed: {error:#}"))
         })?;
 
+        let module_hash = format!("{:x}", Sha256::digest(&component_bytes));
         let component = Component::new(&self.engine, component_bytes)
             .map_err(|error| EngineError::Internal(format!("Invalid handler component: {error}")))?;
 
-        Ok(CompiledHandler { component })
+        Ok(CompiledHandler {
+            component,
+            module_hash,
+        })
     }
 
     /// Instantiate a compiled candidate with per-generation resource limits.
