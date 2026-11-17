@@ -29,6 +29,13 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # Wasmtime and bundled SQLite compile substantial native artifacts.
+      # Reuse Cargo registry, git dependencies, and target build outputs between runs.
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
