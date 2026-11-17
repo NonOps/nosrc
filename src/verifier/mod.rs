@@ -64,6 +64,12 @@ impl<'a> ShadowVerifier<'a> {
         module: &Module,
         assertions: &[ContractAssertion],
     ) -> Result<Vec<AssertionResult>, EngineError> {
+        if assertions.is_empty() {
+            return Err(EngineError::Internal(
+                "Shadow verification requires at least one contract assertion".into(),
+            ));
+        }
+
         let mut results = Vec::with_capacity(assertions.len());
 
         for assertion in assertions {
@@ -220,6 +226,23 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert!(results[0].passed);
+    }
+
+    #[test]
+    fn test_shadow_verifier_rejects_empty_assertion_suite() {
+        let engine = WasmEngine::new().unwrap();
+        let module = engine.compile(b"(module)").unwrap();
+        let verifier = ShadowVerifier::new(&engine, HostCapabilities::new_external(HashSet::new()));
+
+        let result = verifier.verify_module(&module, &[]);
+
+        let error = result.expect_err("An empty assertion suite must not pass verification");
+        assert!(
+            error
+                .to_string()
+                .contains("at least one contract assertion"),
+            "Unexpected verification error: {error}"
+        );
     }
 
     #[test]

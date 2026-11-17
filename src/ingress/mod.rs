@@ -105,6 +105,7 @@ async fn handle_http_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::DEFAULT_FUEL_BUDGET;
     use axum::body::Body;
     use axum::http::Request;
     use std::collections::HashSet;
@@ -125,15 +126,16 @@ mod tests {
         let resp1 = app.clone().oneshot(req1).await.unwrap();
         assert_eq!(resp1.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
 
-        // 2. Prepare Generation 1: returns status 200 "gen 1"
+        // 2. Prepare Generation 1: returns status 200 "gen 1".
+        // Keep the response data separate from the engine's default request buffer at 1024.
         let wat_gen1 = r#"
             (module
                 (import "nosrc_host" "host_set_response" (func $set_resp (param i32 i32) (result i32)))
                 (memory (export "memory") 1)
-                (data (i32.const 1024) "{\"status\":200,\"headers\":{},\"body\":\"gen 1\"}")
+                (data (i32.const 4096) "{\"status\":200,\"headers\":{},\"body\":\"gen 1\"}")
 
                 (func (export "handle_request") (param i32 i32) (result i32)
-                    (call $set_resp (i32.const 1024) (i32.const 43))
+                    (call $set_resp (i32.const 4096) (i32.const 42))
                 )
             )
         "#;
@@ -152,17 +154,27 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let resp2 = app.clone().oneshot(req2).await.unwrap();
-        assert_eq!(resp2.status(), axum::http::StatusCode::OK);
+        let resp2_status = resp2.status();
+        let resp2_body = axum::body::to_bytes(resp2.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            resp2_status,
+            axum::http::StatusCode::OK,
+            "generation 1 returned an unexpected response: {}",
+            String::from_utf8_lossy(&resp2_body)
+        );
+        assert_eq!(resp2_body.as_ref(), b"gen 1");
 
-        // 3. Hot-swap to Generation 2: returns status 201 "gen 2"
+        // 3. Hot-swap to Generation 2: returns status 201 "gen 2".
         let wat_gen2 = r#"
             (module
                 (import "nosrc_host" "host_set_response" (func $set_resp (param i32 i32) (result i32)))
                 (memory (export "memory") 1)
-                (data (i32.const 1024) "{\"status\":201,\"headers\":{},\"body\":\"gen 2\"}")
+                (data (i32.const 4096) "{\"status\":201,\"headers\":{},\"body\":\"gen 2\"}")
 
                 (func (export "handle_request") (param i32 i32) (result i32)
-                    (call $set_resp (i32.const 1024) (i32.const 43))
+                    (call $set_resp (i32.const 4096) (i32.const 42))
                 )
             )
         "#;
@@ -182,6 +194,16 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let resp3 = app.clone().oneshot(req3).await.unwrap();
-        assert_eq!(resp3.status(), axum::http::StatusCode::CREATED);
+        let resp3_status = resp3.status();
+        let resp3_body = axum::body::to_bytes(resp3.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            resp3_status,
+            axum::http::StatusCode::CREATED,
+            "generation 2 returned an unexpected response: {}",
+            String::from_utf8_lossy(&resp3_body)
+        );
+        assert_eq!(resp3_body.as_ref(), b"gen 2");
     }
 }
