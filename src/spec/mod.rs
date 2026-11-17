@@ -61,19 +61,50 @@ pub struct SpecVerification {
 impl ServiceSpec {
     /// Ensure trusted cases cover every declared endpoint and assert only documented statuses.
     pub fn validate_verification(&self) -> Result<(), String> {
-        if self.endpoints.is_empty() { return Err("SPEC must declare at least one endpoint".into()); }
-        if self.verification.is_empty() { return Err("SPEC must declare trusted cases under '## Verification'".into()); }
+        if self.endpoints.is_empty() {
+            return Err("SPEC must declare at least one endpoint".into());
+        }
+        if self.verification.is_empty() {
+            return Err("SPEC must declare trusted cases under '## Verification'".into());
+        }
         for case in &self.verification {
-            let endpoint = self.endpoints.iter().find(|endpoint| endpoint.method == case.method && path_matches(&endpoint.path, &case.path))
-                .ok_or_else(|| format!("verification case {} {} does not match a declared endpoint", case.method, case.path))?;
-            let status = case.expected_status.ok_or_else(|| format!("verification case {} {} is missing a Response status", case.method, case.path))?;
-            if !endpoint.responses.iter().any(|response| response.status == status) {
-                return Err(format!("verification case {} {} expects undocumented status {}", case.method, case.path, status));
+            let endpoint = self
+                .endpoints
+                .iter()
+                .find(|endpoint| {
+                    endpoint.method == case.method && path_matches(&endpoint.path, &case.path)
+                })
+                .ok_or_else(|| {
+                    format!(
+                        "verification case {} {} does not match a declared endpoint",
+                        case.method, case.path
+                    )
+                })?;
+            let status = case.expected_status.ok_or_else(|| {
+                format!(
+                    "verification case {} {} is missing a Response status",
+                    case.method, case.path
+                )
+            })?;
+            if !endpoint
+                .responses
+                .iter()
+                .any(|response| response.status == status)
+            {
+                return Err(format!(
+                    "verification case {} {} expects undocumented status {}",
+                    case.method, case.path, status
+                ));
             }
         }
         for endpoint in &self.endpoints {
-            if !self.verification.iter().any(|case| case.method == endpoint.method && path_matches(&endpoint.path, &case.path)) {
-                return Err(format!("endpoint {} {} has no trusted verification case", endpoint.method, endpoint.path));
+            if !self.verification.iter().any(|case| {
+                case.method == endpoint.method && path_matches(&endpoint.path, &case.path)
+            }) {
+                return Err(format!(
+                    "endpoint {} {} has no trusted verification case",
+                    endpoint.method, endpoint.path
+                ));
             }
         }
         Ok(())
@@ -124,7 +155,8 @@ impl ServiceSpec {
                     current_section = "capabilities";
                 } else if sec_lower.contains("schema") {
                     current_section = "schema";
-                } else if sec_lower.contains("verification") || sec_lower.contains("verifications") {
+                } else if sec_lower.contains("verification") || sec_lower.contains("verifications")
+                {
                     current_section = "verification";
                 } else if sec_lower.contains("endpoint") || sec_lower.contains("endpoints") {
                     current_section = "endpoints";
@@ -142,13 +174,31 @@ impl ServiceSpec {
                 let path = parts.next().unwrap_or("/").to_string();
                 match current_section {
                     "endpoints" | "endpoint_detail" => {
-                        if let Some(ep) = current_endpoint.take() { endpoints.push(ep); }
-                        current_endpoint = Some(SpecEndpoint { method, path, description: None, body_schema: None, rules: Vec::new(), responses: Vec::new() });
+                        if let Some(ep) = current_endpoint.take() {
+                            endpoints.push(ep);
+                        }
+                        current_endpoint = Some(SpecEndpoint {
+                            method,
+                            path,
+                            description: None,
+                            body_schema: None,
+                            rules: Vec::new(),
+                            responses: Vec::new(),
+                        });
                         current_section = "endpoint_detail";
                     }
                     "verification" | "verification_detail" => {
-                        if let Some(case) = current_verification.take() { verification.push(case); }
-                        current_verification = Some(SpecVerification { method, path, headers: std::collections::HashMap::new(), body: None, expected_status: None, body_contains: None });
+                        if let Some(case) = current_verification.take() {
+                            verification.push(case);
+                        }
+                        current_verification = Some(SpecVerification {
+                            method,
+                            path,
+                            headers: std::collections::HashMap::new(),
+                            body: None,
+                            expected_status: None,
+                            body_contains: None,
+                        });
                         current_section = "verification_detail";
                     }
                     _ => {}
@@ -190,16 +240,32 @@ impl ServiceSpec {
                             if let Some(body) = item.strip_prefix("Body:") {
                                 case.body = Some(body.trim().to_string());
                             } else if let Some(header) = item.strip_prefix("Header:") {
-                                let (name, value) = header.trim().split_once('=').ok_or_else(|| HostAbiError::MalformedJson(format!("invalid verification header '{header}'; expected name=value")))?;
-                                if name.trim().is_empty() { return Err(HostAbiError::MalformedJson("verification header name cannot be empty".into())); }
-                                case.headers.insert(name.trim().to_lowercase(), value.trim().to_string());
+                                let (name, value) = header.trim().split_once('=').ok_or_else(|| {
+                                    HostAbiError::MalformedJson(format!(
+                                        "invalid verification header '{header}'; expected name=value"
+                                    ))
+                                })?;
+                                if name.trim().is_empty() {
+                                    return Err(HostAbiError::MalformedJson(
+                                        "verification header name cannot be empty".into(),
+                                    ));
+                                }
+                                case.headers
+                                    .insert(name.trim().to_lowercase(), value.trim().to_string());
                             } else if let Some(status) = item.strip_prefix("Response ") {
                                 let status = status.trim().trim_matches('`');
-                                case.expected_status = Some(status.parse().map_err(|_| HostAbiError::MalformedJson(format!("invalid verification response status '{status}'")))?);
+                                case.expected_status = Some(status.parse().map_err(|_| {
+                                    HostAbiError::MalformedJson(format!(
+                                        "invalid verification response status '{status}'"
+                                    ))
+                                })?);
                             } else if let Some(expected) = item.strip_prefix("Body contains:") {
-                                case.body_contains = Some(expected.trim().trim_matches('`').to_string());
+                                case.body_contains =
+                                    Some(expected.trim().trim_matches('`').to_string());
                             } else {
-                                return Err(HostAbiError::MalformedJson(format!("unsupported verification field '{item}'")));
+                                return Err(HostAbiError::MalformedJson(format!(
+                                    "unsupported verification field '{item}'"
+                                )));
                             }
                         }
                     }
@@ -239,8 +305,12 @@ impl ServiceSpec {
             }
         }
 
-        if let Some(ep) = current_endpoint.take() { endpoints.push(ep); }
-        if let Some(case) = current_verification.take() { verification.push(case); }
+        if let Some(ep) = current_endpoint.take() {
+            endpoints.push(ep);
+        }
+        if let Some(case) = current_verification.take() {
+            verification.push(case);
+        }
 
         Ok(Self {
             name,
@@ -257,7 +327,14 @@ impl ServiceSpec {
 fn path_matches(template: &str, concrete: &str) -> bool {
     let expected: Vec<_> = template.trim_matches('/').split('/').collect();
     let actual: Vec<_> = concrete.trim_matches('/').split('/').collect();
-    expected.len() == actual.len() && expected.iter().zip(actual.iter()).all(|(e, a)| if e.starts_with(':') { !a.is_empty() } else { e == a })
+    expected.len() == actual.len()
+        && expected.iter().zip(actual.iter()).all(|(e, a)| {
+            if e.starts_with(':') {
+                !a.is_empty()
+            } else {
+                e == a
+            }
+        })
 }
 
 #[cfg(test)]
@@ -386,6 +463,9 @@ A resilient spec-driven URL shortener.
 - Body contains: `ok`
 "#;
         let spec = ServiceSpec::parse(markdown).unwrap();
-        assert!(spec.validate_verification().unwrap_err().contains("missing a Response status"));
+        assert!(spec
+            .validate_verification()
+            .unwrap_err()
+            .contains("missing a Response status"));
     }
 }
