@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use componentize_qjs::{componentize, ComponentizeOpts, Runtime};
-use wasmtime::component::{Component, Instance, Linker, TypedFunc};
+use wasmtime::component::{Component, Linker, TypedFunc};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
 
 use crate::engine::http_envelope::{RequestEnvelope, ResponseEnvelope};
@@ -68,7 +68,7 @@ impl QuickJsEngine {
 
         let component_bytes = componentize(
             &ComponentizeOpts {
-                wit_path: Path::new(&wit_path),
+                wit_path: &wit_path,
                 js_source: javascript,
                 js_path: None,
                 module_root: None,
