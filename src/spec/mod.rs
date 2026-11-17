@@ -23,7 +23,7 @@ pub struct SpecCapabilities {
 impl Default for SpecCapabilities {
     fn default() -> Self {
         Self {
-            state: "embedded".to_string(),
+            state: "volatile".to_string(),
             egress: HashSet::new(),
         }
     }
@@ -199,6 +199,13 @@ impl ServiceSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_state_mode_is_volatile() {
+        let spec = ServiceSpec::parse("# Service: Minimal\\n\\n## Endpoints\\n### `GET /`\\n- Response `200`: ok").unwrap();
+        assert_eq!(spec.capabilities.state, "volatile");
+        assert!(spec.capabilities.egress.is_empty());
+    }
 
     #[test]
     fn test_parse_reference_spec() {
