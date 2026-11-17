@@ -286,9 +286,12 @@ mod tests {
             .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
             .unwrap();
         let error = handler.invoke(&request("/oversized")).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("response exceeds the 1048576 byte limit"));
+        assert!(
+            error
+                .to_string()
+                .contains("JavaScript handler response exceeds the 1048576 byte limit"),
+            "Unexpected oversized-response error: {error}"
+        );
     }
 
     #[tokio::test]
