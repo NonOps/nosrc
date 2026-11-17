@@ -6,6 +6,9 @@ use std::collections::HashMap;
 
 use crate::error::EngineError;
 
+/// Maximum serialized response envelope accepted from a guest handler.
+pub const MAX_HANDLER_RESPONSE_BYTES: usize = 1024 * 1024;
+
 /// Incoming HTTP request serialized for guest handler consumption
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RequestEnvelope {
