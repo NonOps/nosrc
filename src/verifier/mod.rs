@@ -66,7 +66,10 @@ impl ShadowVerifier {
                 format!(
                     "{}: {}",
                     result.name,
-                    result.error_message.as_deref().unwrap_or("assertion failed")
+                    result
+                        .error_message
+                        .as_deref()
+                        .unwrap_or("assertion failed")
                 )
             })
             .collect();
@@ -210,7 +213,9 @@ mod tests {
             .verify_handler(&mut candidate, &[])
             .unwrap_err();
 
-        assert!(error.to_string().contains("at least one contract assertion"));
+        assert!(error
+            .to_string()
+            .contains("at least one contract assertion"));
     }
 
     #[tokio::test]
@@ -228,8 +233,7 @@ mod tests {
             .instantiate(&compiled, DEFAULT_COMPONENT_FUEL)
             .unwrap();
 
-        let result = ShadowVerifier::new()
-            .verify_handler(&mut candidate, &[assertion(200, None)]);
+        let result = ShadowVerifier::new().verify_handler(&mut candidate, &[assertion(200, None)]);
 
         assert!(result.is_err());
     }
