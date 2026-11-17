@@ -34,6 +34,8 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
+          # Start a fresh cache so test-profile dependency artifacts are seeded.
+          key: test-profile-v1
           cache-on-failure: true
 
       - name: Check formatting
