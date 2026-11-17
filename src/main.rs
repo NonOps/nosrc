@@ -60,7 +60,7 @@ fn validate_runtime_spec(spec: &ServiceSpec) -> anyhow::Result<()> {
 async fn prepare_generation(
     spec: &ServiceSpec,
     synthesizer: &Synthesizer,
-) -> anyhow::Result<(ActiveGeneration, usize, usize)> {
+) -> anyhow::Result<(ActiveGeneration, usize, usize, Option<String>)> {
     validate_runtime_spec(spec)?;
 
     let output = synthesizer.synthesize(spec, &[]).await?;
@@ -122,7 +122,12 @@ async fn prepare_generation(
         handler: Arc::new(Mutex::new(active_handler)),
     };
 
-    Ok((generation, trusted_results.len(), generated_results.len()))
+    Ok((
+        generation,
+        trusted_results.len(),
+        generated_results.len(),
+        output.rationale,
+    ))
 }
 
 #[tokio::main]
@@ -147,13 +152,14 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let synthesizer = Synthesizer::new(LlmConfig::from_env()?);
-    let (generation, trusted_assertions, generated_assertions) =
+    let (generation, trusted_assertions, generated_assertions, rationale) =
         prepare_generation(&spec, &synthesizer).await?;
 
     tracing::info!(
         trusted_assertions,
         generated_assertions,
         module_hash = %generation.module_hash,
+        rationale = rationale.as_deref().unwrap_or(""),
         "Candidate compiled and passed contract verification"
     );
 
@@ -256,11 +262,15 @@ mod tests {
             temperature: 0.0,
         });
 
-        let (generation, trusted_count, generated_count) =
+        let (generation, trusted_count, generated_count, rationale) =
             prepare_generation(&spec, &synthesizer).await.unwrap();
 
         assert_eq!(trusted_count, 1);
         assert_eq!(generated_count, 1);
+        assert_eq!(
+            rationale.as_deref(),
+            Some("Deterministic handler returned by the test provider")
+        );
         assert_eq!(request_count.load(Ordering::SeqCst), 1);
 
         let state = Arc::new(IngressState::new());
