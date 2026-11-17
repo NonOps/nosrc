@@ -195,8 +195,9 @@ Assertions must cover every endpoint's documented success response and at least 
             ]
         });
 
-        let request_bytes = serde_json::to_vec(&body)
-            .map_err(|error| EngineError::Internal(format!("Failed to serialize LLM request: {error}")))?;
+        let request_bytes = serde_json::to_vec(&body).map_err(|error| {
+            EngineError::Internal(format!("Failed to serialize LLM request: {error}"))
+        })?;
         if request_bytes.len() > MAX_LLM_REQUEST_BYTES {
             return Err(EngineError::Internal(format!(
                 "LLM request exceeds the {MAX_LLM_REQUEST_BYTES} byte limit"
@@ -223,9 +224,10 @@ Assertions must cover every endpoint's documented success response and at least 
         }
 
         let response_bytes = read_limited_body(resp, MAX_LLM_RESPONSE_BYTES).await?;
-        let resp_json: serde_json::Value = serde_json::from_slice(&response_bytes).map_err(|e| {
-            EngineError::Internal(format!("Failed to parse LLM response JSON: {e}"))
-        })?;
+        let resp_json: serde_json::Value =
+            serde_json::from_slice(&response_bytes).map_err(|e| {
+                EngineError::Internal(format!("Failed to parse LLM response JSON: {e}"))
+            })?;
 
         let content_str = resp_json["choices"][0]["message"]["content"]
             .as_str()
@@ -267,7 +269,9 @@ mod tests {
             .await
             .unwrap();
         let error = read_limited_body(response, 5).await.unwrap_err();
-        assert!(error.to_string().contains("provider response exceeds the 5 byte limit"));
+        assert!(error
+            .to_string()
+            .contains("provider response exceeds the 5 byte limit"));
 
         let _ = shutdown_tx.send(());
         server.await.unwrap();
