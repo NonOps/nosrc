@@ -3,8 +3,10 @@ use axum::body::Bytes;
 use axum::extract::{OriginalUri, State};
 use axum::http::{HeaderMap, Method};
 use axum::response::Response;
-use axum::routing::any;
-use axum::Router;
+use axum::routing::{any, get};
+use axum::{Json, Router};
+use axum::http::StatusCode;
+use serde::Serialize;
 use std::sync::Arc;
 use wasmtime::Module;
 
@@ -48,8 +50,30 @@ impl IngressState {
 }
 
 /// Creates the Axum router for the live HTTP data ingress
+#[derive(Debug, Serialize)]
+struct RuntimeStatus {
+    status: &'static str,
+    active_generation: Option<u64>,
+    module_hash: Option<String>,
+}
+
+async fn healthz() -> StatusCode {
+    StatusCode::OK
+}
+
+async fn runtime_status(State(state): State<Arc<IngressState>>) -> Json<RuntimeStatus> {
+    let active = state.active_generation.load();
+    let (active_generation, module_hash) = match active.as_ref() {
+        Some(generation) => (Some(generation.generation_id), Some(generation.module_hash.clone())),
+        None => (None, None),
+    };
+    Json(RuntimeStatus { status: "running", active_generation, module_hash })
+}
+
 pub fn build_ingress_router(state: Arc<IngressState>) -> Router {
     Router::new()
+        .route("/healthz", get(healthz))
+        .route("/_nosrc/status", get(runtime_status))
         .fallback(any(handle_http_request))
         .with_state(state)
 }
