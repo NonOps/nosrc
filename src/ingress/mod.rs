@@ -154,7 +154,17 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let resp2 = app.clone().oneshot(req2).await.unwrap();
-        assert_eq!(resp2.status(), axum::http::StatusCode::OK);
+        let resp2_status = resp2.status();
+        let resp2_body = axum::body::to_bytes(resp2.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            resp2_status,
+            axum::http::StatusCode::OK,
+            "generation 1 returned an unexpected response: {}",
+            String::from_utf8_lossy(&resp2_body)
+        );
+        assert_eq!(resp2_body.as_ref(), b"gen 1");
 
         // 3. Hot-swap to Generation 2: returns status 201 "gen 2".
         let wat_gen2 = r#"
@@ -184,6 +194,16 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let resp3 = app.clone().oneshot(req3).await.unwrap();
-        assert_eq!(resp3.status(), axum::http::StatusCode::CREATED);
+        let resp3_status = resp3.status();
+        let resp3_body = axum::body::to_bytes(resp3.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            resp3_status,
+            axum::http::StatusCode::CREATED,
+            "generation 2 returned an unexpected response: {}",
+            String::from_utf8_lossy(&resp3_body)
+        );
+        assert_eq!(resp3_body.as_ref(), b"gen 2");
     }
 }
