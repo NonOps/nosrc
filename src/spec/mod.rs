@@ -328,13 +328,16 @@ fn path_matches(template: &str, concrete: &str) -> bool {
     let expected: Vec<_> = template.trim_matches('/').split('/').collect();
     let actual: Vec<_> = concrete.trim_matches('/').split('/').collect();
     expected.len() == actual.len()
-        && expected.iter().zip(actual.iter()).all(|(expected, actual)| {
-            if expected.starts_with(':') {
-                !actual.is_empty() && !actual.starts_with(':')
-            } else {
-                expected == actual
-            }
-        })
+        && expected
+            .iter()
+            .zip(actual.iter())
+            .all(|(expected, actual)| {
+                if expected.starts_with(':') {
+                    !actual.is_empty() && !actual.starts_with(':')
+                } else {
+                    expected == actual
+                }
+            })
 }
 
 #[cfg(test)]
