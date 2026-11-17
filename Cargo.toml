@@ -16,7 +16,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 
 # Wasmtime & Sandboxing
 wasmtime = { version = "29", features = ["component-model", "wat"] }
-wasmtime-wasi = { version = "29" }
+wasmtime-wasi = { version = "36" }
 
 # State & Persistence
 rusqlite = { version = "0.33", features = ["bundled"] }
