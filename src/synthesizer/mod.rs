@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::io::{self, Write};
 use std::time::Duration;
 
 use crate::engine::http_envelope::RequestEnvelope;
@@ -63,6 +64,41 @@ pub struct SynthesisOutput {
     pub assertions: Vec<ContractAssertion>,
     /// Summary of changes or implementation notes
     pub rationale: Option<String>,
+}
+
+/// A JSON serializer sink that refuses to retain more than the configured limit.
+struct LimitedBodyWriter {
+    bytes: Vec<u8>,
+    max_bytes: usize,
+    exceeded: bool,
+}
+
+impl LimitedBodyWriter {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(max_bytes.min(8 * 1024)),
+            max_bytes,
+            exceeded: false,
+        }
+    }
+}
+
+impl Write for LimitedBodyWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if self.bytes.len().saturating_add(buffer.len()) > self.max_bytes {
+            self.exceeded = true;
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "serialized request exceeds configured size limit",
+            ));
+        }
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Read a provider response without allowing an unbounded body allocation.
@@ -195,14 +231,18 @@ Assertions must cover every endpoint's documented success response and at least 
             ]
         });
 
-        let request_bytes = serde_json::to_vec(&body).map_err(|error| {
-            EngineError::Internal(format!("Failed to serialize LLM request: {error}"))
-        })?;
-        if request_bytes.len() > MAX_LLM_REQUEST_BYTES {
+        let mut request_writer = LimitedBodyWriter::new(MAX_LLM_REQUEST_BYTES);
+        if let Err(error) = serde_json::to_writer(&mut request_writer, &body) {
+            if request_writer.exceeded {
+                return Err(EngineError::Internal(format!(
+                    "LLM request exceeds the {MAX_LLM_REQUEST_BYTES} byte limit"
+                )));
+            }
             return Err(EngineError::Internal(format!(
-                "LLM request exceeds the {MAX_LLM_REQUEST_BYTES} byte limit"
+                "Failed to serialize LLM request: {error}"
             )));
         }
+        let request_bytes = request_writer.bytes;
 
         let resp = self
             .client
@@ -248,6 +288,15 @@ mod tests {
     use axum::body::Body;
     use axum::routing::get;
     use axum::Router;
+
+    #[test]
+    fn serialized_request_writer_stops_at_configured_limit() {
+        let mut writer = LimitedBodyWriter::new(4);
+        writer.write_all(b"1234").unwrap();
+        assert!(writer.write_all(b"5").is_err());
+        assert!(writer.exceeded);
+        assert_eq!(writer.bytes, b"1234");
+    }
 
     #[tokio::test]
     async fn provider_response_content_length_is_checked_before_reading() {
