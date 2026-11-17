@@ -282,9 +282,13 @@ mod tests {
     #[tokio::test]
     async fn oversized_guest_response_is_rejected_before_deserialization() {
         let (engine, compiled) = test_support::compiled().await;
-        let mut handler = engine.instantiate(compiled, DEFAULT_COMPONENT_FUEL).unwrap();
+        let mut handler = engine
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .unwrap();
         let error = handler.invoke(&request("/oversized")).unwrap_err();
-        assert!(error.to_string().contains("response exceeds the 1048576 byte limit"));
+        assert!(error
+            .to_string()
+            .contains("response exceeds the 1048576 byte limit"));
     }
 
     #[tokio::test]
