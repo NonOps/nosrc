@@ -325,4 +325,41 @@ mod tests {
         let _ = shutdown_tx.send(());
         server.await.unwrap();
     }
+
+    #[tokio::test]
+    async fn provider_response_without_content_length_is_bounded_while_streaming() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await.unwrap();
+
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\\r\\nTransfer-Encoding: chunked\\r\\nConnection: close\\r\\n\\r\\n",
+                )
+                .await
+                .unwrap();
+            socket
+                .write_all(b"A\\r\\n0123456789\\r\\n0\\r\\n\\r\\n")
+                .await
+                .unwrap();
+        });
+
+        let response = reqwest::get(format!("http://{address}/"))
+            .await
+            .unwrap();
+        assert_eq!(response.content_length(), None);
+
+        let error = read_limited_body(response, 5).await.unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("LLM response exceeds the 5 byte limit"));
+
+        server.await.unwrap();
+    }
 }
