@@ -282,8 +282,11 @@ mod tests {
     #[tokio::test]
     async fn oversized_guest_response_is_rejected_before_deserialization() {
         let (engine, compiled) = test_support::compiled().await;
+        // Building a 1 MiB JavaScript string consumes more fuel than the default
+        // production budget. Raise only this test's budget so it reaches the
+        // host-side response-size guard instead of trapping during construction.
         let mut handler = engine
-            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL * 10)
             .unwrap();
         let error = handler.invoke(&request("/oversized")).unwrap_err();
         assert!(
