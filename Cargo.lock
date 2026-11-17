@@ -1714,7 +1714,6 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "wasmtime 36.0.19",
- "wasmtime-wasi",
 ]
 
 [[package]]
