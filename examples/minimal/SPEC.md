@@ -3,7 +3,7 @@
 A minimal specification used to start the nosrc HTTP process while the handler runtime is being completed.
 
 ## Capabilities
-- state: embedded
+- state: volatile
 - egress: []
 
 ## Endpoints
