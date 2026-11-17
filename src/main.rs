@@ -40,6 +40,22 @@ async fn main() -> anyhow::Result<()> {
         anyhow::anyhow!("Failed to parse SPEC at {}: {error}", cli.spec.display())
     })?;
 
+    if spec.capabilities.state != "volatile" {
+        anyhow::bail!(
+            "SPEC state mode '{}' is not supported yet; this runtime supports only volatile, generation-scoped JavaScript state",
+            spec.capabilities.state
+        );
+    }
+    if !spec.capabilities.egress.is_empty() {
+        anyhow::bail!(
+            "SPEC requests outbound egress ({}) but network capabilities are not available in this runtime",
+            spec.capabilities.egress.iter().cloned().collect::<Vec<_>>().join(", ")
+        );
+    }
+    if !spec.schema.is_empty() {
+        anyhow::bail!("SPEC declares database schema, but SQL capabilities are not available in this runtime");
+    }
+
     tracing::info!(
         service = %spec.name,
         endpoints = spec.endpoints.len(),
