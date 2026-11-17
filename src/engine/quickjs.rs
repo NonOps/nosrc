@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use wasmtime::component::{Component, Linker, TypedFunc};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
 
-use crate::engine::http_envelope::{RequestEnvelope, ResponseEnvelope};
+use crate::engine::http_envelope::{RequestEnvelope, ResponseEnvelope, MAX_HANDLER_RESPONSE_BYTES};
 use crate::error::{EngineError, SandboxTrap};
 
 pub const DEFAULT_COMPONENT_FUEL: u64 = 50_000_000;
@@ -151,6 +151,13 @@ impl QuickJsHandler {
             .call(&mut self.store, (request_json,))
             .map_err(classify_component_trap)?;
 
+        if response_json.len() > MAX_HANDLER_RESPONSE_BYTES {
+            return Err(EngineError::Internal(format!(
+                "JavaScript handler response exceeds the {} byte limit",
+                MAX_HANDLER_RESPONSE_BYTES
+            )));
+        }
+
         serde_json::from_str(&response_json).map_err(|error| {
             EngineError::Internal(format!(
                 "JavaScript handler returned an invalid response envelope: {error}"
@@ -192,6 +199,10 @@ pub(crate) mod test_support {
 
             if (request.path === "/error") {
                 return JSON.stringify({ status: 500, headers: {}, body: "failed" });
+            }
+
+            if (request.path === "/oversized") {
+                return JSON.stringify({ status: 200, headers: {}, body: "x".repeat(1024 * 1024 + 1) });
             }
 
             if (request.path === "/health") {
@@ -266,6 +277,14 @@ mod tests {
                 .as_deref(),
             Some("2")
         );
+    }
+
+    #[tokio::test]
+    async fn oversized_guest_response_is_rejected_before_deserialization() {
+        let (engine, compiled) = test_support::compiled().await;
+        let mut handler = engine.instantiate(compiled, DEFAULT_COMPONENT_FUEL).unwrap();
+        let error = handler.invoke(&request("/oversized")).unwrap_err();
+        assert!(error.to_string().contains("response exceeds the 1048576 byte limit"));
     }
 
     #[tokio::test]
