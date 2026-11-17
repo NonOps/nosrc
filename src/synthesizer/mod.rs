@@ -7,6 +7,7 @@ use crate::spec::ServiceSpec;
 
 const LLM_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const LLM_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_LLM_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 const MAX_LLM_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_LLM_ERROR_BYTES: usize = 8 * 1024;
 
@@ -194,12 +195,20 @@ Assertions must cover every endpoint's documented success response and at least 
             ]
         });
 
+        let request_bytes = serde_json::to_vec(&body)
+            .map_err(|error| EngineError::Internal(format!("Failed to serialize LLM request: {error}")))?;
+        if request_bytes.len() > MAX_LLM_REQUEST_BYTES {
+            return Err(EngineError::Internal(format!(
+                "LLM request exceeds the {MAX_LLM_REQUEST_BYTES} byte limit"
+            )));
+        }
+
         let resp = self
             .client
             .post(&endpoint)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
             .header("Content-Type", "application/json")
-            .json(&body)
+            .body(request_bytes)
             .send()
             .await
             .map_err(|e| EngineError::Internal(format!("LLM request failed: {e}")))?;
