@@ -130,7 +130,7 @@ async fn handle_http_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::quickjs::{QuickJsEngine, DEFAULT_COMPONENT_FUEL};
+    use crate::engine::quickjs::{test_support, DEFAULT_COMPONENT_FUEL};
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
@@ -178,24 +178,9 @@ mod tests {
 
     #[tokio::test]
     async fn ingress_dispatches_requests_to_the_active_quickjs_handler() {
-        let engine = QuickJsEngine::new().unwrap();
-        let compiled = engine
-            .compile_handler(
-                r#"
-                export function handle(requestJson) {
-                    const request = JSON.parse(requestJson);
-                    return JSON.stringify({
-                        status: 200,
-                        headers: { "content-type": "text/plain" },
-                        body: request.method + " " + request.path
-                    });
-                }
-                "#,
-            )
-            .await
-            .unwrap();
+        let (engine, compiled) = test_support::compiled().await;
         let handler = engine
-            .instantiate(&compiled, DEFAULT_COMPONENT_FUEL)
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
             .unwrap();
 
         let state = Arc::new(IngressState::new());
