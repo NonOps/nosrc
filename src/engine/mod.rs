@@ -1,5 +1,6 @@
 pub mod host_abi;
 pub mod http_envelope;
+pub mod quickjs;
 
 use wasmtime::{
     AsContext, Caller, Config, Engine, Instance, Linker, Module, ResourceLimiter, Store,
