@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use componentize_qjs::{componentize, ComponentizeOpts, Runtime};
 use wasmtime::component::{Component, Linker, TypedFunc};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
