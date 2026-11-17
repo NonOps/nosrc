@@ -340,12 +340,12 @@ mod tests {
 
             socket
                 .write_all(
-                    b"HTTP/1.1 200 OK\\r\\nTransfer-Encoding: chunked\\r\\nConnection: close\\r\\n\\r\\n",
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
                 )
                 .await
                 .unwrap();
             socket
-                .write_all(b"A\\r\\n0123456789\\r\\n0\\r\\n\\r\\n")
+                .write_all(b"A\r\n0123456789\r\n0\r\n\r\n")
                 .await
                 .unwrap();
         });
