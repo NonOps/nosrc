@@ -53,7 +53,9 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     if !spec.schema.is_empty() {
-        anyhow::bail!("SPEC declares database schema, but SQL capabilities are not available in this runtime");
+        anyhow::bail!(
+            "SPEC declares database schema, but SQL capabilities are not available in this runtime"
+        );
     }
 
     tracing::info!(
