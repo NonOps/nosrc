@@ -67,19 +67,41 @@ impl ServiceSpec {
         if self.verification.is_empty() {
             return Err("SPEC must declare trusted cases under '## Verification'".into());
         }
+        let mut covered_endpoints = vec![false; self.endpoints.len()];
         for case in &self.verification {
-            let endpoint = self
+            let matching: Vec<_> = self
                 .endpoints
                 .iter()
-                .find(|endpoint| {
+                .enumerate()
+                .filter(|(_, endpoint)| {
                     endpoint.method == case.method && path_matches(&endpoint.path, &case.path)
                 })
+                .map(|(index, endpoint)| (index, path_specificity(&endpoint.path)))
+                .collect();
+            let best_specificity = matching
+                .iter()
+                .map(|(_, specificity)| *specificity)
+                .max()
                 .ok_or_else(|| {
                     format!(
                         "verification case {} {} does not match a declared endpoint",
                         case.method, case.path
                     )
                 })?;
+            let best_matches: Vec<_> = matching
+                .iter()
+                .filter(|(_, specificity)| *specificity == best_specificity)
+                .collect();
+            if best_matches.len() != 1 {
+                return Err(format!(
+                    "verification case {} {} ambiguously matches multiple endpoints",
+                    case.method, case.path
+                ));
+            }
+            let endpoint_index = best_matches[0].0;
+            let endpoint = &self.endpoints[endpoint_index];
+            covered_endpoints[endpoint_index] = true;
+
             let status = case.expected_status.ok_or_else(|| {
                 format!(
                     "verification case {} {} is missing a Response status",
@@ -97,10 +119,8 @@ impl ServiceSpec {
                 ));
             }
         }
-        for endpoint in &self.endpoints {
-            if !self.verification.iter().any(|case| {
-                case.method == endpoint.method && path_matches(&endpoint.path, &case.path)
-            }) {
+        for (index, endpoint) in self.endpoints.iter().enumerate() {
+            if !covered_endpoints[index] {
                 return Err(format!(
                     "endpoint {} {} has no trusted verification case",
                     endpoint.method, endpoint.path
@@ -324,6 +344,14 @@ impl ServiceSpec {
     }
 }
 
+fn path_specificity(template: &str) -> usize {
+    template
+        .trim_matches('/')
+        .split('/')
+        .filter(|segment| !segment.starts_with(':'))
+        .count()
+}
+
 fn path_matches(template: &str, concrete: &str) -> bool {
     let expected: Vec<_> = template.trim_matches('/').split('/').collect();
     let actual: Vec<_> = concrete.trim_matches('/').split('/').collect();
@@ -442,6 +470,45 @@ A resilient spec-driven URL shortener.
         assert!(!path_matches("/items/:id", "/items/:id"));
         assert!(!path_matches("/items/:id", "/items/"));
         assert!(path_matches("/items/:id", "/items/42"));
+    }
+
+    #[test]
+    fn static_route_verification_does_not_cover_dynamic_route() {
+        let markdown = r#"
+# Service: Example
+## Endpoints
+### `GET /items/:id`
+- Response `200`: item
+### `GET /items/fixed`
+- Response `200`: fixed
+## Verification
+### `GET /items/fixed`
+- Response `200`
+"#;
+        let spec = ServiceSpec::parse(markdown).unwrap();
+        assert!(spec
+            .validate_verification()
+            .unwrap_err()
+            .contains("/items/:id"));
+    }
+
+    #[test]
+    fn static_and_dynamic_routes_can_be_verified_independently() {
+        let markdown = r#"
+# Service: Example
+## Endpoints
+### `GET /items/:id`
+- Response `200`: item
+### `GET /items/fixed`
+- Response `200`: fixed
+## Verification
+### `GET /items/42`
+- Response `200`
+### `GET /items/fixed`
+- Response `200`
+"#;
+        let spec = ServiceSpec::parse(markdown).unwrap();
+        spec.validate_verification().unwrap();
     }
 
     #[test]
