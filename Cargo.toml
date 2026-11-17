@@ -1,0 +1,48 @@
+[package]
+name = "nosrc"
+version = "0.1.0"
+edition = "2021"
+authors = ["nosrc contributors"]
+description = "Zero-Codebase, Spec-to-Wasm Autonomous Cluster Runtime"
+license = "Apache-2.0"
+
+[dependencies]
+# Async & Web
+tokio = { version = "1.43", features = ["full"] }
+axum = { version = "0.8", features = ["macros"] }
+tower = { version = "0.5" }
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+# Wasmtime & Sandboxing
+wasmtime = { version = "29", features = ["component-model", "wat"] }
+wasmtime-wasi = { version = "29" }
+
+# State & Persistence
+rusqlite = { version = "0.33", features = ["bundled"] }
+redb = "2.3"
+
+# Lock-Free Hot-Swapping & Concurrency
+arc-swap = "1.7"
+dashmap = "6.1"
+
+# CLI, Config & File Watching
+clap = { version = "4.5", features = ["derive", "env"] }
+notify = "8.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error Handling & Utilities
+anyhow = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1.13", features = ["v7"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
