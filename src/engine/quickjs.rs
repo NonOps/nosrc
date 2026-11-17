@@ -284,8 +284,11 @@ mod tests {
 
         let result = handler.invoke(&request("/memory"));
         assert!(
-            result.is_err(),
-            "A 128 MiB guest allocation must not succeed with a 64 MiB memory cap"
+            matches!(
+                result,
+                Err(EngineError::Trap(SandboxTrap::GuestPanic(_)))
+            ),
+            "Expected the guest allocation to fail under the 64 MiB memory cap, got: {result:?}"
         );
     }
 
