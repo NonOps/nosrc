@@ -328,11 +328,11 @@ fn path_matches(template: &str, concrete: &str) -> bool {
     let expected: Vec<_> = template.trim_matches('/').split('/').collect();
     let actual: Vec<_> = concrete.trim_matches('/').split('/').collect();
     expected.len() == actual.len()
-        && expected.iter().zip(actual.iter()).all(|(e, a)| {
-            if e.starts_with(':') {
-                !a.is_empty()
+        && expected.iter().zip(actual.iter()).all(|(expected, actual)| {
+            if expected.starts_with(':') {
+                !actual.is_empty() && !actual.starts_with(':')
             } else {
-                e == a
+                expected == actual
             }
         })
 }
@@ -432,6 +432,13 @@ A resilient spec-driven URL shortener.
         assert_eq!(spec.verification[0].path, "/items/42");
         assert_eq!(spec.verification[0].expected_status, Some(200));
         assert_eq!(spec.verification[0].body_contains.as_deref(), Some("item"));
+    }
+
+    #[test]
+    fn dynamic_route_verification_rejects_unexpanded_placeholders() {
+        assert!(!path_matches("/items/:id", "/items/:id"));
+        assert!(!path_matches("/items/:id", "/items/"));
+        assert!(path_matches("/items/:id", "/items/42"));
     }
 
     #[test]
