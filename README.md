@@ -1,66 +1,75 @@
 # nosrc
 
-**nosrc** is an experimental Rust project exploring a specification-driven runtime that synthesizes WebAssembly handlers and verifies candidate behavior before deployment.
+**nosrc** is an experimental Rust service that turns a declarative `SPEC.md` into a JavaScript handler, compiles it into a QuickJS-backed WebAssembly component, verifies its contract assertions, and serves HTTP requests through the verified generation.
 
-The long-term design is described in [ARCHITECTURE.md](ARCHITECTURE.md). That document is a target architecture, not a statement that every described subsystem is implemented.
+The current implementation is a runnable single-process prototype, not a production-ready application runtime.
 
-## Current status
+## Current implementation
 
-This repository is an early prototype, not a production-ready application runtime.
+- Loads and parses the configured `SPEC.md`.
+- Calls an OpenAI-compatible chat-completions endpoint to synthesize a self-contained JavaScript ES module and contract assertions.
+- Componentizes JavaScript in-process with `componentize-qjs` and executes it with Wasmtime's component model.
+- Applies Wasm fuel and linear-memory limits to the component store.
+- Runs the complete assertion suite against an isolated candidate instance before activation.
+- Keeps the production handler instance separate from the verifier so test requests cannot mutate its initial state.
+- Routes HTTP requests to the active generation and exposes health/status endpoints.
+- Preserves JavaScript module-level state between requests handled by the same active generation.
 
-Currently present:
+## Deliberate limitations
 
-- A Wasmtime engine with instruction-fuel metering and a per-instance linear-memory limiter
-- A host ABI with initial embedded SQLite / redb capabilities and outbound HTTP support
-- HTTP request and response envelope types
-- An initial Markdown SPEC parser
-- An OpenAI-compatible synthesis client and structured output types
-- A shadow verifier for Wasm modules and contract assertions
-- An Axum ingress router implementation with a hot-swappable active-generation pointer
+- State is currently in-memory JavaScript module state. It survives requests within one active generation, but not process restarts or handler replacement.
+- Candidate verification uses the generated assertions, which are useful contract checks but are not independent proof of correctness.
+- The first WIT world exposes only the handler entrypoint. Guest code has no filesystem, process, network, database, or key-value host capability.
+- Requests to one active handler instance are serialized to preserve its JavaScript state.
+- There is no automatic rebuild, file watching, self-healing, automatic rollback, external persistence, or Kubernetes orchestration.
+- Outbound HTTP, SQL, and durable KV capabilities are not exposed to generated code.
 
-Important gaps:
-
-- The CLI loads and parses `SPEC.md`, initializes Wasmtime, and starts the HTTP server. It does **not** yet synthesize, compile, verify, or activate a handler.
-- The end-to-end SPEC → JavaScript synthesis → QuickJS componentization → verification → activation pipeline is not wired together.
-- JavaScript execution through embedded QuickJS is not implemented; the current engine still executes core Wasm modules using the legacy host ABI.
-- Automatic handler regeneration, file watching, hot-reload orchestration, and rollback are not implemented.
-- The external-state mode and its external database/cache integrations are not implemented.
-- The current verifier is a prototype; its isolation and state-lifecycle model still needs further design and testing.
-
-Do not use this prototype to serve production traffic or execute untrusted generated code.
+Do not use this prototype to serve production traffic or execute untrusted generated code without additional security review.
 
 ## Requirements
 
-- A stable Rust toolchain supported by the pinned dependency versions
+- Rust 1.97 or later
 - Cargo
+- An OpenAI-compatible API key
+
+## Configuration
+
+`LLM_API_KEY` is required. Optional variables:
+
+- `LLM_BASE_URL` (default: `https://api.openai.com/v1`)
+- `LLM_MODEL` (default: `gpt-4o-mini`)
 
 ## Build and test
 
 ```sh
-cargo fmt --check
+cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo test --all-targets
 ```
 
-Start the example service:
+## Run
 
 ```sh
+export LLM_API_KEY="..."
 cargo run -- --spec ./examples/minimal/SPEC.md --port 8080
 ```
 
-Show the current CLI options:
+The service synthesizes, componentizes, and verifies a handler before binding the HTTP listener. Startup fails closed if synthesis, compilation, instantiation, or any contract assertion fails.
+
+Check process health and the active generation:
 
 ```sh
-cargo run -- --help
+curl http://localhost:8080/healthz
+curl http://localhost:8080/_nosrc/status
 ```
 
-The binary starts an HTTP service after loading the selected SPEC. `GET /healthz` returns process health and `GET /_nosrc/status` reports whether a verified handler generation is active. Until one is activated, application routes return `503 Service Unavailable`.
+Application routes are dispatched to the active verified JavaScript handler.
 
-## Design and security
+## Architecture and security
 
-Read [ARCHITECTURE.md](ARCHITECTURE.md) for the intended system design and [AGENTS.md](AGENTS.md) for repository-specific engineering constraints.
+Read [ARCHITECTURE.md](ARCHITECTURE.md) for the implemented lifecycle and next milestones, and [AGENTS.md](AGENTS.md) for repository-specific engineering constraints.
 
-The security model is not yet complete. In particular, outbound HTTP policy needs redirect-target and DNS-resolution protections before it can be treated as a robust SSRF boundary. Generated assertions are inputs to verification, not independent proof of correctness. A production deployment path must also establish artifact provenance, state migration semantics, bounded resource use, and safe rollback.
+The security model remains incomplete. In particular, host capabilities are not exposed yet; when they are added, each must have a narrow WIT contract and explicit capability checks. Outbound HTTP must validate DNS answers and every redirect target before it can be treated as a robust SSRF boundary. Resource limits, candidate assertions, artifact provenance, and state lifecycle need additional testing before production use.
 
 ## License
 
