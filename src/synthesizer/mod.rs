@@ -74,7 +74,7 @@ async fn read_limited_body(
         .is_some_and(|length| length > max_bytes as u64)
     {
         return Err(EngineError::Internal(format!(
-            "LLM response exceeds the {max_bytes} byte limit"
+            "provider response exceeds the {max_bytes} byte limit"
         )));
     }
 
@@ -230,3 +230,38 @@ Assertions must cover every endpoint's documented success response and at least 
         Ok(output)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::routing::get;
+    use axum::Router;
+
+    #[tokio::test]
+    async fn provider_response_content_length_is_checked_before_reading() {
+        let app = Router::new().route("/large", get(|| async { Body::from("0123456789") }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let response = reqwest::get(format!("http://{address}/large"))
+            .await
+            .unwrap();
+        let error = read_limited_body(response, 5).await.unwrap_err();
+        assert!(error.to_string().contains("provider response exceeds the 5 byte limit"));
+
+        let _ = shutdown_tx.send(());
+        server.await.unwrap();
+    }
+}
+
