@@ -249,7 +249,7 @@ mod tests {
             Some("1")
         );
         assert_eq!(
-            handler.invoke(&request()).unwrap().body.as_deref(),
+            handler.invoke(&request("/counter")).unwrap().body.as_deref(),
             Some("2")
         );
     }
