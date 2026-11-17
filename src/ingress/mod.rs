@@ -10,7 +10,7 @@ use wasmtime::Module;
 
 use crate::engine::host_abi::HostCapabilities;
 use crate::engine::http_envelope::{ErrorEnvelope, RequestEnvelope};
-use crate::engine::{WasmEngine, DEFAULT_FUEL_BUDGET};
+use crate::engine::WasmEngine;
 use crate::error::EngineError;
 
 /// Active generation representing the currently deployed, shadow-verified Wasm module
@@ -108,6 +108,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use std::collections::HashSet;
+    use crate::engine::DEFAULT_FUEL_BUDGET;
     use tower::ServiceExt;
 
     #[tokio::test]
