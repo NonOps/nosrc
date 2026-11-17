@@ -102,7 +102,17 @@ async fn handle_http_request(
         .into_axum_response();
     };
 
-    let envelope = RequestEnvelope::from_parts(&method, &uri, &headers, body);
+    let envelope = match RequestEnvelope::try_from_parts(&method, &uri, &headers, body) {
+        Ok(envelope) => envelope,
+        Err(_) => {
+            return ErrorEnvelope {
+                error: "Request body must be valid UTF-8 for this handler ABI".to_string(),
+                error_type: "InvalidRequestBody".to_string(),
+                status: StatusCode::BAD_REQUEST.as_u16(),
+            }
+            .into_axum_response();
+        }
+    };
     let handler = active.handler.clone();
 
     let execution = tokio::task::spawn_blocking(move || {
