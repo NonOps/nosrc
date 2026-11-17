@@ -20,10 +20,10 @@ Currently present:
 
 Important gaps:
 
-- The CLI currently initializes the Wasmtime engine and exits. It does **not** start the ingress server or load and deploy a SPEC.
-- The end-to-end SPEC → synthesis → compile → verify → activation pipeline is not wired together.
-- The embedded QuickJS / Wizer snapshotting path described in the architecture is not implemented.
-- Autonomous regression capture, healing, and rollback are not implemented.
+- The CLI loads and parses `SPEC.md`, initializes Wasmtime, and starts the HTTP server. It does **not** yet synthesize, compile, verify, or activate a handler.
+- The end-to-end SPEC → JavaScript synthesis → QuickJS componentization → verification → activation pipeline is not wired together.
+- JavaScript execution through embedded QuickJS is not implemented; the current engine still executes core Wasm modules using the legacy host ABI.
+- Automatic handler regeneration, file watching, hot-reload orchestration, and rollback are not implemented.
 - The external-state mode and its external database/cache integrations are not implemented.
 - The current verifier is a prototype; its isolation and state-lifecycle model still needs further design and testing.
 
@@ -48,7 +48,7 @@ Show the current CLI options:
 cargo run -- --help
 ```
 
-At this stage, invoking the binary initializes the Wasmtime engine and exits; it does not launch an HTTP service.
+The binary starts an HTTP service after loading `SPEC.md`. `GET /healthz` returns process health and `GET /_nosrc/status` reports whether a verified handler generation is active. Until one is activated, application routes return `503 Service Unavailable`.
 
 ## Design and security
 
