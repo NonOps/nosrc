@@ -1,139 +1,89 @@
-# `nosrc` — Architecture Document
-**Zero-Codebase, Spec-to-Wasm Autonomous Cluster Runtime**
+# nosrc architecture
 
-## 1. Executive Summary & Core Philosophy
-`nosrc` eliminates source code repositories, build pipelines, container registries, and deployment manifests. Developers deploy a **single static Rust binary** into a cluster or host, provide an OpenAI-compatible LLM endpoint (`LLM_API_KEY`, `LLM_BASE_URL`), and mount or push a declarative specification (`SPEC.md`).
+## Status and scope
 
-`nosrc` continuously synthesizes, compiles, verifies, and hot-swaps isolated WebAssembly (Wasm) modules entirely in memory. When live traffic triggers unhandled edge cases, `nosrc` captures the failing interaction, updates its internal regression suite, regenerates the Wasm module, verifies behavioral compliance in a shadow sandbox, and atomically swaps traffic with zero dropped connections.
+nosrc is an experimental, single-process Rust service. The repository is not production-ready and the architecture below distinguishes the working bootstrap from the intended runtime.
 
-### Design Principles
-1. **Single-Binary Autonomy:** Zero external compilers, CLIs, Node/Python runtimes, or orchestration frameworks required inside the container.
-2. **Capability-Based Security:** AI-synthesized logic runs strictly inside a `wasmtime` sandbox with deterministic CPU fuel limits, memory caps, and explicit host-function allowlists.
-3. **Atomic Zero-Downtime Evolution:** Traffic never routes to unverified Wasm bytecode. Every mutation passes contract assertions in a shadow pool before pointer swap.
-4. **Pluggable Persistence:** Runs stateful out of the box with embedded SQLite/KV (`--state embedded`), or completely stateless when wired to external databases (`--state external`).
+The current executable:
 
----
+1. Reads and parses the configured `SPEC.md`.
+2. Initializes the existing Wasmtime core-module engine.
+3. Starts an HTTP server.
+4. Exposes `GET /healthz` and `GET /_nosrc/status`.
+5. Returns `503 Service Unavailable` for application requests until a verified handler generation is activated.
 
-## 2. High-Level System Architecture
+The end-to-end SPEC-to-handler pipeline is not yet wired together. The existing synthesizer, verifier, ingress dispatch, and host ABI are prototypes, not a production deployment path.
 
-    External Inputs:
-      • Live HTTP/Webhook Traffic (:8080)
-      • SPEC.md (File Watcher / Control API)
-      • OpenAI-Compatible LLM Endpoint
-                        │
-                        ▼
-    ┌──────────────────────────────────────────────────────────────────────┐
-    │                    `nosrc` Single Static Binary                      │
-    │                                                                      │
-    │  ┌──────────────────────┐  ArcSwap   ┌────────────────────────────┐  │
-    │  │   Axum Ingress &     │ ─────────► │ Active Wasm Execution Pool │  │
-    │  │   Control Plane      │            │  Wasmtime + QuickJS Wasm   │  │
-    │  └──────────┬───────────┘            │  (Fuel-Metered Sandbox)    │  │
-    │             │                        └─────────────┬──────────────┘  │
-    │             ▼                                      │ Host ABI        │
-    │  ┌──────────────────────┐            ┌─────────────▼──────────────┐  │
-    │  │  Autonomous Evolution│            │ Pluggable Host Capabilities│  │
-    │  │  & Healing Loop      │            │ • Embedded: SQLite + redb  │  │
-    │  │  1. Spec/Error Diff  │            │ • External: Postgres/HTTP  │  │
-    │  │  2. LLM Synthesis    │            │ • Secrets, Clock, Crypto   │  │
-    │  │  3. Wizer Snapshot   │            └────────────────────────────┘  │
-    │  │  4. Shadow Verifier  │                                            │
-    │  └──────────────────────┘                                            │
-    └──────────────────────────────────────────────────────────────────────┘
+## Decisions
 
----
+- **Handler language:** JavaScript (ES modules). Do not switch the public handler contract to WAT.
+- **JavaScript runtime:** embedded QuickJS compiled into a WebAssembly component.
+- **Componentization:** integrate `componentize-qjs` with a matching Wasmtime component-model host. Keep one Wasmtime major version in the executable.
+- **Deployment model:** single-node, single-process runtime first. No Kubernetes operator or cluster-level automation in the initial implementation.
+- **State:** embedded state is the first supported target. External database/cache integrations are deferred until the embedded request path is proven.
+- **Activation:** a candidate must compile, pass contract verification, and only then become active. A failed candidate must leave the previous generation untouched.
+- **Operations:** health and status endpoints are part of the initial service contract.
 
-## 3. Core Subsystems
+## Current components
 
-### 3.1 Ingress & Control Plane (`axum` + `tokio`)
-* **Data Plane (`:8080`):** Accepts all incoming HTTP/JSON/Webhook traffic, serializes request envelopes (method, path, headers, query, body) into a compact binary/JSON payload, and dispatches them to the active Wasm module pool.
-* **Control Plane (`:9090` or Unix Socket / File Watcher):**
-  * Watches `SPEC.md` via `notify` (inotify/kqueue) for instant local updates.
-  * Exposes `POST /_nosrc/spec` for remote CI-less spec pushes.
-  * Exposes `GET /_nosrc/status` and `GET /_nosrc/generations` for inspecting active Wasm hashes, fuel usage, and self-healing history.
+### CLI and process
 
-### 3.2 In-Memory Synthesis & Compilation Pipeline
-To achieve ~20–30 ms cold-start and hot-swap latency without bundling heavy LLVM toolchains:
-1. **Base Runtime Embedding:** At build time, `nosrc` embeds a pre-compiled QuickJS Wasm binary (`quickjs_base.wasm`, ~1.5 MB) via `include_bytes!`.
-2. **Code & Contract Synthesis:** When `SPEC.md` updates (or a runtime anomaly occurs), the **Synthesizer** sends the spec, active database schema, and accumulated regression cases to the configured LLM endpoint. The LLM returns a structured JSON payload containing:
-   * `handler_js`: Pure ES2023 handler module exporting `handle(req)`.
-   * `assertions`: Executable contract tests (`input` -> `expected_status` / `schema_match`).
-3. **In-Memory Heap Snapshotting (`wizer`):** Instead of parsing JS on every HTTP request, `nosrc` instantiates `quickjs_base.wasm` in memory, evaluates `handler_js` once during initialization, and snapshots the initialized linear memory into a standalone, ready-to-execute `.wasm` module (`wasmtime::Module`).
+The CLI accepts a SPEC path, state-mode selection, and HTTP port. It loads the specification, initializes the engine, and starts the Axum server. The state-mode flag is currently configuration metadata; it does not imply that all persistence modes are implemented.
 
-### 3.3 Shadow Verifier & Atomic Hot-Swap (`ArcSwap`)
-* **Shadow Sandbox:** Every newly compiled `wasmtime::Module` is instantiated against an isolated ephemeral state clone (in-memory SQLite `:memory:` or transactional rollback) and executed against all synthesized and historical regression assertions.
-* **Gatekeeping:** If any assertion fails or exceeds the fuel budget, the candidate module is rejected and the error trace is fed back to the Synthesizer (up to `MAX_RETRIES = 3`).
-* **Zero-Downtime Swap:** Once verified, `nosrc` swaps the global `ArcSwap<ActiveGeneration>` pointer. In-flight requests finish cleanly on the previous generation; new requests immediately hit the new generation.
+### HTTP ingress
 
-### 3.4 Pluggable Host Capabilities (ABI Boundary)
-Wasm modules have zero direct OS, filesystem, or network access. All side effects cross a strict, versioned Host ABI (`nosrc:runtime/host@0.1.0`):
+The ingress layer accepts HTTP requests and converts them to the internal request envelope before dispatch. Health and status endpoints are handled by the host. Application requests return 503 while no generation is active.
 
-| Capability | `--state embedded` (Default) | `--state external` |
-| :--- | :--- | :--- |
-| **Relational DB** | Enabled (`rusqlite` bundled with WAL mode) | **Disabled** (Host returns `ERR_CAPABILITY_DISABLED`) |
-| **Key-Value Store** | Enabled (`redb` embedded ACID store) | **Disabled** (Host returns `ERR_CAPABILITY_DISABLED`) |
-| **External DB / Cache** | Optional via env vars | Enabled (`DATABASE_URL` via `sqlx`, `REDIS_URL`) |
-| **Outbound HTTP** | Allowlisted domains from `SPEC.md` | Allowlisted domains from `SPEC.md` |
-| **Determinism & Clock** | Host-provided UTC timestamp & UUIDv7 | Host-provided UTC timestamp & UUIDv7 |
+### Existing Wasmtime engine
 
-### 3.5 Autonomous Self-Healing Loop
-1. **Anomaly Capture:** If the active Wasm module panics, runs out of fuel, or returns an unhandled `5xx` error not defined in `SPEC.md`, the ingress layer captures the sanitized request envelope and stack trace.
-2. **Deduplication & Rate Limiting:** Errors are hashed by route + error signature (`DashMap`) with a circuit breaker to prevent LLM token storms during traffic spikes.
-3. **Regression Promotion:** The failing request is converted into a permanent regression test case stored in `.nosrc/regressions.json`.
-4. **Autonomous Patch & Swap:** The Synthesizer generates an updated module that satisfies both `SPEC.md` and the new regression test, verifies it in the shadow sandbox, and hot-swaps production traffic automatically.
+The current engine executes core Wasm modules through a custom host ABI. It has fuel metering and a linear-memory limiter. This is legacy scaffolding and is not the selected JavaScript execution architecture.
 
----
+### Synthesis and verification prototypes
 
-## 4. Security & Sandboxing Model
-Running AI-generated logic in production requires defense-in-depth:
-* **CPU Fuel Metering:** `wasmtime::Config::consume_fuel(true)` assigns a strict instruction budget per request (default: `50_000_000` fuel units, ~50ms CPU). Infinite loops trap deterministically without affecting other worker threads.
-* **Memory Caps:** `ResourceLimiter` restricts each Wasm instance linear memory to `64 MB` max.
-* **Egress Allowlisting:** `host_http_fetch` blocks all private RFC1918/link-local IP ranges (`169.254.169.254` cloud metadata protection) and permits only domains explicitly declared in `SPEC.md`.
-* **SQL Parameterization:** `host_db_query(sql, params_json)` enforces bound parameters only, preventing SQL injection even if synthesized handler logic is flawed.
+The repository contains an OpenAI-compatible synthesis client, contract assertion types, and a shadow verifier. They are not yet connected to process startup or handler activation. The verifier's state isolation and lifecycle need correction before it can gate stateful candidates.
 
----
+## Target request lifecycle
 
-## 5. Configuration & Deployment Contract
+1. Load and validate the declarative service specification.
+2. Synthesize a JavaScript ES module implementing the handler contract and its assertions.
+3. Componentize the JavaScript with the pinned QuickJS toolchain and the repository's WIT contract.
+4. Instantiate the component in a Wasmtime component-model store with bounded fuel, memory, and explicitly granted host capabilities.
+5. Run contract assertions against isolated candidate state.
+6. Reject the candidate on any compilation, instantiation, trap, fuel exhaustion, or assertion failure.
+7. Atomically activate only a fully verified candidate.
+8. Route HTTP requests to the active generation; retain the previous generation until in-flight requests finish.
 
-### Environment Variables & CLI Flags
+No candidate is active merely because synthesis or componentization succeeded.
 
-    nosrc run \
-      --spec ./SPEC.md \
-      --listen 0.0.0.0:8080 \
-      --state embedded \              # Options: embedded | external
-      --data-dir /var/lib/nosrc \     # Used only when --state embedded
-      --max-fuel 50000000 \
-      --self-heal true
+## First implementation milestone
 
-Required environment variables:
-* `LLM_API_KEY`: API key for synthesis/healing.
-* `LLM_BASE_URL`: OpenAI-compatible endpoint (e.g., `https://openai.com`, OpenRouter, or local `vLLM`/`Ollama`).
-* `LLM_MODEL`: Target model identifier (e.g., `gpt-4o`, `claude-3-7-sonnet`, `qwen-2.5-coder-32b`).
+The first complete runnable milestone must demonstrate all of the following in integration tests:
 
-### Reference `SPEC.md` Format
+- A JavaScript handler can be compiled/componentized and loaded.
+- An HTTP request reaches the JavaScript handler and receives the expected response.
+- State written by one request is visible to a later request.
+- Fuel exhaustion and memory-limit violations are contained and reported.
+- An invalid candidate is rejected without replacing the active generation.
+- The service remains running and exposes health/status endpoints.
 
-    # Service: URL Shortener & Analytics
-    ## Capabilities
-    - state: embedded (sqlite)
-    - egress: []
+Keep this milestone single-process and embedded-state only. Do not add file watching, automatic rebuilds, self-healing, automatic rollback, external persistence, or Kubernetes orchestration as part of it.
 
-    ## Schema
-    - `links(code TEXT PRIMARY KEY, target_url TEXT NOT NULL, clicks INTEGER DEFAULT 0, created_at TEXT)`
+## Security requirements before production use
 
-    ## Endpoints
-    ### `POST /shorten`
-    - Body: `{ "url": string }`
-    - Rules: Validate valid http/https URL. Generate 6-char alphanumeric code. Store in `links`.
-    - Response `201`: `{ "code": string, "short_url": string }`
+- Guest code must not receive ambient filesystem, process, or network access.
+- Host capabilities must be explicitly declared, narrowly scoped, and tested for disabled-by-default behavior.
+- Any outbound HTTP capability must validate DNS answers and every redirect target, including IPv4 and IPv6 private, loopback, link-local, and metadata ranges.
+- Database operations need query, row-count, result-size, and execution-time bounds.
+- Guest request and response sizes must be bounded; request bodies must not be silently converted with lossy UTF-8 decoding.
+- Candidate verification must use isolated state and must not create persistent temporary artifacts.
+- Resource limits must be tested against the actual QuickJS component runtime, not inferred from core-module tests.
 
-    ### `GET /:code`
-    - Rules: Lookup `code`. If missing return `404`. Increment `clicks` atomically and return `302` redirect to `target_url`.
+## Deferred work
 
----
+- Automatic self-healing or production-error-driven regeneration.
+- File watching and automatic handler rebuilds.
+- External PostgreSQL/Redis integrations.
+- Multi-node coordination, Kubernetes operators, and cluster automation.
+- Automated rollback and long-running control-plane workflows.
 
-## 6. Implementation Roadmap (Milestones)
-
-1. **Milestone 1 — The Wasm Heart (`engine/`):** Boot `wasmtime` with `quickjs_base.wasm`, implement `host_abi.rs` with `--state embedded` (SQLite + `redb`) and `--state external` capability toggles, and serve a hardcoded JS handler via `axum`.
-2. **Milestone 2 — Spec-to-Module Compiler (`synthesizer/`):** Watch `SPEC.md`, call the LLM endpoint to generate `handler_js` + JSON contract tests, verify in shadow sandbox, and swap via `ArcSwap`.
-3. **Milestone 3 — Autonomous Self-Healer (`healer/`):** Wire 5xx/trap telemetry into the regression store and enable automatic background regeneration with circuit breakers.
-4. **Milestone 4 — Release Packaging:** Cross-compile static Linux/macOS binaries (x86_64-unknown-linux-musl, aarch64-apple-darwin), publish a 10-line Kubernetes manifest, and ship a 60-second terminal demo recording.
+These are intentionally deferred until the first runnable handler lifecycle is complete and tested.
