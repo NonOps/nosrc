@@ -184,6 +184,12 @@ pub(crate) mod test_support {
                 while (true) {}
             }
 
+            if (request.path === "/memory") {
+                // Force QuickJS to grow its Wasm linear memory beyond the 64 MiB store limit.
+                new Uint8Array(128 * 1024 * 1024);
+                return JSON.stringify({ status: 200, headers: {}, body: "unexpected allocation success" });
+            }
+
             if (request.path === "/error") {
                 return JSON.stringify({ status: 500, headers: {}, body: "failed" });
             }
@@ -267,6 +273,20 @@ mod tests {
         let engine = QuickJsEngine::new().unwrap();
         let result = engine.compile_handler("export function handle( {").await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn javascript_memory_growth_is_limited_by_store_budget() {
+        let (engine, compiled) = test_support::compiled().await;
+        let mut handler = engine
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .unwrap();
+
+        let result = handler.invoke(&request("/memory"));
+        assert!(
+            result.is_err(),
+            "A 128 MiB guest allocation must not succeed with a 64 MiB memory cap"
+        );
     }
 
     #[tokio::test]
