@@ -205,8 +205,7 @@ mod tests {
         let mut failing_assertion = assertion(200, None);
         failing_assertion.request.path = "/error".to_string();
 
-        let result = ShadowVerifier::new()
-            .verify_handler(&mut candidate, &[failing_assertion]);
+        let result = ShadowVerifier::new().verify_handler(&mut candidate, &[failing_assertion]);
 
         assert!(result.is_err());
     }
