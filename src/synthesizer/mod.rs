@@ -1,8 +1,14 @@
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 use crate::engine::http_envelope::RequestEnvelope;
 use crate::error::EngineError;
 use crate::spec::ServiceSpec;
+
+const LLM_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+const LLM_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_LLM_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_LLM_ERROR_BYTES: usize = 8 * 1024;
 
 /// Configuration for the OpenAI-compatible LLM endpoint
 #[derive(Debug, Clone)]
@@ -58,6 +64,37 @@ pub struct SynthesisOutput {
     pub rationale: Option<String>,
 }
 
+/// Read a provider response without allowing an unbounded body allocation.
+async fn read_limited_body(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, EngineError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(EngineError::Internal(format!(
+            "LLM response exceeds the {max_bytes} byte limit"
+        )));
+    }
+
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| EngineError::Internal(format!("Failed to read LLM response: {error}")))?
+    {
+        if body.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(EngineError::Internal(format!(
+                "LLM response exceeds the {max_bytes} byte limit"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    Ok(body)
+}
+
 /// Synthesizer service managing LLM prompt construction and schema enforcement
 pub struct Synthesizer {
     config: LlmConfig,
@@ -70,6 +107,8 @@ impl Synthesizer {
             config,
             client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::limited(3))
+                .connect_timeout(LLM_CONNECT_TIMEOUT)
+                .timeout(LLM_REQUEST_TIMEOUT)
                 .build()
                 .unwrap_or_default(),
         }
@@ -167,13 +206,15 @@ Assertions must cover every endpoint's documented success response and at least 
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let err_text = resp.text().await.unwrap_or_default();
+            let error_bytes = read_limited_body(resp, MAX_LLM_ERROR_BYTES).await?;
+            let err_text = String::from_utf8_lossy(&error_bytes);
             return Err(EngineError::Internal(format!(
                 "LLM returned HTTP {status}: {err_text}"
             )));
         }
 
-        let resp_json: serde_json::Value = resp.json().await.map_err(|e| {
+        let response_bytes = read_limited_body(resp, MAX_LLM_RESPONSE_BYTES).await?;
+        let resp_json: serde_json::Value = serde_json::from_slice(&response_bytes).map_err(|e| {
             EngineError::Internal(format!("Failed to parse LLM response JSON: {e}"))
         })?;
 
