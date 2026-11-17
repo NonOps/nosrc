@@ -42,13 +42,19 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
+Start the example service:
+
+```sh
+cargo run -- --spec ./examples/minimal/SPEC.md --port 8080
+```
+
 Show the current CLI options:
 
 ```sh
 cargo run -- --help
 ```
 
-The binary starts an HTTP service after loading `SPEC.md`. `GET /healthz` returns process health and `GET /_nosrc/status` reports whether a verified handler generation is active. Until one is activated, application routes return `503 Service Unavailable`.
+The binary starts an HTTP service after loading the selected SPEC. `GET /healthz` returns process health and `GET /_nosrc/status` reports whether a verified handler generation is active. Until one is activated, application routes return `503 Service Unavailable`.
 
 ## Design and security
 
