@@ -139,8 +139,6 @@ async fn main() -> anyhow::Result<()> {
         anyhow::anyhow!("Failed to parse SPEC at {}: {error}", cli.spec.display())
     })?;
 
-    validate_runtime_spec(&spec)?;
-
     tracing::info!(
         service = %spec.name,
         endpoints = spec.endpoints.len(),
