@@ -1,6 +1,6 @@
 # Service: Minimal Example
 
-A minimal specification used to start the nosrc HTTP process while the handler runtime is being completed.
+A minimal service specification for the nosrc JavaScript runtime.
 
 ## Capabilities
 - state: volatile
