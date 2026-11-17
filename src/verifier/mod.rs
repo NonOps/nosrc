@@ -146,7 +146,7 @@ fn evaluate_response(
 mod tests {
     use super::*;
     use crate::engine::http_envelope::RequestEnvelope;
-    use crate::engine::quickjs::{QuickJsEngine, DEFAULT_COMPONENT_FUEL};
+    use crate::engine::quickjs::{test_support, DEFAULT_COMPONENT_FUEL};
     use std::collections::HashMap;
 
     fn assertion(expected_status: u16, body_contains: Option<&str>) -> ContractAssertion {
@@ -167,23 +167,9 @@ mod tests {
 
     #[tokio::test]
     async fn verifier_approves_a_valid_javascript_candidate() {
-        let engine = QuickJsEngine::new().unwrap();
-        let compiled = engine
-            .compile_handler(
-                r#"
-                export function handle(requestJson) {
-                    return JSON.stringify({
-                        status: 200,
-                        headers: { "content-type": "text/plain" },
-                        body: "healthy"
-                    });
-                }
-                "#,
-            )
-            .await
-            .unwrap();
+        let (engine, compiled) = test_support::compiled().await;
         let mut candidate = engine
-            .instantiate(&compiled, DEFAULT_COMPONENT_FUEL)
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
             .unwrap();
 
         let results = ShadowVerifier::new()
@@ -196,17 +182,9 @@ mod tests {
 
     #[tokio::test]
     async fn verifier_rejects_an_empty_assertion_suite() {
-        let engine = QuickJsEngine::new().unwrap();
-        let compiled = engine
-            .compile_handler(
-                r#"export function handle() {
-                    return JSON.stringify({ status: 200, headers: {}, body: "ok" });
-                }"#,
-            )
-            .await
-            .unwrap();
+        let (engine, compiled) = test_support::compiled().await;
         let mut candidate = engine
-            .instantiate(&compiled, DEFAULT_COMPONENT_FUEL)
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
             .unwrap();
 
         let error = ShadowVerifier::new()
@@ -220,53 +198,39 @@ mod tests {
 
     #[tokio::test]
     async fn verifier_rejects_a_candidate_that_fails_an_assertion() {
-        let engine = QuickJsEngine::new().unwrap();
-        let compiled = engine
-            .compile_handler(
-                r#"export function handle() {
-                    return JSON.stringify({ status: 500, headers: {}, body: "failed" });
-                }"#,
-            )
-            .await
-            .unwrap();
+        let (engine, compiled) = test_support::compiled().await;
         let mut candidate = engine
-            .instantiate(&compiled, DEFAULT_COMPONENT_FUEL)
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
             .unwrap();
+        let mut failing_assertion = assertion(200, None);
+        failing_assertion.request.path = "/error".to_string();
 
-        let result = ShadowVerifier::new().verify_handler(&mut candidate, &[assertion(200, None)]);
+        let result = ShadowVerifier::new()
+            .verify_handler(&mut candidate, &[failing_assertion]);
 
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn assertions_share_candidate_module_state_in_order() {
-        let engine = QuickJsEngine::new().unwrap();
-        let compiled = engine
-            .compile_handler(
-                r#"
-                let count = 0;
-                export function handle() {
-                    count += 1;
-                    return JSON.stringify({ status: 200, headers: {}, body: String(count) });
-                }
-                "#,
-            )
-            .await
-            .unwrap();
+        let (engine, compiled) = test_support::compiled().await;
         let mut candidate = engine
-            .instantiate(&compiled, DEFAULT_COMPONENT_FUEL)
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
             .unwrap();
 
+        let mut first_request = assertion(200, None).request;
+        first_request.path = "/counter".to_string();
+        let second_request = first_request.clone();
         let first = ContractAssertion {
             name: "first call".to_string(),
-            request: assertion(200, None).request,
+            request: first_request,
             expected_status: 200,
             body_contains: Some("1".to_string()),
             header_matches: None,
         };
         let second = ContractAssertion {
             name: "second call".to_string(),
-            request: assertion(200, None).request,
+            request: second_request,
             expected_status: 200,
             body_contains: Some("2".to_string()),
             header_matches: None,
