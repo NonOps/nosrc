@@ -3,9 +3,9 @@
 ## 1. Project Identity & Core Objective
 You are building **`nosrc`**, an experimental Rust service intended to turn a declarative `SPEC.md` into verified JavaScript request handlers executed in a WebAssembly sandbox.
 
-**Current implementation:** the CLI reads and parses `SPEC.md`, initializes the existing Wasmtime core-module engine, and serves HTTP health/status endpoints. The application request path returns `503` until a verified handler generation is explicitly activated. The complete synthesis-to-activation path is not implemented yet.
+**Current implementation:** the CLI reads and parses `SPEC.md`, synthesizes JavaScript and contract assertions through the configured OpenAI-compatible endpoint, componentizes the handler with `componentize-qjs`, verifies it in an isolated candidate instance, and activates a fresh production instance before starting HTTP ingress. The runtime uses Wasmtime 50 and requires Rust 1.97 or later.
 
-**Chosen direction:** JavaScript remains the handler language. The planned runtime is embedded QuickJS componentized to WebAssembly and hosted by Wasmtime's component model. Implement and validate this as a coherent execution path; do not mix two Wasmtime major versions in the binary.
+**Runtime limitations:** module-level JavaScript state persists across requests within one active generation only. Requests to a generation are serialized. No guest filesystem, process, network, SQL, KV, or WASI capabilities are exposed. Durable state, host capabilities, and hot-reload are not implemented.
 
 **Explicitly out of scope:** autonomous self-healing, automatic regeneration from production failures, and automatic rollback.
 
@@ -13,20 +13,20 @@ You are building **`nosrc`**, an experimental Rust service intended to turn a de
 
 ## 2. Hard Architectural Invariants (Never Violate)
 1. **Zero External Runtime Dependencies:** Never shell out to `node`, `npm`, `cargo`, `rustc`, `gcc`, `python`, or external CLI tools at runtime. Everything must compile, snapshot, and execute in-process inside one static Rust binary (`musl`-compatible).
-2. **Strict Capability Isolation:** Wasm guest code must have zero direct OS, filesystem, or socket access. Every side effect must cross the explicit Host ABI boundary (`src/engine/host_abi.rs`).
-3. **Honest State-Mode Semantics:** The current `--state` option is parsed and logged only. Do not claim embedded or external persistence is selected by the running service until the request lifecycle actually wires the corresponding capability implementations.
-4. **Never Route Unverified Bytecode:** Never swap an active `wasmtime::Module` pointer until 100% of synthesized contract assertions and historical regression tests pass inside an isolated shadow sandbox.
-5. **Deterministic Sandboxing:** Every guest execution must enforce CPU fuel limits and a bounded memory budget. Prove that these limits apply to the final QuickJS component runtime before exposing it to requests.
+2. **Strict Capability Isolation:** QuickJS guest code must have zero direct OS, filesystem, process, or socket access. The current component world exposes only the handler entrypoint; do not add capabilities without a narrow WIT interface and tests.
+3. **Honest State Semantics:** JavaScript module-level state is in-memory and generation-scoped. It is not durable across restarts or handler replacement. Do not claim SQLite, redb, PostgreSQL, or Redis persistence is wired into the QuickJS request path.
+4. **Never Route Unverified Code:** Never activate a QuickJS component until it compiles, instantiates, and passes 100% of its synthesized contract assertions in an isolated candidate instance. Instantiate a separate production instance after verification.
+5. **Deterministic Sandboxing:** Every QuickJS component store must enforce CPU fuel limits and a bounded linear-memory budget. Keep tests against the component runtime, not only the legacy core-module engine.
 
 ---
 
 ## 3. Technology Stack & Approved Crates
 Keep the dependency tree lean, fast to compile, and static-link friendly:
 * **Async Runtime & HTTP:** `tokio` (full features), `axum`, `tower-http`, `reqwest` (with `rustls-tls`, never OpenSSL).
-* **Wasm Engine & Componentization:** `wasmtime` with the selected QuickJS componentization toolchain. Pin compatible versions and avoid duplicate Wasmtime major versions.
+* **Wasm Engine & Componentization:** `wasmtime = 50` and `componentize-qjs = 0.6`. Keep one Wasmtime major version in the executable; the dependency requires Rust 1.97 or later.
 * **Lock-Free Hot-Swapping & Concurrency:** `arc-swap`, `dashmap`.
-* **Embedded State:** `rusqlite` (with `bundled` feature), `redb`.
-* **External State (Optional):** `sqlx` (runtime-tokio-rustls, postgres), `redis`.
+* **State:** JavaScript module state is currently in-memory only. SQLite and redb are legacy prototypes, not exposed to the QuickJS component.
+* **External State:** deferred; do not add PostgreSQL/Redis until the embedded state contract and isolation model are designed.
 * **CLI, File Watching & Serialization:** `clap` (derive), `notify`, `serde`, `serde_json`, `anyhow`, `thiserror`, `tracing`, `tracing-subscriber`.
 
 ---
@@ -52,16 +52,14 @@ Before concluding any task, run and verify:
     cargo clippy --all-targets -- -D warnings
     cargo test
 
-Run the service with an explicit SPEC path and port:
+Run the service with an explicit SPEC path and port (requires `LLM_API_KEY`):
 
     cargo run -- --spec ./SPEC.md --port 8080
-
-The `--state` option is currently a placeholder and does not select a working persistence backend.
 
 ---
 
 ## 6. Agent Workflow When Implementing Features
 1. **Check `ARCHITECTURE.md` First:** Align module placement, CLI flags, and ABI signatures with `ARCHITECTURE.md`.
-2. **Design the Host ABI Contract Before Guest JS:** Whenever adding a capability (KV, SQL, HTTP, Crypto), define the Rust host function, error code, and capability gate first, then update the LLM system prompt schema in `src/synthesizer/`.
-3. **Write Shadow Sandbox Tests:** Every new capability or runtime behavior must include an integration test proving that invalid/malicious guest code traps cleanly without crashing the host process.
+2. **Design the WIT Contract Before Guest JS:** Whenever adding a capability (KV, SQL, HTTP, Crypto), define its WIT interface, Rust host implementation, capability gate, resource bounds, and tests first, then update the LLM system prompt in `src/synthesizer/`.
+3. **Write Component Sandbox Tests:** Every new capability or runtime behavior must include an integration test proving that invalid or resource-exhausting guest code is contained without crashing the host process.
 4. **Keep Milestones Incremental:** Complete the single-process JavaScript-to-Wasm request lifecycle, including persistence and candidate verification, before adding file watching, autonomous behavior, external persistence, dashboards, or Kubernetes operators.
