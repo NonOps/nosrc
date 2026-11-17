@@ -274,11 +274,7 @@ impl ServiceSpec {
                                     .insert(name.trim().to_lowercase(), value.trim().to_string());
                             } else if let Some(status) = item.strip_prefix("Response ") {
                                 let status = status.trim().trim_matches('`');
-                                case.expected_status = Some(status.parse().map_err(|_| {
-                                    HostAbiError::MalformedJson(format!(
-                                        "invalid verification response status '{status}'"
-                                    ))
-                                })?);
+                                case.expected_status = Some(parse_http_status(status)?);
                             } else if let Some(expected) = item.strip_prefix("Body contains:") {
                                 case.body_contains =
                                     Some(expected.trim().trim_matches('`').to_string());
@@ -303,7 +299,7 @@ impl ServiceSpec {
                                 let mut parts = resp_spec.splitn(2, ':');
                                 let status_part =
                                     parts.next().unwrap_or("200").trim().trim_matches('`');
-                                let status: u16 = status_part.parse().unwrap_or(200);
+                                let status = parse_http_status(status_part)?;
                                 let schema_part = parts.next().map(|s| s.trim().to_string());
 
                                 ep.responses.push(SpecResponse {
@@ -342,6 +338,18 @@ impl ServiceSpec {
             raw_markdown: markdown.to_string(),
         })
     }
+}
+
+fn parse_http_status(value: &str) -> Result<u16, HostAbiError> {
+    let status: u16 = value.parse().map_err(|_| {
+        HostAbiError::MalformedJson(format!("invalid HTTP response status '{value}'"))
+    })?;
+    if !(100..=599).contains(&status) {
+        return Err(HostAbiError::MalformedJson(format!(
+            "HTTP response status must be between 100 and 599, got '{value}'"
+        )));
+    }
+    Ok(status)
 }
 
 fn path_specificity(template: &str) -> usize {
@@ -526,6 +534,31 @@ A resilient spec-driven URL shortener.
 "#;
         let spec = ServiceSpec::parse(markdown).unwrap();
         assert!(spec.validate_verification().unwrap_err().contains("/two"));
+    }
+
+    #[test]
+    fn rejects_invalid_endpoint_response_status_instead_of_defaulting() {
+        let markdown = r#"
+# Service: Example
+## Endpoints
+### `GET /one`
+- Response `not-a-status`: ok
+"#;
+        assert!(ServiceSpec::parse(markdown).is_err());
+    }
+
+    #[test]
+    fn rejects_out_of_range_verification_status() {
+        let markdown = r#"
+# Service: Example
+## Endpoints
+### `GET /one`
+- Response `200`: ok
+## Verification
+### `GET /one`
+- Response `999`
+"#;
+        assert!(ServiceSpec::parse(markdown).is_err());
     }
 
     #[test]
