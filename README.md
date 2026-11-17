@@ -60,6 +60,8 @@ cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
 ```
 
+The test suite includes a deterministic end-to-end startup run against a local mock OpenAI-compatible endpoint. It exercises synthesis, QuickJS componentization, both verification suites, production activation, and HTTP dispatch without an external API key.
+
 ## Run
 
 ```sh
