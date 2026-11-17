@@ -1,3 +1,4 @@
+![nosrc logo](images/banner.png)
 # nosrc
 
 **nosrc** is an experimental Rust service that turns a declarative `SPEC.md` into a JavaScript handler, compiles it into a QuickJS-backed WebAssembly component, verifies its contract assertions, and serves HTTP requests through the verified generation.
