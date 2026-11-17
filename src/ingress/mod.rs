@@ -126,15 +126,16 @@ mod tests {
         let resp1 = app.clone().oneshot(req1).await.unwrap();
         assert_eq!(resp1.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
 
-        // 2. Prepare Generation 1: returns status 200 "gen 1"
+        // 2. Prepare Generation 1: returns status 200 "gen 1".
+        // Keep the response data separate from the engine's default request buffer at 1024.
         let wat_gen1 = r#"
             (module
                 (import "nosrc_host" "host_set_response" (func $set_resp (param i32 i32) (result i32)))
                 (memory (export "memory") 1)
-                (data (i32.const 1024) "{\"status\":200,\"headers\":{},\"body\":\"gen 1\"}")
+                (data (i32.const 4096) "{\"status\":200,\"headers\":{},\"body\":\"gen 1\"}")
 
                 (func (export "handle_request") (param i32 i32) (result i32)
-                    (call $set_resp (i32.const 1024) (i32.const 42))
+                    (call $set_resp (i32.const 4096) (i32.const 42))
                 )
             )
         "#;
@@ -155,15 +156,15 @@ mod tests {
         let resp2 = app.clone().oneshot(req2).await.unwrap();
         assert_eq!(resp2.status(), axum::http::StatusCode::OK);
 
-        // 3. Hot-swap to Generation 2: returns status 201 "gen 2"
+        // 3. Hot-swap to Generation 2: returns status 201 "gen 2".
         let wat_gen2 = r#"
             (module
                 (import "nosrc_host" "host_set_response" (func $set_resp (param i32 i32) (result i32)))
                 (memory (export "memory") 1)
-                (data (i32.const 1024) "{\"status\":201,\"headers\":{},\"body\":\"gen 2\"}")
+                (data (i32.const 4096) "{\"status\":201,\"headers\":{},\"body\":\"gen 2\"}")
 
                 (func (export "handle_request") (param i32 i32) (result i32)
-                    (call $set_resp (i32.const 1024) (i32.const 42))
+                    (call $set_resp (i32.const 4096) (i32.const 42))
                 )
             )
         "#;
