@@ -105,10 +105,10 @@ async fn handle_http_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::DEFAULT_FUEL_BUDGET;
     use axum::body::Body;
     use axum::http::Request;
     use std::collections::HashSet;
-    use crate::engine::DEFAULT_FUEL_BUDGET;
     use tower::ServiceExt;
 
     #[tokio::test]
