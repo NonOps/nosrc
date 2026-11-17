@@ -10,7 +10,7 @@ The current implementation is a runnable single-process prototype, not a product
 - Calls an OpenAI-compatible chat-completions endpoint to synthesize a self-contained JavaScript ES module and contract assertions.
 - Componentizes JavaScript in-process with `componentize-qjs` and executes it with Wasmtime's component model.
 - Applies Wasm fuel and linear-memory limits to the component store.
-- Runs the complete assertion suite against an isolated candidate instance before activation.
+- Runs human-authored verification cases from `SPEC.md` and a separate model-generated supplemental assertion suite against isolated candidate instances before activation.
 - Keeps the production handler instance separate from the verifier so test requests cannot mutate its initial state.
 - Routes HTTP requests to the active generation and exposes health/status endpoints.
 - Preserves JavaScript module-level state between requests handled by the same active generation.
@@ -18,13 +18,26 @@ The current implementation is a runnable single-process prototype, not a product
 ## Deliberate limitations
 
 - State is currently in-memory JavaScript module state. It survives requests within one active generation, but not process restarts or handler replacement.
-- Candidate verification uses the generated assertions, which are useful contract checks but are not independent proof of correctness.
+- Trusted verification cases must be authored in `SPEC.md` and cover every declared endpoint. Model-generated assertions are supplemental and cannot replace the SPEC-authored suite. Neither suite proves correctness or security.
 - The first WIT world exposes only the handler entrypoint. Guest code has no filesystem, process, network, database, or key-value host capability.
 - Requests to one active handler instance are serialized to preserve its JavaScript state.
 - There is no automatic rebuild, file watching, self-healing, automatic rollback, external persistence, or Kubernetes orchestration.
 - Outbound HTTP, SQL, and durable KV capabilities are not exposed to generated code.
 
 Do not use this prototype to serve production traffic or execute untrusted generated code without additional security review.
+
+## SPEC verification format
+
+Every declared endpoint must have at least one matching case under `## Verification`. Cases use a concrete request path (including a sample value for each `:parameter` segment) and a response status documented by that endpoint:
+
+```markdown
+## Verification
+### `GET /hello`
+- Response `200`
+- Body contains: `hello`
+```
+
+Optional request data uses `- Header: name=value` and `- Body: ...`. Verification cases are human-authored acceptance criteria; generated assertions are checked separately and are never their substitute.
 
 ## Requirements
 
@@ -54,7 +67,7 @@ export LLM_API_KEY="..."
 cargo run -- --spec ./examples/minimal/SPEC.md --port 8080
 ```
 
-The service synthesizes, componentizes, and verifies a handler before binding the HTTP listener. Startup fails closed if synthesis, compilation, instantiation, or any contract assertion fails.
+The service validates the SPEC-authored verification suite, synthesizes and componentizes a handler, then runs the trusted cases and a separate model-generated assertion suite before binding the HTTP listener. Startup fails closed if either suite fails.
 
 Check process health and the active generation:
 

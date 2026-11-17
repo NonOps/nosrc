@@ -8,9 +8,10 @@ pub mod verifier;
 use clap::Parser;
 use std::sync::{Arc, Mutex};
 
+use engine::http_envelope::RequestEnvelope;
 use engine::quickjs::{QuickJsEngine, DEFAULT_COMPONENT_FUEL};
 use ingress::{ActiveGeneration, IngressState};
-use synthesizer::{LlmConfig, Synthesizer};
+use synthesizer::{ContractAssertion, LlmConfig, Synthesizer};
 use verifier::ShadowVerifier;
 
 #[derive(Parser, Debug)]
@@ -58,6 +59,9 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    spec.validate_verification()
+        .map_err(|error| anyhow::anyhow!("Invalid trusted verification suite: {error}"))?;
+
     tracing::info!(
         service = %spec.name,
         endpoints = spec.endpoints.len(),
@@ -80,14 +84,47 @@ async fn main() -> anyhow::Result<()> {
     let engine = QuickJsEngine::new()?;
     let compiled = engine.compile_handler(&output.handler_code).await?;
 
-    // Verify in a disposable candidate instance. The active instance is created
-    // separately so verification requests cannot mutate production module state.
-    let mut candidate = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
-    let verification = ShadowVerifier::new().verify_handler(&mut candidate, &output.assertions)?;
-    drop(candidate);
+    // SPEC-authored cases are independent of the model that generated the handler.
+    // Separate candidate instances prevent the supplemental suite from mutating trusted-test state.
+    let trusted_assertions: Vec<ContractAssertion> = spec
+        .verification
+        .iter()
+        .map(|case| {
+            Ok(ContractAssertion {
+                name: format!("SPEC {} {}", case.method, case.path),
+                request: RequestEnvelope {
+                    method: case.method.clone(),
+                    path: case.path.clone(),
+                    query: std::collections::HashMap::new(),
+                    headers: case.headers.clone(),
+                    body: case.body.clone(),
+                },
+                expected_status: case.expected_status.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "verification case {} {} has no response status",
+                        case.method,
+                        case.path
+                    )
+                })?,
+                body_contains: case.body_contains.clone(),
+                header_matches: None,
+            })
+        })
+        .collect::<anyhow::Result<_>>()?;
+
+    let mut trusted_candidate = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
+    let trusted_results =
+        ShadowVerifier::new().verify_handler(&mut trusted_candidate, &trusted_assertions)?;
+    drop(trusted_candidate);
+
+    let mut generated_candidate = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
+    let generated_results =
+        ShadowVerifier::new().verify_handler(&mut generated_candidate, &output.assertions)?;
+    drop(generated_candidate);
 
     tracing::info!(
-        assertions = verification.len(),
+        trusted_assertions = trusted_results.len(),
+        generated_assertions = generated_results.len(),
         module_hash = %compiled.module_hash,
         rationale = output.rationale.as_deref().unwrap_or(""),
         "Candidate compiled and passed contract verification"

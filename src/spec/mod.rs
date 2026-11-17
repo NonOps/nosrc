@@ -11,6 +11,7 @@ pub struct ServiceSpec {
     pub capabilities: SpecCapabilities,
     pub schema: Vec<String>,
     pub endpoints: Vec<SpecEndpoint>,
+    pub verification: Vec<SpecVerification>,
     pub raw_markdown: String,
 }
 
@@ -46,7 +47,89 @@ pub struct SpecResponse {
     pub schema: Option<String>,
 }
 
+/// Human-authored verification case parsed from the trusted SPEC.md.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SpecVerification {
+    pub method: String,
+    pub path: String,
+    pub headers: std::collections::HashMap<String, String>,
+    pub body: Option<String>,
+    pub expected_status: Option<u16>,
+    pub body_contains: Option<String>,
+}
+
 impl ServiceSpec {
+    /// Ensure trusted cases cover every declared endpoint and assert only documented statuses.
+    pub fn validate_verification(&self) -> Result<(), String> {
+        if self.endpoints.is_empty() {
+            return Err("SPEC must declare at least one endpoint".into());
+        }
+        if self.verification.is_empty() {
+            return Err("SPEC must declare trusted cases under '## Verification'".into());
+        }
+        let mut covered_endpoints = vec![false; self.endpoints.len()];
+        for case in &self.verification {
+            let matching: Vec<_> = self
+                .endpoints
+                .iter()
+                .enumerate()
+                .filter(|(_, endpoint)| {
+                    endpoint.method == case.method && path_matches(&endpoint.path, &case.path)
+                })
+                .map(|(index, endpoint)| (index, path_specificity(&endpoint.path)))
+                .collect();
+            let best_specificity = matching
+                .iter()
+                .map(|(_, specificity)| *specificity)
+                .max()
+                .ok_or_else(|| {
+                    format!(
+                        "verification case {} {} does not match a declared endpoint",
+                        case.method, case.path
+                    )
+                })?;
+            let best_matches: Vec<_> = matching
+                .iter()
+                .filter(|(_, specificity)| *specificity == best_specificity)
+                .collect();
+            if best_matches.len() != 1 {
+                return Err(format!(
+                    "verification case {} {} ambiguously matches multiple endpoints",
+                    case.method, case.path
+                ));
+            }
+            let endpoint_index = best_matches[0].0;
+            let endpoint = &self.endpoints[endpoint_index];
+            covered_endpoints[endpoint_index] = true;
+
+            let status = case.expected_status.ok_or_else(|| {
+                format!(
+                    "verification case {} {} is missing a Response status",
+                    case.method, case.path
+                )
+            })?;
+            if !endpoint
+                .responses
+                .iter()
+                .any(|response| response.status == status)
+            {
+                return Err(format!(
+                    "verification case {} {} expects undocumented status {}",
+                    case.method, case.path, status
+                ));
+            }
+        }
+        for (index, endpoint) in self.endpoints.iter().enumerate() {
+            if !covered_endpoints[index] {
+                return Err(format!(
+                    "endpoint {} {} has no trusted verification case",
+                    endpoint.method, endpoint.path
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Parses a markdown string conforming to the `SPEC.md` format
     pub fn parse(markdown: &str) -> Result<Self, HostAbiError> {
         let mut name = "service".to_string();
@@ -54,9 +137,11 @@ impl ServiceSpec {
         let mut capabilities = SpecCapabilities::default();
         let mut schema = Vec::new();
         let mut endpoints = Vec::new();
+        let mut verification = Vec::new();
 
         let mut current_section = "";
         let mut current_endpoint: Option<SpecEndpoint> = None;
+        let mut current_verification: Option<SpecVerification> = None;
 
         for line in markdown.lines() {
             let trimmed = line.trim();
@@ -82,11 +167,17 @@ impl ServiceSpec {
                 if let Some(ep) = current_endpoint.take() {
                     endpoints.push(ep);
                 }
+                if let Some(case) = current_verification.take() {
+                    verification.push(case);
+                }
                 let sec_lower = section.trim().to_lowercase();
                 if sec_lower.contains("capability") || sec_lower.contains("capabilities") {
                     current_section = "capabilities";
                 } else if sec_lower.contains("schema") {
                     current_section = "schema";
+                } else if sec_lower.contains("verification") || sec_lower.contains("verifications")
+                {
+                    current_section = "verification";
                 } else if sec_lower.contains("endpoint") || sec_lower.contains("endpoints") {
                     current_section = "endpoints";
                 } else {
@@ -95,27 +186,43 @@ impl ServiceSpec {
                 continue;
             }
 
-            // Sub-endpoint header (### `POST /shorten`, ### GET /:code)
-            if let Some(endpoint_title) = trimmed.strip_prefix("### ") {
-                if let Some(ep) = current_endpoint.take() {
-                    endpoints.push(ep);
-                }
-
-                let cleaned = endpoint_title.trim().trim_matches('`').trim();
-
+            // Endpoint and verification case headers are scoped to their own sections.
+            if let Some(title) = trimmed.strip_prefix("### ") {
+                let cleaned = title.trim().trim_matches('`').trim();
                 let mut parts = cleaned.split_whitespace();
                 let method = parts.next().unwrap_or("GET").to_uppercase();
                 let path = parts.next().unwrap_or("/").to_string();
-
-                current_endpoint = Some(SpecEndpoint {
-                    method,
-                    path,
-                    description: None,
-                    body_schema: None,
-                    rules: Vec::new(),
-                    responses: Vec::new(),
-                });
-                current_section = "endpoint_detail";
+                match current_section {
+                    "endpoints" | "endpoint_detail" => {
+                        if let Some(ep) = current_endpoint.take() {
+                            endpoints.push(ep);
+                        }
+                        current_endpoint = Some(SpecEndpoint {
+                            method,
+                            path,
+                            description: None,
+                            body_schema: None,
+                            rules: Vec::new(),
+                            responses: Vec::new(),
+                        });
+                        current_section = "endpoint_detail";
+                    }
+                    "verification" | "verification_detail" => {
+                        if let Some(case) = current_verification.take() {
+                            verification.push(case);
+                        }
+                        current_verification = Some(SpecVerification {
+                            method,
+                            path,
+                            headers: std::collections::HashMap::new(),
+                            body: None,
+                            expected_status: None,
+                            body_contains: None,
+                        });
+                        current_section = "verification_detail";
+                    }
+                    _ => {}
+                }
                 continue;
             }
 
@@ -146,6 +253,39 @@ impl ServiceSpec {
                         }
                     }
                 }
+                "verification_detail" => {
+                    if let Some(case) = current_verification.as_mut() {
+                        if let Some(item) = trimmed.strip_prefix("- ") {
+                            let item = item.trim();
+                            if let Some(body) = item.strip_prefix("Body:") {
+                                case.body = Some(body.trim().to_string());
+                            } else if let Some(header) = item.strip_prefix("Header:") {
+                                let (name, value) = header.trim().split_once('=').ok_or_else(|| {
+                                    HostAbiError::MalformedJson(format!(
+                                        "invalid verification header '{header}'; expected name=value"
+                                    ))
+                                })?;
+                                if name.trim().is_empty() {
+                                    return Err(HostAbiError::MalformedJson(
+                                        "verification header name cannot be empty".into(),
+                                    ));
+                                }
+                                case.headers
+                                    .insert(name.trim().to_lowercase(), value.trim().to_string());
+                            } else if let Some(status) = item.strip_prefix("Response ") {
+                                let status = status.trim().trim_matches('`');
+                                case.expected_status = Some(parse_http_status(status)?);
+                            } else if let Some(expected) = item.strip_prefix("Body contains:") {
+                                case.body_contains =
+                                    Some(expected.trim().trim_matches('`').to_string());
+                            } else {
+                                return Err(HostAbiError::MalformedJson(format!(
+                                    "unsupported verification field '{item}'"
+                                )));
+                            }
+                        }
+                    }
+                }
                 "endpoint_detail" => {
                     if let Some(ep) = current_endpoint.as_mut() {
                         if let Some(item) = trimmed.strip_prefix("- ") {
@@ -159,7 +299,7 @@ impl ServiceSpec {
                                 let mut parts = resp_spec.splitn(2, ':');
                                 let status_part =
                                     parts.next().unwrap_or("200").trim().trim_matches('`');
-                                let status: u16 = status_part.parse().unwrap_or(200);
+                                let status = parse_http_status(status_part)?;
                                 let schema_part = parts.next().map(|s| s.trim().to_string());
 
                                 ep.responses.push(SpecResponse {
@@ -184,6 +324,9 @@ impl ServiceSpec {
         if let Some(ep) = current_endpoint.take() {
             endpoints.push(ep);
         }
+        if let Some(case) = current_verification.take() {
+            verification.push(case);
+        }
 
         Ok(Self {
             name,
@@ -191,9 +334,46 @@ impl ServiceSpec {
             capabilities,
             schema,
             endpoints,
+            verification,
             raw_markdown: markdown.to_string(),
         })
     }
+}
+
+fn parse_http_status(value: &str) -> Result<u16, HostAbiError> {
+    let status: u16 = value.parse().map_err(|_| {
+        HostAbiError::MalformedJson(format!("invalid HTTP response status '{value}'"))
+    })?;
+    if !(100..=599).contains(&status) {
+        return Err(HostAbiError::MalformedJson(format!(
+            "HTTP response status must be between 100 and 599, got '{value}'"
+        )));
+    }
+    Ok(status)
+}
+
+fn path_specificity(template: &str) -> usize {
+    template
+        .trim_matches('/')
+        .split('/')
+        .filter(|segment| !segment.starts_with(':'))
+        .count()
+}
+
+fn path_matches(template: &str, concrete: &str) -> bool {
+    let expected: Vec<_> = template.trim_matches('/').split('/').collect();
+    let actual: Vec<_> = concrete.trim_matches('/').split('/').collect();
+    expected.len() == actual.len()
+        && expected
+            .iter()
+            .zip(actual.iter())
+            .all(|(expected, actual)| {
+                if expected.starts_with(':') {
+                    !actual.is_empty() && !actual.starts_with(':')
+                } else {
+                    expected == actual
+                }
+            })
 }
 
 #[cfg(test)]
@@ -213,6 +393,7 @@ mod tests {
 
         assert_eq!(spec.capabilities.state, "volatile");
         assert!(spec.capabilities.egress.is_empty());
+        assert!(spec.verification.is_empty());
     }
 
     #[test]
@@ -270,5 +451,131 @@ A resilient spec-driven URL shortener.
         assert_eq!(ep2.method, "GET");
         assert_eq!(ep2.path, "/:code");
         assert!(!ep2.rules.is_empty());
+    }
+
+    #[test]
+    fn parses_and_validates_human_authored_verification_cases() {
+        let markdown = r#"
+# Service: Example
+## Endpoints
+### `GET /items/:id`
+- Response `200`: item
+## Verification
+### `GET /items/42`
+- Response `200`
+- Body contains: `item`
+"#;
+        let spec = ServiceSpec::parse(markdown).unwrap();
+        spec.validate_verification().unwrap();
+        assert_eq!(spec.verification.len(), 1);
+        assert_eq!(spec.verification[0].path, "/items/42");
+        assert_eq!(spec.verification[0].expected_status, Some(200));
+        assert_eq!(spec.verification[0].body_contains.as_deref(), Some("item"));
+    }
+
+    #[test]
+    fn dynamic_route_verification_rejects_unexpanded_placeholders() {
+        assert!(!path_matches("/items/:id", "/items/:id"));
+        assert!(!path_matches("/items/:id", "/items/"));
+        assert!(path_matches("/items/:id", "/items/42"));
+    }
+
+    #[test]
+    fn static_route_verification_does_not_cover_dynamic_route() {
+        let markdown = r#"
+# Service: Example
+## Endpoints
+### `GET /items/:id`
+- Response `200`: item
+### `GET /items/fixed`
+- Response `200`: fixed
+## Verification
+### `GET /items/fixed`
+- Response `200`
+"#;
+        let spec = ServiceSpec::parse(markdown).unwrap();
+        assert!(spec
+            .validate_verification()
+            .unwrap_err()
+            .contains("/items/:id"));
+    }
+
+    #[test]
+    fn static_and_dynamic_routes_can_be_verified_independently() {
+        let markdown = r#"
+# Service: Example
+## Endpoints
+### `GET /items/:id`
+- Response `200`: item
+### `GET /items/fixed`
+- Response `200`: fixed
+## Verification
+### `GET /items/42`
+- Response `200`
+### `GET /items/fixed`
+- Response `200`
+"#;
+        let spec = ServiceSpec::parse(markdown).unwrap();
+        spec.validate_verification().unwrap();
+    }
+
+    #[test]
+    fn trusted_verification_must_cover_every_endpoint() {
+        let markdown = r#"
+# Service: Example
+## Endpoints
+### `GET /one`
+- Response `200`: ok
+### `GET /two`
+- Response `200`: ok
+## Verification
+### `GET /one`
+- Response `200`
+"#;
+        let spec = ServiceSpec::parse(markdown).unwrap();
+        assert!(spec.validate_verification().unwrap_err().contains("/two"));
+    }
+
+    #[test]
+    fn rejects_invalid_endpoint_response_status_instead_of_defaulting() {
+        let markdown = r#"
+# Service: Example
+## Endpoints
+### `GET /one`
+- Response `not-a-status`: ok
+"#;
+        assert!(ServiceSpec::parse(markdown).is_err());
+    }
+
+    #[test]
+    fn rejects_out_of_range_verification_status() {
+        let markdown = r#"
+# Service: Example
+## Endpoints
+### `GET /one`
+- Response `200`: ok
+## Verification
+### `GET /one`
+- Response `999`
+"#;
+        assert!(ServiceSpec::parse(markdown).is_err());
+    }
+
+    #[test]
+    fn trusted_verification_requires_an_explicit_status() {
+        let markdown = r#"
+# Service: Example
+## Endpoints
+### `GET /one`
+- Response `200`: ok
+## Verification
+### `GET /one`
+- Body contains: `ok`
+"#;
+        let spec = ServiceSpec::parse(markdown).unwrap();
+        assert!(spec
+            .validate_verification()
+            .unwrap_err()
+            .contains("missing a Response status"));
     }
 }

@@ -7,13 +7,14 @@ nosrc is an experimental, single-process Rust service. It now has a working SPEC
 At startup the executable:
 
 1. Reads and parses the configured `SPEC.md`.
-2. Calls an OpenAI-compatible chat-completions endpoint to synthesize a JavaScript ES module and contract assertions.
+2. Validates the human-authored verification suite in `SPEC.md` and calls an OpenAI-compatible chat-completions endpoint to synthesize a JavaScript ES module and supplemental contract assertions.
 3. Componentizes the JavaScript in-process with `componentize-qjs` using the `nosrc:runtime/handler` WIT world.
 4. Compiles the resulting component with Wasmtime 50.
-5. Instantiates an isolated candidate and runs all synthesized contract assertions.
-6. Rejects startup if synthesis, componentization, instantiation, or any assertion fails.
-7. Creates a fresh production instance and activates it only after candidate verification succeeds.
-8. Starts the HTTP server and routes application requests to the active generation.
+5. Instantiates an isolated candidate and runs the trusted SPEC-authored verification cases.
+6. Instantiates a second isolated candidate and runs model-generated assertions as supplemental checks.
+7. Rejects startup if either suite fails.
+8. Creates a fresh production instance and activates it only after both suites pass.
+9. Starts the HTTP server and routes application requests to the active generation.
 
 The runtime requires Rust 1.97 or later. JavaScript module-level state is retained between requests to the same active generation. Requests to one handler instance are serialized so this state has deterministic behavior.
 
@@ -33,7 +34,7 @@ The runtime requires Rust 1.97 or later. JavaScript module-level state is retain
 
 ### CLI and synthesis
 
-The CLI loads the SPEC, requires `LLM_API_KEY`, and calls the configured OpenAI-compatible endpoint. `LLM_BASE_URL` and `LLM_MODEL` are optional. The synthesizer must return `code_format: "javascript"`, non-empty handler source, and a non-empty deterministic assertion suite.
+The CLI loads the SPEC, requires `LLM_API_KEY`, and calls the configured OpenAI-compatible endpoint. `LLM_BASE_URL` and `LLM_MODEL` are optional. The synthesizer must return `code_format: "javascript"`, non-empty handler source, and a non-empty deterministic supplemental assertion suite. `SPEC.md` must also contain human-authored verification cases covering every declared endpoint.
 
 The generated JavaScript is self-contained. It cannot import packages or use ambient host APIs.
 
@@ -45,9 +46,11 @@ Each handler store has a fuel budget and a 64 MiB per-linear-memory growth limit
 
 ### Candidate verification
 
-`src/verifier` runs the entire assertion suite sequentially against one isolated candidate instance. Sharing that instance is intentional: it tests the same module-level state behavior that applies to production requests. The candidate instance is discarded after verification; production gets a newly instantiated component.
+`SPEC.md` contains a `## Verification` section with explicit request examples. These cases are parsed independently from endpoint descriptions, checked for complete endpoint coverage, and restricted to response statuses documented for the matched endpoint. Dynamic route segments (for example `/:id`) are matched against concrete paths in verification cases.
 
-The verifier checks response status, configured body substrings, and expected headers. These are contract checks, not proof that generated code is correct or secure.
+The runtime executes SPEC-authored cases against one disposable candidate instance, then runs model-generated assertions against a different disposable instance. The model cannot supply the only acceptance criteria, and supplemental tests cannot mutate trusted-suite state. A third, fresh instance is created for production only after both suites pass.
+
+The verifier checks response status, configured body substrings, and expected headers. These remain authored contract checks—not proof that generated code is correct or secure.
 
 ### HTTP ingress
 
@@ -60,13 +63,14 @@ The Axum router handles health and status endpoints itself. Other requests are c
 - Invalid JavaScript rejected during componentization.
 - Infinite JavaScript loop stopped by Wasmtime fuel metering.
 - Candidate approval, rejection, empty-suite rejection, and sequential stateful assertions.
+- SPEC verification parsing, documented-status validation, and complete endpoint coverage.
+- Separate trusted and model-generated candidate verification instances.
 - HTTP ingress dispatch, no-active-generation behavior, health, and status endpoints.
-
-The component memory limiter is configured in the actual QuickJS component store; a dedicated memory-exhaustion regression test remains to be added.
+- QuickJS component memory exhaustion under the configured store budget.
 
 ## Next engineering milestones
 
-1. Add a dedicated component memory-exhaustion test and verify the configured cap against actual QuickJS allocation behavior.
+1. Retain human-authored regression cases across handler revisions and add provenance records for SPEC hashes, model identifiers, component hashes, and verification outcomes.
 2. Add explicit WIT-backed embedded KV operations with bounded key/value sizes and isolated candidate state.
 3. Add bounded request/response sizes and preserve binary request bodies without lossy UTF-8 conversion.
 4. Add safe generation replacement and in-flight request draining before any hot-reload feature.
