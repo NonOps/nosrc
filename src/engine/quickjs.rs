@@ -98,7 +98,7 @@ impl QuickJsEngine {
         let limits = StoreLimitsBuilder::new()
             .memory_size(DEFAULT_COMPONENT_MEMORY_BYTES)
             .table_elements(10_000)
-            .instances(4)
+            .instances(16)
             .tables(4)
             .memories(4)
             .build();
