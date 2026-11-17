@@ -2,6 +2,7 @@
 name = "nosrc"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.97"
 authors = ["nosrc contributors"]
 description = "Zero-Codebase, Spec-to-Wasm Autonomous Cluster Runtime"
 license = "Apache-2.0"
@@ -15,7 +16,9 @@ tower-http = { version = "0.6", features = ["trace", "cors"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 # Wasmtime & Sandboxing
-wasmtime = { version = "36", features = ["component-model", "wat"] }
+wasmtime = { version = "50", features = ["component-model", "wat", "async"] }
+componentize-qjs = { version = "0.6.0", default-features = false }
+tempfile = "3.13"
 
 # State & Persistence
 rusqlite = { version = "0.33", features = ["bundled"] }
