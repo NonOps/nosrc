@@ -59,7 +59,8 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    spec.validate_verification().map_err(|error| anyhow::anyhow!("Invalid trusted verification suite: {error}"))?;
+    spec.validate_verification()
+        .map_err(|error| anyhow::anyhow!("Invalid trusted verification suite: {error}"))?;
 
     tracing::info!(
         service = %spec.name,
@@ -85,26 +86,29 @@ async fn main() -> anyhow::Result<()> {
 
     // SPEC-authored cases are independent of the model that generated the handler.
     // Separate candidate instances prevent the supplemental suite from mutating trusted-test state.
-    let trusted_assertions: Vec<ContractAssertion> = spec.verification.iter().map(|case| {
-        Ok(ContractAssertion {
-            name: format!("SPEC {} {}", case.method, case.path),
-            request: RequestEnvelope {
-                method: case.method.clone(),
-                path: case.path.clone(),
-                query: std::collections::HashMap::new(),
-                headers: case.headers.clone(),
-                body: case.body.clone(),
-            },
-            expected_status: case.expected_status.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "verification case {} {} has no response status",
-                    case.method,
-                    case.path
-                )
-            })?,
-            body_contains: case.body_contains.clone(),
-            header_matches: None,
-        })
+    let trusted_assertions: Vec<ContractAssertion> = spec
+        .verification
+        .iter()
+        .map(|case| {
+            Ok(ContractAssertion {
+                name: format!("SPEC {} {}", case.method, case.path),
+                request: RequestEnvelope {
+                    method: case.method.clone(),
+                    path: case.path.clone(),
+                    query: std::collections::HashMap::new(),
+                    headers: case.headers.clone(),
+                    body: case.body.clone(),
+                },
+                expected_status: case.expected_status.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "verification case {} {} has no response status",
+                        case.method,
+                        case.path
+                    )
+                })?,
+                body_contains: case.body_contains.clone(),
+                header_matches: None,
+            })
         })
         .collect::<anyhow::Result<_>>()?;
 
