@@ -10,7 +10,7 @@ use wasmtime::Module;
 
 use crate::engine::host_abi::HostCapabilities;
 use crate::engine::http_envelope::{ErrorEnvelope, RequestEnvelope};
-use crate::engine::WasmEngine;
+use crate::engine::{WasmEngine, DEFAULT_FUEL_BUDGET};
 use crate::error::EngineError;
 
 /// Active generation representing the currently deployed, shadow-verified Wasm module
@@ -130,7 +130,7 @@ mod tests {
             (module
                 (import "nosrc_host" "host_set_response" (func $set_resp (param i32 i32) (result i32)))
                 (memory (export "memory") 1)
-                (data (i32.const 1024) "{\"status\":200,\"headers\":{},\"body\":\"gen 1\"}")
+                (data (i32.const 1024) "{\\"status\\":200,\\"headers\\":{},\\"body\\":\\"gen 1\\"}")
 
                 (func (export "handle_request") (param i32 i32) (result i32)
                     (call $set_resp (i32.const 1024) (i32.const 43))
@@ -159,7 +159,7 @@ mod tests {
             (module
                 (import "nosrc_host" "host_set_response" (func $set_resp (param i32 i32) (result i32)))
                 (memory (export "memory") 1)
-                (data (i32.const 1024) "{\"status\":201,\"headers\":{},\"body\":\"gen 2\"}")
+                (data (i32.const 1024) "{\\"status\\":201,\\"headers\\":{},\\"body\\":\\"gen 2\\"}")
 
                 (func (export "handle_request") (param i32 i32) (result i32)
                     (call $set_resp (i32.const 1024) (i32.const 43))
