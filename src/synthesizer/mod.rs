@@ -84,7 +84,7 @@ Runtime contract:
 - Export exactly one function: `export function handle(requestJson)`.
 - `requestJson` is a JSON string encoding an object with method, path, query, headers, and optional body fields.
 - Return a JSON string encoding a response object with numeric status, headers object, and optional string body.
-- JavaScript module-level variables persist between requests handled by the same active generation.
+- JavaScript module-level variables are the only state available and persist between requests handled by the same active generation. Durable state, SQL, KV, and outbound egress are unsupported and rejected before synthesis.
 - Do not import modules or use filesystem, process, network, environment, timers, or other ambient capabilities. No WASI capabilities are available.
 - Keep request and response bodies as strings. For JSON APIs, parse request.body with JSON.parse and serialize response bodies with JSON.stringify.
 - Implement only behavior described by SPEC.md. Do not invent endpoints or capabilities.
