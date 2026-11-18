@@ -603,7 +603,10 @@ A resilient spec-driven URL shortener.
 "#;
         let spec = ServiceSpec::parse(markdown).unwrap();
         let case = &spec.verification[0];
-        assert_eq!(case.headers.get("accept").map(String::as_str), Some("application/json"));
+        assert_eq!(
+            case.headers.get("accept").map(String::as_str),
+            Some("application/json")
+        );
         assert_eq!(
             case.response_headers.get("content-type").map(String::as_str),
             Some("application/json")
