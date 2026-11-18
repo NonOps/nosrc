@@ -63,7 +63,7 @@ Normal startup uses concise `INFO` logs. Pass `--verbose` (or `-v`) to see the g
 cargo run -- --verbose --spec ./examples/minimal/SPEC.md --port 8080
 ```
 
-`RUST_LOG` can override the default filter, for example `RUST_LOG=trace`. Diagnostics intentionally omit API keys, authorization headers, prompts, generated source, request/response bodies, and query strings. Request paths can still contain application-specific identifiers, so review logs before sharing them.
+`RUST_LOG` can override the default filter, for example `RUST_LOG=trace`. Verbose diagnostic events omit API keys, authorization headers, prompts, generated source, request/response bodies, and query strings. Failure messages may still include bounded provider error details or assertion-mismatch details; review stderr before sharing logs. Request paths can also contain application-specific identifiers.
 
 ## Build and test
 
