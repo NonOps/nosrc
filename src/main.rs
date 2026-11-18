@@ -612,7 +612,12 @@ mod tests {
         ])
         .unwrap();
         match cli.command {
-            Some(Commands::Serve { bundle, bind, port, verbose }) => {
+            Some(Commands::Serve {
+                bundle,
+                bind,
+                port,
+                verbose,
+            }) => {
                 assert_eq!(bundle, std::path::PathBuf::from("./dist"));
                 assert_eq!(bind, "0.0.0.0".parse::<IpAddr>().unwrap());
                 assert_eq!(port, 9090);
