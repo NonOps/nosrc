@@ -60,7 +60,7 @@ Optional request data uses `- Header: name=value` and `- Body: ...`. Verificatio
 Normal startup uses concise `INFO` logs. Pass `--verbose` (or `-v`) to see the generation pipeline, provider request timing and sizes, individual contract assertion results, component compilation timing, and HTTP request metadata:
 
 ```sh
-cargo run --verbose -- --spec ./examples/minimal/SPEC.md --port 8080
+cargo run -- --verbose --spec ./examples/minimal/SPEC.md --port 8080
 ```
 
 `RUST_LOG` can override the default filter, for example `RUST_LOG=trace`. Diagnostics intentionally omit API keys, authorization headers, prompts, generated source, request/response bodies, and query strings. Request paths can still contain application-specific identifiers, so review logs before sharing them.
@@ -87,7 +87,7 @@ cargo run -- --spec ./examples/minimal/SPEC.md --port 8080
 Add `--verbose` to inspect the generation and request lifecycle while testing:
 
 ```sh
-cargo run --verbose -- --spec ./examples/minimal/SPEC.md --port 8080
+cargo run -- --verbose --spec ./examples/minimal/SPEC.md --port 8080
 ```
 
 For a compatible provider other than OpenAI, also set its API base URL and model before starting:
