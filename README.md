@@ -68,7 +68,7 @@ The export command runs synthesis (or loads a cache entry), componentization/com
 - `assertions.json` — trusted SPEC assertions and generated assertions.
 - `manifest.json` — service name, SPEC SHA-256, module/component hashes, assertion counts, and synthesis rationale.
 
-The export directory is for inspection, audit support, and version control. The manifest is provenance metadata, not a signed attestation or independent proof of correctness. Export is staged in a temporary sibling directory and published with a single directory rename. The destination must not already exist; remove or move an earlier export before rerunning. See [Artifact format](docs/ARTIFACTS.md). See [Artifact format](docs/ARTIFACTS.md).
+The export directory is for inspection, audit support, and version control. The manifest is provenance metadata, not a signed attestation or independent proof of correctness. Export is staged in a temporary sibling directory and published with a single directory rename. The destination must not already exist; remove or move an earlier export before rerunning. See [Artifact format](docs/ARTIFACTS.md).
 
 ## SPEC verification format
 
