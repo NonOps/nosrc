@@ -40,7 +40,7 @@ Contains two arrays:
 ```
 
 - `trusted_assertions` are derived from the operator-authored SPEC verification cases.
-- `generated_assertions` are returned by the synthesizer.
+- `generated_assertions` are returned by the synthesizer and may be empty if it returns no supplemental cases. The export CLI uses SPEC-driven synthesis; direct-JavaScript preparation is an MCP workflow, not an export input mode.
 
 These arrays describe the assertion inputs. They are not a record of individual execution results.
 
