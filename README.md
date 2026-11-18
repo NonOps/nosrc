@@ -21,7 +21,7 @@ nosrc currently provides four operating modes, including an offline path for pre
 - **Artifact export:** run the verification pipeline and export the JavaScript handler, Wasm component, assertion suites, and a provenance manifest for review and version control.
 - **Offline bundle serving:** load an exported bundle, validate its component digest and manifest metadata, rerun both assertion suites, and serve it without LLM credentials or provider access.
 
-These are operating modes of one executable, not separate guest runtimes. MCP is a separate process mode and does not share live state with an independently running HTTP process.
+These are operating modes of one executable, not separate guest runtimes. MCP can run as standalone stdio control plane or with an optional HTTP listener in the same process. In shared mode, MCP activation and rollback immediately change the generation served by HTTP.
 
 ## Runtime and verification
 
@@ -60,7 +60,23 @@ export LLM_API_KEY="your-api-key" # required for source: "spec"
 cargo run -- mcp --spec ./examples/minimal/SPEC.md
 ```
 
-The MCP server uses stdio and does not open an HTTP listener. It exposes five tools: `prepare_app`, `activate_app`, `invoke_app`, `get_app_status`, and `rollback_app`. Rollback is limited to the immediately previous retained generation. Generation state and rollback history are process-local and disappear when the MCP process exits.
+The default MCP mode uses stdio and does not open an HTTP listener. It exposes six tools: `prepare_app`, `activate_app`, `invoke_app`, `get_app_status`, `rollback_app`, and `export_app`. Rollback is limited to the immediately previous retained generation. Generation state and rollback history are process-local and disappear when the MCP process exits.
+
+MCP can also start without an operator SPEC:
+
+```sh
+cargo run -- mcp
+```
+
+This starts with empty application state and baseline runtime resource limits. The agent can prepare direct JavaScript with `source: "direct_js"`, or provide a draft contract with `source: "draft_spec"` and a `draft_spec` Markdown string. Draft SPEC data is synthesis input, not trusted operator policy. Its verification cases are included with model-generated assertions as candidate checks, and the baseline sandbox limits remain in force. Use `export_app` with the prepared generation ID to write the same offline bundle format as the CLI exporter. The bundle includes `SPEC.md`, handler source, component, assertions, and manifest, and can be served without an API key. To establish an operator-controlled acceptance policy, review the exported draft and restart with `--spec PATH`.
+
+To expose HTTP from the same process and share the active generation with MCP, add `--http-port` (and optionally `--http-bind`):
+
+```sh
+LLM_API_KEY="your-api-key" cargo run -- mcp --spec ./examples/minimal/SPEC.md --http-port 8080
+```
+
+MCP activation and rollback update the handler used by HTTP ingress. This is one application lifecycle and one generation history, not two runtimes synchronized over a network. The HTTP listener defaults to loopback; use `--http-bind 0.0.0.0` only when external exposure is intended. The stdio transport itself remains local and has no MCP-level authentication.
 
 ## Export verified artifacts
 
@@ -74,7 +90,8 @@ The export command runs synthesis (or loads a cache entry), componentization/com
 - `handler.js` — synthesized JavaScript handler source.
 - `component.wasm` — compiled WebAssembly component.
 - `assertions.json` — trusted SPEC assertions and generated assertions.
-- `manifest.json` — service name, SPEC SHA-256, module/component hashes, assertion counts, and synthesis rationale.
+- `SPEC.md` — exact SPEC text used for synthesis.
+- `manifest.json` — service name, SPEC SHA-256, module/component hashes, assertion counts, synthesis rationale, and policy mode.
 
 The export directory is for inspection, audit support, and version control. The manifest is provenance metadata, not a signed attestation or independent proof of correctness. Export is staged in a temporary sibling directory and published with a single directory rename. The destination must not already exist; remove or move an earlier export before rerunning. See [Artifact format](docs/ARTIFACTS.md).
 
@@ -86,7 +103,7 @@ After exporting a bundle, start the HTTP runtime without an API key or model-pro
 cargo run -- serve --bundle ./dist --bind 127.0.0.1 --port 8080
 ```
 
-Startup validates the bundle files and SHA-256 metadata, compiles the prebuilt component with the current Wasmtime engine, reruns the trusted and generated assertion suites on separate candidate instances, and creates a fresh serving instance only after both suites pass. The HTTP listener opens only after successful validation. This mode does not read a SPEC file, synthesize code, or access an LLM provider.
+Startup validates the bundle files and SHA-256 metadata, compiles the prebuilt component with the current Wasmtime engine, reruns the assertion suites on separate candidate instances according to the manifest policy mode, and creates a fresh serving instance only after verification passes. The HTTP listener opens only after successful validation. This mode does not read a SPEC file, synthesize code, or access an LLM provider.
 
 The manifest is unsigned, and the exported assertion suites are files in the same bundle. Hash validation detects accidental or inconsistent component changes, not malicious replacement of the component, assertions, and manifest together. Treat the bundle and its source directory as operator-controlled inputs. See [Artifact format](docs/ARTIFACTS.md).
 

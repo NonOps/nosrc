@@ -16,12 +16,23 @@ pub struct ExportManifest {
     pub trusted_assertions_count: usize,
     pub generated_assertions_count: usize,
     pub rationale: Option<String>,
+    #[serde(default = "default_policy_mode")]
+    pub policy_mode: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ExportAssertions {
     pub trusted_assertions: Vec<ContractAssertion>,
     pub generated_assertions: Vec<ContractAssertion>,
+}
+
+fn default_policy_mode() -> String {
+    "operator".to_string()
+}
+
+pub struct ExportPolicy<'a> {
+    pub trusted_assertions: &'a [ContractAssertion],
+    pub mode: &'a str,
 }
 
 /// Export verified artifacts as one directory publication.
@@ -37,6 +48,40 @@ pub fn export_artifacts(
     module_hash: &str,
     trusted_assertions: &[ContractAssertion],
 ) -> anyhow::Result<PathBuf> {
+    export_artifacts_with_policy(
+        out_dir,
+        spec,
+        spec_text,
+        output,
+        component_bytes,
+        module_hash,
+        ExportPolicy {
+            trusted_assertions,
+            mode: "operator",
+        },
+    )
+}
+
+/// Export through the existing atomic artifact pipeline with an explicit trust mode.
+pub fn export_artifacts_with_policy(
+    out_dir: &Path,
+    spec: &ServiceSpec,
+    spec_text: &str,
+    output: &SynthesisOutput,
+    component_bytes: &[u8],
+    module_hash: &str,
+    policy: ExportPolicy<'_>,
+) -> anyhow::Result<PathBuf> {
+    if !matches!(policy.mode, "operator" | "draft") {
+        anyhow::bail!("Unsupported export policy mode '{}'", policy.mode);
+    }
+    if policy.mode == "draft" && !policy.trusted_assertions.is_empty() {
+        anyhow::bail!("Draft-policy exports cannot label assertions as operator-trusted");
+    }
+    if policy.mode == "draft" && output.assertions.is_empty() {
+        anyhow::bail!("Draft-policy exports require generated assertions");
+    }
+
     let file_name = out_dir.file_name().with_context(|| {
         format!(
             "Export destination must name a directory: {}",
@@ -74,10 +119,11 @@ pub fn export_artifacts(
     let staging_path = staging.path();
 
     // Build the complete bundle away from the published destination.
+    write_artifact(staging_path, "SPEC.md", spec_text.as_bytes())?;
     write_artifact(staging_path, "handler.js", output.handler_code.as_bytes())?;
 
     let assertions_payload = ExportAssertions {
-        trusted_assertions: trusted_assertions.to_vec(),
+        trusted_assertions: policy.trusted_assertions.to_vec(),
         generated_assertions: output.assertions.clone(),
     };
     let assertions_json = serde_json::to_vec_pretty(&assertions_payload)?;
@@ -89,9 +135,10 @@ pub fn export_artifacts(
         spec_sha256: format!("{:x}", Sha256::digest(spec_text.as_bytes())),
         module_hash: module_hash.to_string(),
         component_sha256: format!("{:x}", Sha256::digest(component_bytes)),
-        trusted_assertions_count: trusted_assertions.len(),
+        trusted_assertions_count: policy.trusted_assertions.len(),
         generated_assertions_count: output.assertions.len(),
         rationale: output.rationale.clone(),
+        policy_mode: policy.mode.to_string(),
     };
     let manifest_json = serde_json::to_vec_pretty(&manifest)?;
     write_artifact(staging_path, "manifest.json", &manifest_json)?;
@@ -174,6 +221,10 @@ mod tests {
             output.handler_code
         );
         assert!(path.join("assertions.json").is_file());
+        assert_eq!(
+            std::fs::read_to_string(path.join("SPEC.md")).unwrap(),
+            SPEC_TEXT
+        );
         assert_eq!(
             std::fs::read(path.join("component.wasm")).unwrap(),
             component_bytes

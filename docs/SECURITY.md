@@ -10,7 +10,7 @@ Do not expose this prototype to untrusted users or production traffic without a 
 
 ### Operator-controlled SPEC
 
-The SPEC and its verification cases are supplied by the operator. They define the acceptance criteria used before activation. The MCP client cannot replace the loaded SPEC or relax the runtime policy.
+The optional startup SPEC and its verification cases are supplied by the operator. In operator-controlled mode they define acceptance criteria that MCP clients cannot replace or relax. In MCP-first mode there is no application-specific trusted policy yet; baseline runtime resource ceilings still apply. An MCP client's `draft_spec` is synthesis input only and never replaces or weakens a startup policy. An operator must review a draft and restart with it as `--spec` to establish trusted acceptance criteria.
 
 ### LLM output
 
@@ -26,9 +26,11 @@ The local artifact cache is operator-managed and is not a trust boundary. Cache 
 
 Exported manifest hashes are unsigned metadata. They do not provide authenticity or non-repudiation. Protect cache and export directories with filesystem permissions and use a trusted external mechanism if artifact signing or attestations are required.
 
-### MCP stdio
+### MCP stdio and shared HTTP
 
-The MCP server listens on stdio, not a network socket. It does not implement MCP-level authentication or authorization. Trust is inherited from the local process launcher and ownership of stdin/stdout pipes. Do not expose stdio through an untrusted bridge without adding and reviewing an appropriate security layer.
+The MCP control plane listens on stdio and does not implement MCP-level authentication or authorization. Trust is inherited from the local process launcher and ownership of stdin/stdout pipes. Do not expose stdio through an untrusted bridge without adding and reviewing an appropriate security layer.
+
+The optional `mcp --http-port` mode also opens an HTTP application listener in the same process. MCP and HTTP share one lifecycle and active handler; activating or rolling back through MCP changes HTTP traffic. The HTTP listener defaults to loopback, but an explicit external bind exposes the application to network clients. The MCP transport remains unauthenticated, so access to its stdio pipes is a privileged control-plane capability. Protect the launcher and any bridge that owns those pipes.
 
 ## Enforced limits and behavior
 
@@ -55,6 +57,7 @@ Normal diagnostics are scoped to nosrc events. Verbose mode enables nosrc DEBUG 
 - Durable application-state persistence and durable generation/control-plane metadata are backlog items. Any storage capability must have a narrow WIT contract, explicit policy gates, bounded operations, candidate isolation, defined consistency/recovery behavior, and component-level tests.
 - The current string-based request ABI does not support arbitrary non-UTF-8 request bodies.
 - Assertions are examples, not proof of correctness or security.
+- MCP-first mode intentionally starts without application-specific trusted assertions; direct-JavaScript candidates therefore rely on baseline sandbox limits until an operator-reviewed SPEC is supplied at restart.
 - The export manifest is not signed and does not contain complete build provenance or assertion execution records.
 - Offline bundle serving validates component hashes and reruns exported assertions, but the manifest and assertions are unsigned and are stored alongside the component. It does not authenticate a bundle against an independently trusted SPEC or signer.
 - Offline bundle artifact opens reject symbolic links and other reparse points on Unix and Windows using no-follow open flags, then inspect the opened handle and enforce bounded reads. Other operating-system targets fail closed because an equivalent no-follow primitive is not implemented there.
@@ -75,3 +78,8 @@ Before introducing any guest-visible capability:
 7. Update README, ARCHITECTURE, AGENTS, and the relevant detailed documentation in the same PR.
 
 For future outbound HTTP, validate DNS answers and every redirect target, including IPv4 and IPv6 private, loopback, link-local, and metadata ranges. For future database access, use parameterized operations and bound query time, row counts, and result sizes.
+
+
+## MCP generation export
+
+MCP `export_app` delegates to the same atomic artifact writer as the CLI. Operator-mode bundles carry the immutable startup policy assertions. MCP-first draft-mode bundles explicitly record that no operator-trusted application assertions were configured; their generated draft assertions are rerun offline but are not represented as operator approval. New bundles embed the exact synthesis SPEC as `SPEC.md` and the loader verifies its digest. This does not sign or authenticate the bundle; the directory and manifest still require operator-controlled storage.

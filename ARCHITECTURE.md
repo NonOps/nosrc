@@ -5,11 +5,11 @@
 nosrc is an experimental, single-process Rust application runtime. It transforms an operator-authored `SPEC.md` into a self-contained JavaScript handler, componentizes that handler for QuickJS/WebAssembly, verifies it, and makes it available through four operating modes:
 
 1. **HTTP runtime** — verifies and activates a handler during startup, then serves HTTP requests.
-2. **MCP control plane** — exposes lifecycle and invocation tools over local stdio in a separate process.
+2. **MCP control plane** — exposes lifecycle and invocation tools over local stdio, either standalone or alongside an optional HTTP listener in the same process.
 3. **Artifact export** — runs the synthesis and verification pipeline, then writes source, component, assertions, and manifest files for review and version control.
 4. **Offline bundle serving** — loads an exported component, checks its digest and manifest metadata, reruns both exported assertion suites, and starts HTTP ingress without an LLM/provider dependency.
 
-These are workflows around the same handler contract and engine, not separate guest runtimes. HTTP and MCP processes do not share active generations or in-memory state.
+These are workflows around the same handler contract and engine, not separate guest runtimes. Standalone MCP has no HTTP listener. In shared mode, the MCP server and HTTP ingress hold the same `AppLifecycle`-owned `IngressState`; activation and rollback atomically publish the selected handler to HTTP. No cross-process synchronization is implied.
 
 The project is not production-ready. Security review, broader adversarial testing, persistence, and operational hardening remain future work.
 
@@ -39,7 +39,7 @@ flowchart TD
     EXPORT --> FILES["handler.js / component.wasm / assertions.json / manifest.json"]
 ```
 
-The diagram shows the common preparation path. MCP direct-JavaScript preparation starts from supplied source rather than LLM synthesis, but still applies the operator-owned trusted SPEC verification policy before a candidate can be activated.
+The diagram shows the common preparation path. MCP direct-JavaScript preparation starts from supplied source rather than LLM synthesis, but still applies the operator-owned trusted SPEC verification policy before a candidate can be activated. When `mcp --http-port` is enabled, the MCP and HTTP interfaces share that same lifecycle; without it, MCP remains stdio-only.
 
 ## Startup and preparation lifecycle
 
@@ -58,13 +58,13 @@ The HTTP and export CLI paths:
 
 The export command then writes the exported files and exits without starting HTTP ingress. The HTTP command starts its listener only after successful preparation. The `serve --bundle` command instead loads the exported component and assertion suites, verifies integrity metadata, reruns both suites on isolated candidates, and opens HTTP ingress only after successful verification. It does not load a SPEC, instantiate the synthesizer, or read LLM credentials.
 
-MCP `source: "spec"` uses the same mandatory trusted and generated suites. MCP `source: "direct_js"` skips LLM synthesis and has no model-generated suite, but must still pass every trusted SPEC assertion. Optional client-supplied assertions in direct-JavaScript mode are informational and cannot relax the trusted policy.
+MCP `source: "spec"` uses the same mandatory trusted and generated suites. MCP `source: "draft_spec"` synthesizes from an agent-supplied contract while retaining the startup acceptance policy. Its SPEC verification cases are added to the candidate assertion suite, not promoted to trusted policy; in MCP-first mode this means draft/model assertion verification plus baseline runtime limits, not operator-authored trusted assertions. MCP `source: "direct_js"` skips LLM synthesis and has no model-generated suite, but must still pass every trusted SPEC assertion. Optional client-supplied assertions in direct-JavaScript mode are informational and cannot relax the trusted policy. In shared HTTP mode, only an explicit `activate_app` or `rollback_app` changes the handler visible to HTTP; preparing a candidate never publishes it.
 
 ## Core contracts and components
 
 ### SPEC and acceptance policy
 
-The operator controls the SPEC loaded at process startup. The SPEC declares endpoints, supported capability requirements, and human-authored verification cases. Every declared endpoint must be covered by at least one trusted case. Verification cases use concrete request targets, documented response statuses, and optional request/response assertions.
+The operator controls the optional SPEC loaded at process startup. In operator-controlled mode, it declares endpoints, supported capability requirements, and human-authored verification cases; every declared endpoint must be covered by at least one trusted case. In MCP-first mode no application-specific trusted policy exists initially, but baseline fuel, memory, response, and input limits remain enforced. An agent-provided draft SPEC is used only as synthesis input and does not modify the startup acceptance policy. Verification cases in a draft must be structurally valid and cover its declared endpoints, but they are not promoted to operator trust.
 
 The current runtime accepts only `state: volatile`, no outbound egress declarations, and no database schema declarations. Other state/capability declarations are rejected rather than silently ignored.
 
@@ -114,13 +114,14 @@ Incoming HTTP request bodies and serialized guest response envelopes are limited
 
 ### MCP control plane
 
-`nosrc mcp --spec ./SPEC.md` starts a local MCP server over stdio and does not start an HTTP listener. The five tools are:
+`nosrc mcp --spec ./SPEC.md` starts a local MCP server over stdio and does not start an HTTP listener. The six tools are:
 
 - `prepare_app` — prepare a candidate from the operator SPEC or direct JavaScript; does not activate it.
 - `activate_app` — activate a retained ready generation.
 - `invoke_app` — invoke the active generation through the QuickJS handler.
 - `get_app_status` — inspect active, previous, and retained generations, verification summaries, and effective resource limits.
 - `rollback_app` — reactivate the immediately previous retained generation.
+- `export_app` — publish a prepared generation through the existing atomic artifact exporter for offline serving.
 
 The stdio process has no MCP-level authentication or authorization. Trust is inherited from the local launcher and ownership of its stdin/stdout pipes. Protocol messages use stdout; diagnostics are sent to stderr.
 
@@ -135,7 +136,8 @@ Generation identifiers, prepared/active generations, and rollback history are pr
 - `handler.js` — synthesized JavaScript handler source.
 - `component.wasm` — compiled WebAssembly component bytes.
 - `assertions.json` — trusted and generated assertion suites.
-- `manifest.json` — service name, SPEC digest, module/component digests, assertion counts, and synthesis rationale.
+- `SPEC.md` — exact SPEC text used for synthesis.
+- `manifest.json` — service name, SPEC digest, module/component digests, assertion counts, synthesis rationale, and whether assertions are operator-policy or draft-policy.
 
 The export manifest is provenance metadata. It does not contain a signed attestation, explicit per-assertion result records, toolchain identity, effective resource policy, or a cryptographic signature. Export writes all files into a temporary sibling directory and publishes the completed bundle with one same-filesystem directory rename. The destination must not already exist; export refuses replacement rather than performing a non-atomic directory swap. See `docs/ARTIFACTS.md`.
 

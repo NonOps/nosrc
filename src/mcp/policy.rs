@@ -20,6 +20,19 @@ pub struct PolicyInvariants {
 }
 
 impl AcceptancePolicy {
+    /// Baseline sandbox ceilings for MCP-first development without an operator SPEC.
+    pub fn baseline() -> Self {
+        Self {
+            spec_assertions: Vec::new(),
+            invariants: PolicyInvariants {
+                require_endpoint_coverage: true,
+                max_response_bytes: crate::engine::http_envelope::MAX_HANDLER_RESPONSE_BYTES,
+                max_fuel: DEFAULT_COMPONENT_FUEL,
+                max_memory_bytes: DEFAULT_COMPONENT_MEMORY_BYTES,
+            },
+        }
+    }
+
     pub fn from_spec(spec: &ServiceSpec) -> Result<Self, String> {
         spec.validate_verification()?;
         if spec.capabilities.state != "volatile" {
@@ -77,9 +90,6 @@ impl AcceptancePolicy {
 
     /// Validate policy ceilings before any candidate is compiled.
     pub fn validate(&self) -> Result<(), String> {
-        if self.spec_assertions.is_empty() {
-            return Err("operator acceptance policy must contain trusted SPEC assertions".into());
-        }
         if !self.invariants.require_endpoint_coverage {
             return Err("endpoint coverage cannot be disabled".into());
         }

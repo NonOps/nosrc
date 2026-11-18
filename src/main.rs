@@ -99,8 +99,14 @@ pub enum Commands {
     /// Run as an MCP server over stdio
     Mcp {
         /// Path to the operator-controlled service specification
-        #[arg(short, long, default_value = "./SPEC.md")]
-        spec: std::path::PathBuf,
+        #[arg(short, long)]
+        spec: Option<std::path::PathBuf>,
+        /// Also expose the active application over HTTP on this port
+        #[arg(long)]
+        http_port: Option<u16>,
+        /// HTTP bind address when --http-port is enabled
+        #[arg(long, default_value = "127.0.0.1")]
+        http_bind: IpAddr,
         /// Directory for content-addressed, locally cached verified artifacts
         #[arg(long, default_value = "./.nosrc-cache")]
         cache_dir: std::path::PathBuf,
@@ -479,6 +485,8 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Mcp {
             spec: spec_path,
+            http_port,
+            http_bind,
             cache_dir,
             no_cache,
             verbose,
@@ -493,17 +501,35 @@ async fn main() -> anyhow::Result<()> {
                 .with_target(false)
                 .init();
 
-            let spec_text = tokio::fs::read_to_string(&spec_path)
-                .await
-                .map_err(|error| {
-                    anyhow::anyhow!("Failed to read SPEC at {}: {error}", spec_path.display())
-                })?;
-            let spec = ServiceSpec::parse(&spec_text).map_err(|error| {
-                anyhow::anyhow!("Failed to parse SPEC at {}: {error}", spec_path.display())
-            })?;
-            validate_runtime_spec(&spec)?;
-            tracing::info!(service = %spec.name, "Starting nosrc MCP stdio server");
-            mcp::serve(spec, cache_dir, no_cache).await
+            let spec = match spec_path {
+                Some(path) => {
+                    let spec_text = tokio::fs::read_to_string(&path).await.map_err(|error| {
+                        anyhow::anyhow!("Failed to read SPEC at {}: {error}", path.display())
+                    })?;
+                    let spec = ServiceSpec::parse(&spec_text).map_err(|error| {
+                        anyhow::anyhow!("Failed to parse SPEC at {}: {error}", path.display())
+                    })?;
+                    validate_runtime_spec(&spec)?;
+                    Some((spec, spec_text))
+                }
+                None => None,
+            };
+            tracing::info!(
+                service = spec
+                    .as_ref()
+                    .map(|(value, _)| value.name.as_str())
+                    .unwrap_or("<uninitialized>"),
+                shared_http = http_port.is_some(),
+                mcp_first = spec.is_none(),
+                "Starting nosrc MCP stdio server"
+            );
+            mcp::serve(
+                spec,
+                cache_dir,
+                no_cache,
+                http_port.map(|port| (http_bind, port)),
+            )
+            .await
         }
         None => {
             let filter =
@@ -639,6 +665,10 @@ mod tests {
             "mcp",
             "--spec",
             "./SERVICE.md",
+            "--http-port",
+            "8081",
+            "--http-bind",
+            "0.0.0.0",
             "--cache-dir",
             "./cache",
             "--no-cache",
@@ -648,14 +678,32 @@ mod tests {
         match cli.command {
             Some(Commands::Mcp {
                 spec,
+                http_port,
+                http_bind,
                 cache_dir,
                 no_cache,
                 verbose,
             }) => {
-                assert_eq!(spec, std::path::PathBuf::from("./SERVICE.md"));
+                assert_eq!(spec, Some(std::path::PathBuf::from("./SERVICE.md")));
+                assert_eq!(http_port, Some(8081));
+                assert_eq!(http_bind, "0.0.0.0".parse::<IpAddr>().unwrap());
                 assert_eq!(cache_dir, std::path::PathBuf::from("./cache"));
                 assert!(no_cache);
                 assert!(verbose);
+            }
+            _ => panic!("Expected Commands::Mcp"),
+        }
+    }
+
+    #[test]
+    fn mcp_subcommand_can_start_without_an_operator_spec() {
+        let cli = Cli::try_parse_from(["nosrc", "mcp", "--no-cache"]).unwrap();
+        match cli.command {
+            Some(Commands::Mcp {
+                spec, http_port, ..
+            }) => {
+                assert!(spec.is_none());
+                assert_eq!(http_port, None);
             }
             _ => panic!("Expected Commands::Mcp"),
         }

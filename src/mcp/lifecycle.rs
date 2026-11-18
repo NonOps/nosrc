@@ -9,6 +9,7 @@ use crate::artifact_cache::ArtifactCache;
 use crate::engine::http_envelope::{RequestEnvelope, ResponseEnvelope};
 use crate::engine::quickjs::{CompiledHandler, QuickJsEngine, QuickJsHandler};
 use crate::error::EngineError;
+use crate::ingress::{ActiveGeneration, IngressState};
 use crate::spec::ServiceSpec;
 use crate::synthesizer::{ContractAssertion, LlmConfig, SynthesisOutput, Synthesizer};
 use crate::verifier::{AssertionResult, ShadowVerifier};
@@ -52,7 +53,26 @@ pub enum GenerationState {
 #[serde(rename_all = "snake_case")]
 pub enum SourceType {
     Spec,
+    DraftSpec,
     DirectJs,
+}
+
+fn has_unambiguous_export_provenance(
+    draft_spec: bool,
+    trusted_assertions: &[ContractAssertion],
+) -> bool {
+    !(draft_spec && !trusted_assertions.is_empty())
+}
+
+#[derive(Clone)]
+pub struct GenerationExport {
+    pub spec: ServiceSpec,
+    pub spec_text: String,
+    pub module_hash: String,
+    pub output: SynthesisOutput,
+    pub component_bytes: Vec<u8>,
+    pub trusted_assertions: Vec<ContractAssertion>,
+    pub policy_mode: String,
 }
 
 pub struct PreparedGeneration {
@@ -67,6 +87,7 @@ pub struct PreparedGeneration {
     pub supplemental_results: Vec<AssertionResult>,
     pub created_at: Instant,
     pub handler: Arc<Mutex<QuickJsHandler>>,
+    pub export_data: Option<GenerationExport>,
 }
 
 #[derive(Debug, Serialize)]
@@ -198,21 +219,6 @@ fn validate_assertions(assertions: &[ContractAssertion], label: &str) -> Result<
     Ok(())
 }
 
-fn compile_handler_on_blocking_thread(
-    engine: QuickJsEngine,
-    source: String,
-) -> Result<CompiledHandler, EngineError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| {
-            EngineError::Internal(format!(
-                "Failed to create componentization runtime: {error}"
-            ))
-        })?;
-    runtime.block_on(engine.compile_handler(&source))
-}
-
 fn compile_handler_with_artifact_on_blocking_thread(
     engine: QuickJsEngine,
     source: String,
@@ -252,7 +258,10 @@ fn validate_mcp_synthesis(output: &SynthesisOutput) -> Result<(), EngineError> {
 #[derive(Clone)]
 pub struct PreparationContext {
     engine: QuickJsEngine,
-    spec: ServiceSpec,
+    spec: Option<ServiceSpec>,
+    spec_text: Option<String>,
+    draft_spec: bool,
+    draft_assertions: Vec<ContractAssertion>,
     cache: Option<ArtifactCache>,
     policy: AcceptancePolicy,
 }
@@ -278,22 +287,28 @@ impl PreparationContext {
 
         let engine = self.engine.clone();
         let source_for_compile = js_source.clone();
-        let compiled = tokio::task::spawn_blocking(move || {
-            compile_handler_on_blocking_thread(engine, source_for_compile)
+        let (compiled, component_bytes) = tokio::task::spawn_blocking(move || {
+            compile_handler_with_artifact_on_blocking_thread(engine, source_for_compile)
         })
         .await
         .map_err(|error| {
             EngineError::Internal(format!("Componentization worker failed: {error}"))
         })??;
 
+        let export_context = self
+            .spec
+            .clone()
+            .zip(self.spec_text.clone())
+            .map(|(spec, spec_text)| (spec, spec_text, self.policy.spec_assertions.clone()));
         let engine = self.engine.clone();
         let policy = self.policy.clone();
-        tokio::task::spawn_blocking(move || {
+        let source_for_prepared = js_source.clone();
+        let mut prepared = tokio::task::spawn_blocking(move || {
             prepare_compiled(
                 engine,
                 policy,
                 compiled,
-                js_source,
+                source_for_prepared,
                 SourceType::DirectJs,
                 Vec::new(),
                 supplemental_assertions,
@@ -304,16 +319,77 @@ impl PreparationContext {
             PreparationError::Runtime(EngineError::Internal(format!(
                 "Candidate verification worker failed: {error}"
             )))
-        })?
+        })??;
+        if let Some((spec, spec_text, trusted_assertions)) = export_context {
+            prepared.export_data = Some(GenerationExport {
+                spec,
+                spec_text,
+                module_hash: prepared.module_hash.clone(),
+                output: SynthesisOutput {
+                    handler_code: js_source,
+                    code_format: "javascript".to_string(),
+                    assertions: Vec::new(),
+                    rationale: None,
+                },
+                component_bytes,
+                trusted_assertions,
+                policy_mode: "operator".to_string(),
+            });
+        }
+        Ok(prepared)
     }
 
     pub async fn prepare_from_spec(
         self,
         supplemental_assertions: Vec<ContractAssertion>,
     ) -> Result<PreparedGeneration, PreparationError> {
+        if self.spec.is_none() {
+            return Err(PreparationError::Runtime(EngineError::Internal(
+                "No operator SPEC is loaded; provide draft_spec to prepare an agent-authored contract".into(),
+            )));
+        }
         let synthesizer = Synthesizer::new(LlmConfig::from_env()?);
         self.prepare_from_spec_with_synthesizer(supplemental_assertions, synthesizer)
             .await
+    }
+
+    /// Synthesize from an agent-provided draft SPEC without changing the acceptance policy.
+    pub async fn prepare_from_draft_spec(
+        mut self,
+        spec_text: String,
+        supplemental_assertions: Vec<ContractAssertion>,
+    ) -> Result<PreparedGeneration, PreparationError> {
+        if spec_text.len() > MAX_JS_SOURCE_BYTES {
+            return Err(PreparationError::Runtime(EngineError::Internal(
+                "Draft SPEC exceeds the 2 MiB input limit".into(),
+            )));
+        }
+        let draft = ServiceSpec::parse(&spec_text).map_err(|error| {
+            PreparationError::Runtime(EngineError::Internal(format!(
+                "Invalid draft SPEC: {error}"
+            )))
+        })?;
+        if draft.capabilities.state != "volatile"
+            || !draft.capabilities.egress.is_empty()
+            || !draft.schema.is_empty()
+        {
+            return Err(PreparationError::Runtime(EngineError::Internal(
+                "Draft SPEC requests capabilities unavailable in this runtime".into(),
+            )));
+        }
+        draft.validate_verification().map_err(|error| {
+            PreparationError::Runtime(EngineError::Internal(format!(
+                "Invalid draft SPEC verification: {error}"
+            )))
+        })?;
+        let draft_policy = AcceptancePolicy::from_spec(&draft).map_err(EngineError::Internal)?;
+        // These cases are candidate checks, not operator-trusted acceptance policy.
+        self.draft_assertions = draft_policy.spec_assertions;
+        // The draft controls synthesis input only; the startup acceptance policy is unchanged.
+        self.spec = Some(draft);
+        self.spec_text = Some(spec_text);
+        self.draft_spec = true;
+        self.prepare_from_spec(supplemental_assertions).await
     }
 
     async fn prepare_from_spec_with_synthesizer(
@@ -323,8 +399,14 @@ impl PreparationContext {
     ) -> Result<PreparedGeneration, PreparationError> {
         validate_assertions(&supplemental_assertions, "supplemental")?;
         self.policy.validate().map_err(EngineError::Internal)?;
+        let spec = self
+            .spec
+            .as_ref()
+            .ok_or_else(|| EngineError::Internal("No SPEC is available for synthesis".into()))?
+            .clone();
 
-        let cache_key = synthesizer.artifact_cache_key(&self.spec);
+        let spec_text = self.spec_text.clone();
+        let cache_key = synthesizer.artifact_cache_key(&spec);
         let cached = match self.cache.clone() {
             Some(cache) => {
                 let key = cache_key.clone();
@@ -354,7 +436,7 @@ impl PreparationContext {
                     Ok(compiled) => (cached.synthesis, compiled, component_bytes, true),
                     Err(error) => {
                         tracing::warn!(%error, "Cached MCP artifact failed compilation; synthesizing again");
-                        let output = synthesizer.synthesize(&self.spec, &[]).await?;
+                        let output = synthesizer.synthesize(&spec, &[]).await?;
                         validate_mcp_synthesis(&output)?;
                         let engine = self.engine.clone();
                         let source = output.handler_code.clone();
@@ -372,7 +454,7 @@ impl PreparationContext {
                 }
             }
             None => {
-                let output = synthesizer.synthesize(&self.spec, &[]).await?;
+                let output = synthesizer.synthesize(&spec, &[]).await?;
                 validate_mcp_synthesis(&output)?;
                 let engine = self.engine.clone();
                 let source = output.handler_code.clone();
@@ -387,18 +469,26 @@ impl PreparationContext {
             }
         };
 
+        let cache_output = output.clone();
+        let mut output = output;
+        output.assertions.extend(self.draft_assertions.clone());
         validate_mcp_synthesis(&output)?;
         let engine = self.engine.clone();
         let policy = self.policy.clone();
         let model_assertions = output.assertions.clone();
         let js_source = output.handler_code.clone();
+        let source_type = if self.draft_spec {
+            SourceType::DraftSpec
+        } else {
+            SourceType::Spec
+        };
         let prepared = tokio::task::spawn_blocking(move || {
             prepare_compiled(
                 engine,
                 policy,
                 compiled,
                 js_source,
-                SourceType::Spec,
+                source_type,
                 model_assertions,
                 supplemental_assertions,
             )
@@ -410,10 +500,34 @@ impl PreparationContext {
             )))
         })??;
 
+        let mut prepared = prepared;
+        // A draft SPEC may be used as synthesis input while an operator SPEC
+        // remains the immutable acceptance policy. The current bundle format has
+        // one SPEC.md, so exporting that combination would misattribute the
+        // operator-trusted assertions to the draft. Keep the generation usable,
+        // but do not make it exportable until the bundle can preserve both sources.
+        if let Some(spec_text) = spec_text.filter(|_| {
+            has_unambiguous_export_provenance(self.draft_spec, &self.policy.spec_assertions)
+        }) {
+            prepared.export_data = Some(GenerationExport {
+                spec,
+                spec_text,
+                module_hash: prepared.module_hash.clone(),
+                output: output.clone(),
+                component_bytes: component_bytes.clone(),
+                trusted_assertions: self.policy.spec_assertions.clone(),
+                policy_mode: if self.policy.spec_assertions.is_empty() {
+                    "draft".to_string()
+                } else {
+                    "operator".to_string()
+                },
+            });
+        }
+
         if !cache_hit {
             if let Some(cache) = self.cache.clone() {
                 let key = cache_key.clone();
-                let output = output.clone();
+                let output = cache_output;
                 match tokio::task::spawn_blocking(move || {
                     cache.store(&key, &output, &component_bytes)
                 })
@@ -474,20 +588,26 @@ pub(super) fn prepare_compiled(
         )
     };
 
-    // Trusted SPEC cases run sequentially on one isolated candidate.
-    let mut trusted_candidate = instantiate(&engine)?;
-    let trusted_results =
-        ShadowVerifier::new().evaluate_handler(&mut trusted_candidate, &policy.spec_assertions)?;
-    drop(trusted_candidate);
-    let failed_trusted = failed_results(&trusted_results);
-    if !failed_trusted.is_empty() {
-        return Err(PreparationError::Verification(failed_trusted));
-    }
+    // Operator-controlled policy is mandatory when configured. MCP-first mode has
+    // no trusted application suite yet, but retains the same hard runtime ceilings.
+    let trusted_results = if policy.spec_assertions.is_empty() {
+        Vec::new()
+    } else {
+        let mut trusted_candidate = instantiate(&engine)?;
+        let results = ShadowVerifier::new()
+            .evaluate_handler(&mut trusted_candidate, &policy.spec_assertions)?;
+        drop(trusted_candidate);
+        let failed_trusted = failed_results(&results);
+        if !failed_trusted.is_empty() {
+            return Err(PreparationError::Verification(failed_trusted));
+        }
+        results
+    };
 
     // The CLI invariant also applies to SPEC-driven MCP synthesis: generated
     // regression assertions must all pass, in sequence, on their own instance.
     let mut model_results = Vec::new();
-    if source_type == SourceType::Spec {
+    if source_type != SourceType::DirectJs {
         let mut model_candidate = instantiate(&engine)?;
         model_results =
             ShadowVerifier::new().evaluate_handler(&mut model_candidate, &model_assertions)?;
@@ -534,6 +654,7 @@ pub(super) fn prepare_compiled(
         supplemental_results,
         created_at: Instant::now(),
         handler: Arc::new(Mutex::new(handler)),
+        export_data: None,
     })
 }
 
@@ -541,7 +662,8 @@ pub(super) fn prepare_compiled(
 /// single-process and single-application; MCP tool calls serialize state changes.
 pub struct AppLifecycle {
     engine: QuickJsEngine,
-    spec: ServiceSpec,
+    spec: Option<ServiceSpec>,
+    spec_text: Option<String>,
     cache: Option<ArtifactCache>,
     policy: AcceptancePolicy,
     generations: HashMap<GenerationId, PreparedGeneration>,
@@ -549,15 +671,42 @@ pub struct AppLifecycle {
     previous_id: Option<GenerationId>,
     next_sequence: u64,
     max_generations: usize,
+    ingress_state: Arc<IngressState>,
 }
 
 impl AppLifecycle {
     pub fn new(spec: &ServiceSpec, cache: Option<ArtifactCache>) -> Result<Self, EngineError> {
         let policy = AcceptancePolicy::from_spec(spec).map_err(EngineError::Internal)?;
         policy.validate().map_err(EngineError::Internal)?;
+        Self::with_policy(Some(spec.clone()), None, cache, policy)
+    }
+
+    pub fn new_with_spec_text(
+        spec: &ServiceSpec,
+        spec_text: String,
+        cache: Option<ArtifactCache>,
+    ) -> Result<Self, EngineError> {
+        let policy = AcceptancePolicy::from_spec(spec).map_err(EngineError::Internal)?;
+        policy.validate().map_err(EngineError::Internal)?;
+        Self::with_policy(Some(spec.clone()), Some(spec_text), cache, policy)
+    }
+
+    pub fn new_mcp_first(cache: Option<ArtifactCache>) -> Result<Self, EngineError> {
+        let policy = AcceptancePolicy::baseline();
+        policy.validate().map_err(EngineError::Internal)?;
+        Self::with_policy(None, None, cache, policy)
+    }
+
+    fn with_policy(
+        spec: Option<ServiceSpec>,
+        spec_text: Option<String>,
+        cache: Option<ArtifactCache>,
+        policy: AcceptancePolicy,
+    ) -> Result<Self, EngineError> {
         Ok(Self {
             engine: QuickJsEngine::new()?,
-            spec: spec.clone(),
+            spec,
+            spec_text,
             cache,
             policy,
             generations: HashMap::new(),
@@ -565,16 +714,38 @@ impl AppLifecycle {
             previous_id: None,
             next_sequence: 1,
             max_generations: 5,
+            ingress_state: Arc::new(IngressState::new()),
         })
+    }
+
+    /// Shared HTTP ingress state. MCP activation and rollback publish to this state.
+    pub fn ingress_state(&self) -> Arc<IngressState> {
+        self.ingress_state.clone()
     }
 
     pub fn preparation_context(&self) -> PreparationContext {
         PreparationContext {
             engine: self.engine.clone(),
             spec: self.spec.clone(),
+            spec_text: self.spec_text.clone(),
+            draft_spec: false,
+            draft_assertions: Vec::new(),
             cache: self.cache.clone(),
             policy: self.policy.clone(),
         }
+    }
+
+    pub fn export_generation(&self, id: &GenerationId) -> Result<GenerationExport, EngineError> {
+        let generation = self
+            .generations
+            .get(id)
+            .ok_or_else(|| EngineError::Internal("Unknown generation ID".into()))?;
+        generation.export_data.clone().ok_or_else(|| {
+            EngineError::Internal(
+                "Generation has no exportable SPEC provenance; exports require either an operator SPEC or a draft SPEC without a separately loaded operator acceptance policy"
+                    .into(),
+            )
+        })
     }
 
     pub fn insert_prepared(&mut self, mut generation: PreparedGeneration) -> GenerationId {
@@ -635,6 +806,11 @@ impl AppLifecycle {
         })?;
         generation.state = GenerationState::Active;
         self.active_id = Some(id.clone());
+        self.ingress_state.hot_swap(ActiveGeneration {
+            generation_id: generation.sequence,
+            module_hash: generation.module_hash.clone(),
+            handler: generation.handler.clone(),
+        });
         Ok(())
     }
 
@@ -764,6 +940,11 @@ impl AppLifecycle {
         previous.state = GenerationState::Active;
         self.active_id = Some(id.clone());
         self.previous_id = current;
+        self.ingress_state.hot_swap(ActiveGeneration {
+            generation_id: previous.sequence,
+            module_hash: previous.module_hash.clone(),
+            handler: previous.handler.clone(),
+        });
         Ok(id)
     }
 
@@ -838,6 +1019,22 @@ mod tests {
             )))
         })??;
         Ok(lifecycle.insert_prepared(prepared))
+    }
+
+    #[test]
+    fn draft_export_is_blocked_when_operator_assertions_have_separate_provenance() {
+        let trusted = vec![ContractAssertion {
+            name: "operator assertion".into(),
+            request: request("/health"),
+            expected_status: 200,
+            body_contains: None,
+            header_matches: None,
+        }];
+
+        assert!(has_unambiguous_export_provenance(false, &trusted));
+        assert!(has_unambiguous_export_provenance(false, &[]));
+        assert!(has_unambiguous_export_provenance(true, &[]));
+        assert!(!has_unambiguous_export_provenance(true, &trusted));
     }
 
     #[test]
@@ -1072,7 +1269,10 @@ mod tests {
         let policy = AcceptancePolicy::from_spec(&spec).unwrap();
         let context = PreparationContext {
             engine,
-            spec,
+            spec: Some(spec),
+            spec_text: None,
+            draft_spec: false,
+            draft_assertions: Vec::new(),
             cache: Some(cache),
             policy,
         };

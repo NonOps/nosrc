@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,6 +20,7 @@ use crate::mcp::lifecycle::{AppLifecycle, GenerationId, PreparationError, Prepar
 #[schemars(crate = "rmcp::schemars")]
 enum PrepareSource {
     Spec,
+    DraftSpec,
     DirectJs,
 }
 
@@ -30,6 +32,8 @@ struct PrepareAppParams {
     source: PrepareSource,
     /// ES module source exporting handle(requestJson).
     js_code: Option<String>,
+    /// Agent-authored draft contract used as synthesis input, never as operator policy.
+    draft_spec: Option<String>,
     /// Optional informational assertions; these never replace SPEC assertions.
     supplemental_assertions: Option<Vec<serde_json::Value>>,
 }
@@ -40,6 +44,16 @@ struct PrepareAppParams {
 struct ActivateAppParams {
     /// Opaque generation ID returned by prepare_app.
     generation_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+struct ExportAppParams {
+    /// Opaque generation ID returned by prepare_app.
+    generation_id: String,
+    /// New or absent destination directory for the complete offline bundle.
+    out_dir: PathBuf,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -134,16 +148,29 @@ impl NosrcMcpServer {
     ) -> CallToolResult {
         let source = params.source;
         let js_code = params.js_code;
+        let draft_spec = params.draft_spec;
         if source == PrepareSource::DirectJs && js_code.is_none() {
             return CallToolResult::structured_error(json!({
                 "error": "missing_js_code",
                 "message": "js_code is required when source is 'direct_js'"
             }));
         }
-        if source == PrepareSource::Spec && js_code.is_some() {
+        if source != PrepareSource::DirectJs && js_code.is_some() {
             return CallToolResult::structured_error(json!({
                 "error": "unexpected_js_code",
-                "message": "js_code must be omitted when source is 'spec'"
+                "message": "js_code is accepted only when source is 'direct_js'"
+            }));
+        }
+        if source == PrepareSource::DraftSpec && draft_spec.is_none() {
+            return CallToolResult::structured_error(json!({
+                "error": "missing_draft_spec",
+                "message": "draft_spec is required when source is 'draft_spec'"
+            }));
+        }
+        if source != PrepareSource::DraftSpec && draft_spec.is_some() {
+            return CallToolResult::structured_error(json!({
+                "error": "unexpected_draft_spec",
+                "message": "draft_spec is accepted only when source is 'draft_spec'"
             }));
         }
         let assertions = match params.supplemental_assertions {
@@ -177,6 +204,12 @@ impl NosrcMcpServer {
                     )),
                 },
                 PrepareSource::Spec => context.prepare_from_spec(assertions).await,
+                PrepareSource::DraftSpec => match draft_spec {
+                    Some(spec) => context.prepare_from_draft_spec(spec, assertions).await,
+                    None => Err(PreparationError::Runtime(
+                        crate::error::EngineError::Internal("draft_spec is required".into()),
+                    )),
+                },
             }
         };
         prepare_and_publish(
@@ -202,6 +235,58 @@ impl NosrcMcpServer {
             })),
             Err(error) => CallToolResult::structured_error(json!({
                 "error": "activation_failed",
+                "message": error.to_string()
+            })),
+        }
+    }
+
+    #[tool(
+        description = "Export a prepared generation using the same atomic artifact pipeline as the CLI. The resulting bundle can be served offline with 'nosrc serve --bundle' without provider credentials."
+    )]
+    async fn export_app(&self, Parameters(params): Parameters<ExportAppParams>) -> CallToolResult {
+        let export = {
+            let lifecycle = self.lifecycle.lock().await;
+            match lifecycle
+                .export_generation(&GenerationId::from_string(params.generation_id.clone()))
+            {
+                Ok(export) => export,
+                Err(error) => {
+                    return CallToolResult::structured_error(json!({
+                        "error": "export_unavailable",
+                        "message": error.to_string()
+                    }));
+                }
+            }
+        };
+        let out_dir = params.out_dir;
+        let policy_mode = export.policy_mode.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            crate::export::export_artifacts_with_policy(
+                &out_dir,
+                &export.spec,
+                &export.spec_text,
+                &export.output,
+                &export.component_bytes,
+                &export.module_hash,
+                crate::export::ExportPolicy {
+                    trusted_assertions: &export.trusted_assertions,
+                    mode: &export.policy_mode,
+                },
+            )
+        })
+        .await;
+        match result {
+            Ok(Ok(path)) => CallToolResult::structured(json!({
+                "generation_id": params.generation_id,
+                "bundle_path": path.display().to_string(),
+                "policy_mode": policy_mode
+            })),
+            Ok(Err(error)) => CallToolResult::structured_error(json!({
+                "error": "export_failed",
+                "message": error.to_string()
+            })),
+            Err(error) => CallToolResult::structured_error(json!({
+                "error": "export_task_failed",
                 "message": error.to_string()
             })),
         }
@@ -404,10 +489,16 @@ mod tests {
             .prepare_app(Parameters(PrepareAppParams {
                 source: PrepareSource::DirectJs,
                 js_code: Some(HANDLER_SOURCE.to_string()),
+                draft_spec: None,
                 supplemental_assertions: None,
             }))
             .await;
-        assert_eq!(prepared.is_error, Some(false));
+        assert_eq!(
+            prepared.is_error,
+            Some(false),
+            "prepare_app failed: {:?}",
+            prepared.structured_content
+        );
         let generation_id = prepared.structured_content.unwrap()["generation_id"]
             .as_str()
             .unwrap()
@@ -425,6 +516,20 @@ mod tests {
             }))
             .await;
         assert_eq!(activated.structured_content.unwrap()["state"], "active");
+
+        // MCP activation publishes the selected generation to the HTTP request path.
+        let ingress_state = server.lifecycle.lock().await.ingress_state();
+        let app = crate::ingress::build_ingress_router(ingress_state);
+        let http_response = tower::ServiceExt::oneshot(
+            app,
+            axum::http::Request::builder()
+                .uri("/health")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(http_response.status(), axum::http::StatusCode::OK);
 
         let invoked = server
             .invoke_app(Parameters(InvokeAppParams {
@@ -457,6 +562,75 @@ mod tests {
         let envelope: serde_json::Value = serde_json::from_str(&echoed_body).unwrap();
         assert_eq!(envelope["headers"]["x-test"], "yes");
         assert_eq!(envelope["query"]["tag"], "last");
+    }
+
+    #[tokio::test]
+    async fn export_app_reuses_existing_bundle_pipeline_and_serves_offline() {
+        use crate::engine::quickjs::test_support::HANDLER_SOURCE;
+        use crate::spec::ServiceSpec;
+
+        let spec_text = "# Service: mcp-export-test\n\n## Capabilities\n- state: volatile\n- egress: []\n\n## Endpoints\n### `GET /health`\n- Response `200`: `healthy`\n\n## Verification\n### `GET /health`\n- Response `200`\n- Body contains: `healthy`\n";
+        let spec = ServiceSpec::parse(spec_text).unwrap();
+        let lifecycle =
+            AppLifecycle::new_with_spec_text(&spec, spec_text.to_string(), None).unwrap();
+        let server = NosrcMcpServer {
+            lifecycle: Arc::new(Mutex::new(lifecycle)),
+        };
+        let prepared = server
+            .prepare_app(Parameters(PrepareAppParams {
+                source: PrepareSource::DirectJs,
+                js_code: Some(HANDLER_SOURCE.to_string()),
+                draft_spec: None,
+                supplemental_assertions: None,
+            }))
+            .await;
+        assert_eq!(prepared.is_error, Some(false));
+        let generation_id = prepared.structured_content.unwrap()["generation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let temp = tempfile::tempdir().unwrap();
+        let bundle_path = temp.path().join("offline-bundle");
+        let exported = server
+            .export_app(Parameters(ExportAppParams {
+                generation_id,
+                out_dir: bundle_path.clone(),
+            }))
+            .await;
+        assert_eq!(exported.is_error, Some(false));
+        assert_eq!(
+            std::fs::read_to_string(bundle_path.join("SPEC.md")).unwrap(),
+            spec_text
+        );
+
+        let (_, summary) = crate::bundle::load_and_verify(&bundle_path).unwrap();
+        assert_eq!(summary.service_name, "mcp-export-test");
+        assert_eq!(summary.trusted_assertions, 1);
+        assert_eq!(summary.generated_assertions, 0);
+    }
+
+    #[tokio::test]
+    async fn mcp_first_mode_prepares_direct_javascript_without_operator_policy() {
+        use crate::engine::quickjs::test_support::HANDLER_SOURCE;
+
+        let lifecycle = AppLifecycle::new_mcp_first(None).unwrap();
+        let server = NosrcMcpServer {
+            lifecycle: Arc::new(Mutex::new(lifecycle)),
+        };
+        let prepared = server
+            .prepare_app(Parameters(PrepareAppParams {
+                source: PrepareSource::DirectJs,
+                js_code: Some(HANDLER_SOURCE.to_string()),
+                draft_spec: None,
+                supplemental_assertions: None,
+            }))
+            .await;
+        assert_eq!(prepared.is_error, Some(false));
+        assert_eq!(
+            prepared.structured_content.unwrap()["trusted_assertions_passed"],
+            0
+        );
     }
 
     #[tokio::test]
@@ -607,7 +781,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stdio_tools_list_exposes_rollback_app() {
+    async fn stdio_tools_list_exposes_export_app() {
         use crate::spec::ServiceSpec;
         use rmcp::ServiceExt;
 
@@ -635,6 +809,7 @@ mod tests {
             names,
             vec![
                 "activate_app",
+                "export_app",
                 "get_app_status",
                 "invoke_app",
                 "prepare_app",
@@ -662,6 +837,7 @@ mod tests {
             .prepare_app(Parameters(PrepareAppParams {
                 source: PrepareSource::DirectJs,
                 js_code: Some("export function handle(".into()),
+                draft_spec: None,
                 supplemental_assertions: None,
             }))
             .await;
@@ -712,6 +888,7 @@ mod tests {
             .prepare_app(Parameters(PrepareAppParams {
                 source: PrepareSource::DirectJs,
                 js_code: Some(bad_handler.into()),
+                draft_spec: None,
                 supplemental_assertions: Some(vec![serde_json::to_value(supplemental).unwrap()]),
             }))
             .await;
@@ -729,7 +906,7 @@ mod tests {
     }
 
     #[test]
-    fn server_registers_exactly_the_four_v02_lifecycle_tools() {
+    fn server_registers_all_six_lifecycle_tools() {
         let tools = NosrcMcpServer::tool_router().list_all();
         let mut names: Vec<String> = tools
             .into_iter()
@@ -740,6 +917,7 @@ mod tests {
             names,
             vec![
                 "activate_app".to_string(),
+                "export_app".to_string(),
                 "get_app_status".to_string(),
                 "invoke_app".to_string(),
                 "prepare_app".to_string(),
