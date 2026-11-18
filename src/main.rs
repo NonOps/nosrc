@@ -1,4 +1,5 @@
 pub mod artifact_cache;
+pub mod bundle;
 pub mod engine;
 pub mod error;
 pub mod export;
@@ -72,6 +73,24 @@ pub enum Commands {
         /// Bypass artifact cache reads and writes
         #[arg(long)]
         no_cache: bool,
+
+        /// Enable verbose diagnostics
+        #[arg(short, long, action = clap::ArgAction::SetTrue)]
+        verbose: bool,
+    },
+    /// Serve a previously exported bundle without LLM credentials or provider access
+    Serve {
+        /// Directory containing handler.js, component.wasm, assertions.json, and manifest.json
+        #[arg(long, required = true)]
+        bundle: std::path::PathBuf,
+
+        /// HTTP listen port
+        #[arg(short, long, default_value = "8080")]
+        port: u16,
+
+        /// Address to listen on. Defaults to loopback.
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: IpAddr,
 
         /// Enable verbose diagnostics
         #[arg(short, long, action = clap::ArgAction::SetTrue)]
@@ -417,6 +436,47 @@ async fn main() -> anyhow::Result<()> {
             );
             Ok(())
         }
+        Some(Commands::Serve {
+            bundle: bundle_dir,
+            port,
+            bind,
+            verbose,
+        }) => {
+            let filter =
+                tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                    tracing_subscriber::EnvFilter::new(default_log_filter(verbose))
+                });
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_writer(std::io::stderr)
+                .with_target(false)
+                .init();
+
+            let (generation, summary) = bundle::load_and_verify(&bundle_dir)?;
+            tracing::info!(
+                service = %summary.service_name,
+                trusted_assertions = summary.trusted_assertions,
+                generated_assertions = summary.generated_assertions,
+                module_hash = %generation.module_hash,
+                bundle = %summary.bundle_path.display(),
+                "Offline bundle passed integrity checks and contract verification"
+            );
+
+            let state = Arc::new(IngressState::new());
+            state.hot_swap(generation);
+
+            let app = ingress::build_ingress_router(state);
+            let listener = tokio::net::TcpListener::bind((bind, port)).await?;
+
+            tracing::info!(
+                address = %listener.local_addr()?,
+                service = %summary.service_name,
+                "nosrc is serving a verified offline bundle"
+            );
+
+            axum::serve(listener, app).await?;
+            Ok(())
+        }
         Some(Commands::Mcp {
             spec: spec_path,
             cache_dir,
@@ -535,6 +595,36 @@ mod tests {
             }
             _ => panic!("Expected Commands::Export"),
         }
+    }
+
+    #[test]
+    fn serve_subcommand_requires_bundle_and_parses_listener_options() {
+        let cli = Cli::try_parse_from([
+            "nosrc",
+            "serve",
+            "--bundle",
+            "./dist",
+            "--bind",
+            "0.0.0.0",
+            "--port",
+            "9090",
+            "--verbose",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Serve { bundle, bind, port, verbose }) => {
+                assert_eq!(bundle, std::path::PathBuf::from("./dist"));
+                assert_eq!(bind, "0.0.0.0".parse::<IpAddr>().unwrap());
+                assert_eq!(port, 9090);
+                assert!(verbose);
+            }
+            _ => panic!("Expected Commands::Serve"),
+        }
+    }
+
+    #[test]
+    fn serve_subcommand_requires_bundle_argument() {
+        assert!(Cli::try_parse_from(["nosrc", "serve"]).is_err());
     }
 
     #[test]
