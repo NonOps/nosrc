@@ -69,7 +69,10 @@ async fn prepare_generation(
     let validation_started = Instant::now();
     tracing::debug!("Validating runtime capabilities and trusted SPEC verification suite");
     validate_runtime_spec(spec)?;
-    tracing::debug!(elapsed_ms = validation_started.elapsed().as_millis(), "SPEC validation completed");
+    tracing::debug!(
+        elapsed_ms = validation_started.elapsed().as_millis(),
+        "SPEC validation completed"
+    );
 
     let synthesis_started = Instant::now();
     let output = synthesizer.synthesize(spec, &[]).await?;
@@ -129,15 +132,22 @@ async fn prepare_generation(
         .collect::<anyhow::Result<_>>()?;
 
     let trusted_started = Instant::now();
-    tracing::debug!(assertions = trusted_assertions.len(), "Running SPEC-authored trusted verification suite");
+    tracing::debug!(
+        assertions = trusted_assertions.len(),
+        "Running SPEC-authored trusted verification suite"
+    );
     let mut trusted_candidate = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
-    let trusted_results = match ShadowVerifier::new().verify_handler(&mut trusted_candidate, &trusted_assertions) {
-        Ok(results) => results,
-        Err(error) => {
-            tracing::error!(suite = "trusted", "Contract verification failed; detailed error returned to caller");
-            return Err(error.into());
-        }
-    };
+    let trusted_results =
+        match ShadowVerifier::new().verify_handler(&mut trusted_candidate, &trusted_assertions) {
+            Ok(results) => results,
+            Err(error) => {
+                tracing::error!(
+                    suite = "trusted",
+                    "Contract verification failed; detailed error returned to caller"
+                );
+                return Err(error.into());
+            }
+        };
     tracing::debug!(
         passed = trusted_results.len(),
         total = trusted_assertions.len(),
@@ -147,15 +157,22 @@ async fn prepare_generation(
     drop(trusted_candidate);
 
     let generated_started = Instant::now();
-    tracing::debug!(assertions = output.assertions.len(), "Running model-generated supplemental verification suite");
+    tracing::debug!(
+        assertions = output.assertions.len(),
+        "Running model-generated supplemental verification suite"
+    );
     let mut generated_candidate = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
-    let generated_results = match ShadowVerifier::new().verify_handler(&mut generated_candidate, &output.assertions) {
-        Ok(results) => results,
-        Err(error) => {
-            tracing::error!(suite = "generated", "Contract verification failed; detailed error returned to caller");
-            return Err(error.into());
-        }
-    };
+    let generated_results =
+        match ShadowVerifier::new().verify_handler(&mut generated_candidate, &output.assertions) {
+            Ok(results) => results,
+            Err(error) => {
+                tracing::error!(
+                    suite = "generated",
+                    "Contract verification failed; detailed error returned to caller"
+                );
+                return Err(error.into());
+            }
+        };
     tracing::debug!(
         passed = generated_results.len(),
         total = output.assertions.len(),
