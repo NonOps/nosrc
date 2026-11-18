@@ -65,23 +65,38 @@ cargo test --all-targets
 
 The test suite includes a deterministic end-to-end startup run against a local mock OpenAI-compatible endpoint. It exercises synthesis, QuickJS componentization, both verification suites, production activation, and HTTP dispatch without an external API key.
 
-## Run
+## Run the minimal example
+
+From the repository root, set a key for your OpenAI-compatible provider and start the service:
 
 ```sh
-export LLM_API_KEY="..."
+export LLM_API_KEY="your-api-key"
 cargo run -- --spec ./examples/minimal/SPEC.md --port 8080
 ```
 
-The service validates the SPEC-authored verification suite, synthesizes and componentizes a handler, then runs the trusted cases and a separate model-generated assertion suite before binding the HTTP listener. Startup fails closed if either suite fails.
-
-Check process health and the active generation:
+For a compatible provider other than OpenAI, also set its API base URL and model before starting:
 
 ```sh
-curl http://localhost:8080/healthz
-curl http://localhost:8080/_nosrc/status
+export LLM_BASE_URL="https://your-provider.example/v1"
+export LLM_MODEL="your-model-name"
 ```
 
-Application routes are dispatched to the active verified JavaScript handler.
+The service validates the SPEC-authored verification suite, synthesizes and componentizes a handler, then runs the trusted cases and a separate model-generated assertion suite before binding the HTTP listener. Startup fails closed if either suite fails. Keep this terminal running.
+
+In a second terminal, check health and the active generation:
+
+```sh
+curl -i http://localhost:8080/healthz
+curl -sS http://localhost:8080/_nosrc/status
+```
+
+Then call the example application route:
+
+```sh
+curl -i http://localhost:8080/hello
+```
+
+The example contract is `GET /hello`, returning HTTP 200 with a JSON greeting containing `"message": "hello"`. Stop the service with Ctrl-C in the first terminal.
 
 ## Architecture and security
 
