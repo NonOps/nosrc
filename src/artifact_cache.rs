@@ -212,6 +212,20 @@ mod tests {
     }
 
     #[test]
+    fn cache_rejects_modified_synthesis_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache = ArtifactCache::new(directory.path());
+        let key = "c".repeat(64);
+        cache.store(&key, &synthesis(), b"component").unwrap();
+
+        let manifest_path = directory.path().join(&key).join("manifest.json");
+        let manifest = fs::read_to_string(&manifest_path).unwrap();
+        fs::write(&manifest_path, manifest.replace("\\"test\\"", "\\"tampered\\"")).unwrap();
+
+        assert!(cache.load(&key).is_none());
+    }
+
+    #[test]
     fn cache_rejects_invalid_keys() {
         let directory = tempfile::tempdir().unwrap();
         let cache = ArtifactCache::new(directory.path());
