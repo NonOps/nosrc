@@ -493,7 +493,12 @@ mod tests {
                 supplemental_assertions: None,
             }))
             .await;
-        assert_eq!(prepared.is_error, Some(false));
+        assert_eq!(
+            prepared.is_error,
+            Some(false),
+            "prepare_app failed: {:?}",
+            prepared.structured_content
+        );
         let generation_id = prepared.structured_content.unwrap()["generation_id"]
             .as_str()
             .unwrap()
