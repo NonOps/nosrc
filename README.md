@@ -154,7 +154,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
 ```
 
-The test suite includes a deterministic end-to-end startup run against a local mock OpenAI-compatible endpoint. It exercises synthesis, QuickJS componentization, verification, production activation, and HTTP dispatch without an external API key.
+The test suite includes deterministic end-to-end runs against a local mock OpenAI-compatible endpoint. In addition to the HTTP startup path, the MCP-first lifecycle test starts empty, prepares an agent-authored draft SPEC, activates it through the shared HTTP ingress, exports the complete bundle through the MCP lifecycle, and starts a separate offline HTTP runtime from the exported artifacts. It verifies the same response before and after export, reruns bundle assertions, confirms offline serving makes no provider request, and checks that a fresh MCP process starts empty. No external model provider or credentials are used.
 
 ## Release versions
 
