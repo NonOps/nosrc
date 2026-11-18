@@ -151,6 +151,38 @@ impl Synthesizer {
         }
     }
 
+    /// Stable identity for inputs and toolchain settings that affect a generated artifact.
+    ///
+    /// The API key is deliberately excluded. The configured provider URL and model name
+    /// are included, but mutable provider-side model aliases cannot guarantee reproducibility.
+    pub fn artifact_cache_key(&self, spec: &ServiceSpec) -> String {
+        use sha2::{Digest, Sha256};
+
+        let prompt = self.build_system_prompt();
+        let temperature = self.config.temperature.to_bits().to_be_bytes();
+        let fuel = crate::engine::quickjs::DEFAULT_COMPONENT_FUEL.to_be_bytes();
+        let memory = (crate::engine::quickjs::DEFAULT_COMPONENT_MEMORY_BYTES as u64).to_be_bytes();
+        let fields: [&[u8]; 10] = [
+            b"nosrc-artifact-cache-v1",
+            spec.raw_markdown.as_bytes(),
+            self.config.base_url.as_bytes(),
+            self.config.model.as_bytes(),
+            &temperature,
+            prompt.as_bytes(),
+            crate::engine::quickjs::HANDLER_WIT.as_bytes(),
+            b"componentize-qjs-0.6.0;wasmtime-50;runtime-default-sync",
+            &fuel,
+            &memory,
+        ];
+
+        let mut hasher = Sha256::new();
+        for field in fields {
+            hasher.update((field.len() as u64).to_be_bytes());
+            hasher.update(field);
+        }
+        format!("{:x}", hasher.finalize())
+    }
+
     /// Build the strict JavaScript handler and contract-assertion prompt.
     pub fn build_system_prompt(&self) -> String {
         r#"You are the nosrc service implementation synthesizer.
