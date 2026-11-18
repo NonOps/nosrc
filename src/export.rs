@@ -160,7 +160,13 @@ mod tests {
         let (spec, output, component_bytes) = fixture();
 
         let path = export_artifacts(
-            &out_dir, &spec, SPEC_TEXT, &output, &component_bytes, "mock_hash_123", &[],
+            &out_dir,
+            &spec,
+            SPEC_TEXT,
+            &output,
+            &component_bytes,
+            "mock_hash_123",
+            &[],
         )
         .unwrap();
 
@@ -170,9 +176,14 @@ mod tests {
             output.handler_code
         );
         assert!(path.join("assertions.json").is_file());
-        assert_eq!(std::fs::read(path.join("component.wasm")).unwrap(), component_bytes);
-        let manifest: ExportManifest =
-            serde_json::from_slice(&std::fs::read(path.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(
+            std::fs::read(path.join("component.wasm")).unwrap(),
+            component_bytes
+        );
+        let manifest: ExportManifest = serde_json::from_slice(
+            &std::fs::read(path.join("manifest.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(manifest.service_name, "Test");
         assert_eq!(manifest.module_hash, "mock_hash_123");
         assert_eq!(
@@ -190,7 +201,13 @@ mod tests {
         let (spec, output, component_bytes) = fixture();
 
         let error = export_artifacts(
-            &out_dir, &spec, SPEC_TEXT, &output, &component_bytes, "mock_hash_123", &[],
+            &out_dir,
+            &spec,
+            SPEC_TEXT,
+            &output,
+            &component_bytes,
+            "mock_hash_123",
+            &[],
         )
         .unwrap_err();
 
@@ -210,7 +227,13 @@ mod tests {
         let (spec, output, component_bytes) = fixture();
 
         assert!(export_artifacts(
-            &out_file, &spec, SPEC_TEXT, &output, &component_bytes, "mock_hash_123", &[],
+            &out_file,
+            &spec,
+            SPEC_TEXT,
+            &output,
+            &component_bytes,
+            "mock_hash_123",
+            &[],
         )
         .is_err());
         assert_eq!(std::fs::read_to_string(out_file).unwrap(), "keep");
