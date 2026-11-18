@@ -462,6 +462,7 @@ impl PreparationContext {
             }
         };
 
+        let cache_output = output.clone();
         let mut output = output;
         output.assertions.extend(self.draft_assertions.clone());
         validate_mcp_synthesis(&output)?;
@@ -512,7 +513,7 @@ impl PreparationContext {
         if !cache_hit {
             if let Some(cache) = self.cache.clone() {
                 let key = cache_key.clone();
-                let output = output.clone();
+                let output = cache_output;
                 match tokio::task::spawn_blocking(move || {
                     cache.store(&key, &output, &component_bytes)
                 })
