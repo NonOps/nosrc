@@ -135,10 +135,7 @@ impl ArtifactCache {
             schema_version: CACHE_SCHEMA_VERSION,
             cache_key: key.to_string(),
             component_sha256: format!("{:x}", Sha256::digest(component_bytes)),
-            synthesis_sha256: format!(
-                "{:x}",
-                Sha256::digest(serde_json::to_vec(synthesis)?)
-            ),
+            synthesis_sha256: format!("{:x}", Sha256::digest(serde_json::to_vec(synthesis)?)),
             synthesis: synthesis.clone(),
         };
         let manifest_bytes = serde_json::to_vec(&manifest)?;
@@ -206,7 +203,11 @@ mod tests {
         let key = "b".repeat(64);
         cache.store(&key, &synthesis(), b"original").unwrap();
 
-        fs::write(directory.path().join(&key).join("component.wasm"), b"tampered").unwrap();
+        fs::write(
+            directory.path().join(&key).join("component.wasm"),
+            b"tampered",
+        )
+        .unwrap();
 
         assert!(cache.load(&key).is_none());
     }
