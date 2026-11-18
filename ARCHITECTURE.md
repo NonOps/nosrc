@@ -43,7 +43,7 @@ The HTTP and export CLI paths:
 
 1. Read and parse the selected SPEC.
 2. Validate runtime-supported capabilities and the human-authored verification suite.
-3. Derive a SHA-256 cache identity from the raw SPEC, configured provider URL/model, synthesis prompt, WIT contract, resource budgets, componentizer/runtime settings, package version, and `Cargo.lock`.
+3. Derive a SHA-256 cache identity from the raw SPEC, configured provider URL/model, synthesis prompt, WIT contract, QuickJS fuel and linear-memory limits, componentizer/runtime configuration flags, package version, and `Cargo.lock`. Other execution limits that do not affect artifact generation are not separately represented in the key.
 4. Load a matching local cache entry or request JavaScript and supplemental assertions from the configured OpenAI-compatible endpoint.
 5. Componentize JavaScript when synthesis was required; compile the component with the current Wasmtime component engine even on a cache hit.
 6. Run trusted SPEC assertions against an isolated candidate instance.
