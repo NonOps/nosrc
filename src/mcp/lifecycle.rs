@@ -355,9 +355,25 @@ impl PreparationContext {
 
     /// Synthesize from an agent-provided draft SPEC without changing the acceptance policy.
     pub async fn prepare_from_draft_spec(
+        self,
+        spec_text: String,
+        supplemental_assertions: Vec<ContractAssertion>,
+    ) -> Result<PreparedGeneration, PreparationError> {
+        let synthesizer = Synthesizer::new(LlmConfig::from_env()?);
+        self.prepare_from_draft_spec_with_synthesizer(
+            spec_text,
+            supplemental_assertions,
+            synthesizer,
+        )
+        .await
+    }
+
+    /// Testable synthesis seam shared by MCP-first draft preparation and integration tests.
+    pub(crate) async fn prepare_from_draft_spec_with_synthesizer(
         mut self,
         spec_text: String,
         supplemental_assertions: Vec<ContractAssertion>,
+        synthesizer: Synthesizer,
     ) -> Result<PreparedGeneration, PreparationError> {
         if spec_text.len() > MAX_JS_SOURCE_BYTES {
             return Err(PreparationError::Runtime(EngineError::Internal(
@@ -389,7 +405,8 @@ impl PreparationContext {
         self.spec = Some(draft);
         self.spec_text = Some(spec_text);
         self.draft_spec = true;
-        self.prepare_from_spec(supplemental_assertions).await
+        self.prepare_from_spec_with_synthesizer(supplemental_assertions, synthesizer)
+            .await
     }
 
     async fn prepare_from_spec_with_synthesizer(
