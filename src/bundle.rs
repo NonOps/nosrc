@@ -141,6 +141,20 @@ fn read_bundle_file(directory: &Path, name: &str, max_bytes: u64) -> anyhow::Res
         options.custom_flags(libc::O_NOFOLLOW);
     }
 
+    // On Windows, open the reparse point itself rather than following it.
+    // The opened handle is then inspected for FILE_ATTRIBUTE_REPARSE_POINT.
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+
+    // Other targets have no implemented no-follow primitive. Fail closed
+    // rather than silently weakening the bundle's regular-file guarantee.
+    #[cfg(not(any(unix, windows)))]
+    bail!("Offline bundle serving is not supported on this platform: safe no-follow file opening is unavailable");
+
     let file = options.open(&path).with_context(|| {
         format!(
             "Failed to open bundle artifact {} without following symlinks",
@@ -156,9 +170,20 @@ fn read_bundle_file(directory: &Path, name: &str, max_bytes: u64) -> anyhow::Res
             path.display()
         )
     })?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            bail!(
+                "Bundle artifact {} must not be a Windows reparse point",
+                path.display()
+            );
+        }
+    }
     if !metadata.file_type().is_file() {
         bail!(
-            "Bundle artifact {} must be a regular file, not a symlink",
+            "Bundle artifact {} must be a regular file, not a symlink or special file",
             path.display()
         );
     }
@@ -330,6 +355,22 @@ mod tests {
 
             let error = load_and_verify(directory.path()).err().unwrap();
             assert!(format!("{error:#}").contains("Failed to open bundle artifact"));
+        }
+
+        #[cfg(windows)]
+        {
+            let directory = tempfile::tempdir().unwrap();
+            write_valid_bundle(directory.path()).await;
+            let outside = tempfile::NamedTempFile::new().unwrap();
+            let artifact = directory.path().join("handler.js");
+            fs::remove_file(&artifact).unwrap();
+
+            // Creating file symlinks may require Developer Mode or elevated
+            // privileges. If unavailable, this host cannot execute this test.
+            if std::os::windows::fs::symlink_file(outside.path(), &artifact).is_ok() {
+                let error = load_and_verify(directory.path()).err().unwrap();
+                assert!(format!("{error:#}").contains("reparse point"));
+            }
         }
     }
 }
