@@ -99,7 +99,7 @@ pub fn export_artifacts(
 
 fn write_artifact(directory: &Path, name: &str, bytes: &[u8]) -> anyhow::Result<()> {
     let path = directory.join(name);
-    std::fs::write(&path).with_context(|| format!("Failed to write {}", path.display()))?;
+    std::fs::write(&path, bytes).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
 }
 
