@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,7 +12,7 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 use crate::engine::http_envelope::RequestEnvelope;
-use crate::mcp::lifecycle::{AppLifecycle, GenerationId, PreparationError};
+use crate::mcp::lifecycle::{AppLifecycle, GenerationId, PreparationError, PreparedGeneration};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -60,6 +61,70 @@ pub struct NosrcMcpServer {
     pub lifecycle: Arc<Mutex<AppLifecycle>>,
 }
 
+async fn prepare_and_publish<F>(
+    lifecycle: Arc<Mutex<AppLifecycle>>,
+    timeout_duration: Duration,
+    preparation: F,
+) -> CallToolResult
+where
+    F: Future<Output = Result<PreparedGeneration, PreparationError>>,
+{
+    let operation = async {
+        let candidate = preparation.await?;
+        let mut lifecycle = lifecycle.lock().await;
+        let id = lifecycle.insert_prepared(candidate);
+        let status = lifecycle.get_status();
+        let generation = status
+            .generations
+            .iter()
+            .find(|item| item.generation_id == id.as_str());
+        Ok::<CallToolResult, PreparationError>(CallToolResult::structured(json!({
+            "generation_id": id.as_str(),
+            "state": "ready",
+            "module_hash": generation.map(|item| item.module_hash.as_str()),
+            "trusted_assertions_passed": generation.map(|item| item.trusted_assertions_passed).unwrap_or(0),
+            "model_assertions_passed": generation.map(|item| item.model_assertions_passed).unwrap_or(0),
+            "model_assertions_failed": generation.map(|item| item.model_assertions_failed).unwrap_or(0),
+            "supplemental_assertions_passed": generation.map(|item| item.supplemental_assertions_passed).unwrap_or(0),
+            "supplemental_assertions_failed": generation.map(|item| item.supplemental_assertions_failed).unwrap_or(0)
+        })))
+    };
+
+    match tokio::time::timeout(timeout_duration, operation).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(PreparationError::Verification(results))) => {
+            let failed_assertions: Vec<_> = results
+                .iter()
+                .map(|result| {
+                    json!({
+                        "name": result.name.as_str(),
+                        "expected_status": result.expected_status,
+                        "actual_status": result.actual_status,
+                        "error": result.error_message.as_deref()
+                    })
+                })
+                .collect();
+            CallToolResult::structured_error(json!({
+                "error": "verification_failed",
+                "failed_assertions": failed_assertions
+            }))
+        }
+        Ok(Err(PreparationError::Runtime(error))) => {
+            CallToolResult::structured_error(json!({
+                "error": "preparation_failed",
+                "message": error.to_string()
+            }))
+        }
+        Err(_) => CallToolResult::structured_error(json!({
+            "error": "preparation_timeout",
+            "message": format!(
+                "prepare_app exceeded its {} second time limit",
+                timeout_duration.as_secs()
+            )
+        })),
+    }
+}
+
 #[tool_router]
 impl NosrcMcpServer {
     #[tool(
@@ -103,7 +168,7 @@ impl NosrcMcpServer {
             let lifecycle = self.lifecycle.lock().await;
             lifecycle.preparation_context()
         };
-        let result = tokio::time::timeout(Duration::from_secs(120), async move {
+        let preparation = async move {
             match source {
                 PrepareSource::DirectJs => match js_code {
                     Some(code) => context.prepare_from_js(code, assertions).await,
@@ -115,55 +180,13 @@ impl NosrcMcpServer {
                 },
                 PrepareSource::Spec => context.prepare_from_spec(assertions).await,
             }
-        })
-        .await;
-
-        match result {
-            Ok(Ok(candidate)) => {
-                let mut lifecycle = self.lifecycle.lock().await;
-                let id = lifecycle.insert_prepared(candidate);
-                let status = lifecycle.get_status();
-                let generation = status
-                    .generations
-                    .iter()
-                    .find(|item| item.generation_id == id.as_str());
-                CallToolResult::structured(json!({
-                    "generation_id": id.as_str(),
-                    "state": "ready",
-                    "module_hash": generation.map(|item| item.module_hash.as_str()),
-                    "trusted_assertions_passed": generation.map(|item| item.trusted_assertions_passed).unwrap_or(0),
-                    "model_assertions_passed": generation.map(|item| item.model_assertions_passed).unwrap_or(0),
-                    "model_assertions_failed": generation.map(|item| item.model_assertions_failed).unwrap_or(0),
-                    "supplemental_assertions_passed": generation.map(|item| item.supplemental_assertions_passed).unwrap_or(0),
-                    "supplemental_assertions_failed": generation.map(|item| item.supplemental_assertions_failed).unwrap_or(0)
-                }))
-            }
-            Ok(Err(PreparationError::Verification(results))) => {
-                let failed_assertions: Vec<_> = results
-                    .iter()
-                    .map(|result| {
-                        json!({
-                            "name": result.name.as_str(),
-                            "expected_status": result.expected_status,
-                            "actual_status": result.actual_status,
-                            "error": result.error_message.as_deref()
-                        })
-                    })
-                    .collect();
-                CallToolResult::structured_error(json!({
-                    "error": "verification_failed",
-                    "failed_assertions": failed_assertions
-                }))
-            }
-            Ok(Err(PreparationError::Runtime(error))) => CallToolResult::structured_error(json!({
-                "error": "preparation_failed",
-                "message": error.to_string()
-            })),
-            Err(_) => CallToolResult::structured_error(json!({
-                "error": "preparation_timeout",
-                "message": "prepare_app exceeded its 120 second time limit"
-            })),
-        }
+        };
+        prepare_and_publish(
+            self.lifecycle.clone(),
+            Duration::from_secs(120),
+            preparation,
+        )
+        .await
     }
 
     #[tool(
@@ -517,6 +540,107 @@ mod tests {
             status.structured_content.unwrap()["active_generation"],
             first_id.as_str()
         );
+    }
+
+    #[tokio::test]
+    async fn timed_out_blocking_preparation_cannot_publish_after_worker_finishes() {
+        use crate::engine::quickjs::test_support;
+        use crate::mcp::lifecycle::{prepare_compiled, SourceType};
+        use crate::mcp::policy::AcceptancePolicy;
+        use crate::spec::ServiceSpec;
+
+        let spec = ServiceSpec::parse(
+            "# Service: mcp-timeout-test\n\n## Capabilities\n- state: volatile\n- egress: []\n\n## Endpoints\n### \`GET /health\`\n- Response \`200\`: \`healthy\`\n\n## Verification\n### \`GET /health\`\n- Response \`200\`\n- Body contains: \`healthy\`\n",
+        )
+        .unwrap();
+        let lifecycle = Arc::new(Mutex::new(AppLifecycle::new(&spec, None).unwrap()));
+        let (engine, compiled) = test_support::compiled().await;
+        let policy = AcceptancePolicy::from_spec(&spec).unwrap();
+        let candidate = tokio::task::spawn_blocking(move || {
+            prepare_compiled(
+                engine,
+                policy,
+                compiled,
+                test_support::HANDLER_SOURCE.to_string(),
+                crate::mcp::lifecycle::SourceType::DirectJs,
+                Vec::new(),
+                Vec::new(),
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = tokio::task::spawn_blocking(move || {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+            let _ = finished_tx.send(());
+            candidate
+        });
+        started_rx.await.unwrap();
+
+        let preparation = async move {
+            worker.await.map_err(|error| {
+                PreparationError::Runtime(crate::error::EngineError::Internal(format!(
+                    "Test preparation worker failed: {error}"
+                )))
+            })
+        };
+        let result =
+            prepare_and_publish(lifecycle.clone(), Duration::from_millis(20), preparation).await;
+
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result.structured_content.unwrap()["error"],
+            "preparation_timeout"
+        );
+
+        release_tx.send(()).unwrap();
+        finished_rx.await.unwrap();
+
+        let status = lifecycle.lock().await.get_status();
+        assert!(status.generations.is_empty());
+        assert!(status.active_generation.is_none());
+    }
+
+    #[tokio::test]
+    async fn stdio_tools_list_exposes_rollback_app() {
+        use crate::spec::ServiceSpec;
+        use rmcp::ServiceExt;
+
+        let spec = ServiceSpec::parse(
+            "# Service: mcp-tools-list-test\n\n## Capabilities\n- state: volatile\n- egress: []\n\n## Endpoints\n### \`GET /health\`\n- Response \`200\`: \`healthy\`\n\n## Verification\n### \`GET /health\`\n- Response \`200\`\n",
+        )
+        .unwrap();
+        let server = NosrcMcpServer {
+            lifecycle: Arc::new(Mutex::new(AppLifecycle::new(&spec, None).unwrap())),
+        };
+        let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
+        let server_task = tokio::spawn(async move {
+            let service = server.serve(server_stream).await.unwrap();
+            service.waiting().await.unwrap();
+        });
+
+        let client = ().serve(client_stream).await.unwrap();
+        let tools = client.list_all_tools().await.unwrap();
+        let mut names: Vec<String> = tools.into_iter().map(|tool| tool.name.to_string()).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "activate_app",
+                "get_app_status",
+                "invoke_app",
+                "prepare_app",
+                "rollback_app",
+            ]
+        );
+
+        client.cancel().await.unwrap();
+        server_task.await.unwrap();
     }
 
     #[tokio::test]
