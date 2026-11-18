@@ -97,7 +97,8 @@ impl QuickJsEngine {
         compiled: &CompiledHandler,
         fuel_budget: u64,
     ) -> Result<QuickJsHandler, EngineError> {
-        let (store, handle) = instantiate_component(&self.engine, &compiled.component, fuel_budget)?;
+        let (store, handle) =
+            instantiate_component(&self.engine, &compiled.component, fuel_budget)?;
 
         Ok(QuickJsHandler {
             engine: self.engine.clone(),
@@ -123,9 +124,9 @@ fn instantiate_component(
         .build();
 
     let mut store = Store::new(engine, ComponentStoreState { limits });
-    store.set_fuel(fuel_budget).map_err(|error| {
-        EngineError::Internal(format!("Failed to set component fuel: {error}"))
-    })?;
+    store
+        .set_fuel(fuel_budget)
+        .map_err(|error| EngineError::Internal(format!("Failed to set component fuel: {error}")))?;
     store.limiter(|state| &mut state.limits);
     store.set_max_component_handles(1_024);
 
