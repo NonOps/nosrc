@@ -14,6 +14,7 @@ The current implementation is a runnable single-process prototype, not a product
 - Runs human-authored verification cases from `SPEC.md` and a separate model-generated supplemental assertion suite against isolated candidate instances before activation.
 - Keeps the production handler instance separate from the verifier so test requests cannot mutate its initial state.
 - Routes HTTP requests to the active generation and exposes health/status endpoints.
+- Binds to loopback by default; external interfaces require an explicit `--bind` address.
 - Preserves JavaScript module-level state between requests handled by the same active generation.
 
 ## Deliberate limitations
@@ -52,7 +53,9 @@ Every declared endpoint must have at least one matching case under `## Verificat
 
 ## Configuration
 
-`LLM_API_KEY` is required. Optional variables:
+`LLM_API_KEY` is required. The HTTP listener defaults to `127.0.0.1`. Set `--bind 0.0.0.0` (or another explicit IP address) only when the service should accept connections from outside the local host.
+
+Optional variables:
 
 - `LLM_BASE_URL` (default: `https://api.openai.com/v1`)
 - `LLM_MODEL` (default: `gpt-4o-mini`)
@@ -65,7 +68,7 @@ Normal startup shows nosrc `INFO` events and warnings/errors from dependencies. 
 cargo run -- --verbose --spec ./examples/minimal/SPEC.md --port 8080
 ```
 
-`RUST_LOG` overrides this scoped default. For example, `RUST_LOG=trace` intentionally enables very noisy diagnostics across dependencies as well. Verbose diagnostic events omit API keys, authorization headers, prompts, generated source, request/response bodies, and query strings. Failure messages may still include bounded provider error details or assertion-mismatch details; review stderr before sharing logs. Request paths can also contain application-specific identifiers.
+`RUST_LOG` overrides this scoped default. For example, `RUST_LOG=trace` intentionally enables very noisy diagnostics across dependencies as well. Verbose diagnostic events omit API keys, authorization headers, prompts, generated source, request/response bodies, and query strings. Failure messages may still include bounded provider error details or assertion-mismatch details; review stderr before sharing logs. HTTP error responses use stable, sanitized messages; detailed runtime errors remain in server logs. Request paths can also contain application-specific identifiers.
 
 ## Build and test
 
@@ -99,7 +102,7 @@ export LLM_BASE_URL="https://your-provider.example/v1"
 export LLM_MODEL="your-model-name"
 ```
 
-The service validates the SPEC-authored verification suite, synthesizes and componentizes a handler, then runs the trusted cases and a separate model-generated assertion suite before binding the HTTP listener. Startup fails closed if either suite fails. Keep this terminal running.
+The service validates the SPEC-authored verification suite, synthesizes and componentizes a handler, then runs the trusted cases and a separate model-generated assertion suite before binding the HTTP listener. The listener binds to `127.0.0.1` by default; pass `--bind 0.0.0.0` to expose it on all IPv4 interfaces. Startup fails closed if either suite fails. Keep this terminal running.
 
 In a second terminal, check health and the active generation:
 
