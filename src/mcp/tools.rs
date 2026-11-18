@@ -1135,7 +1135,11 @@ mod tests {
         let offline_address = offline_listener.local_addr().unwrap();
         let offline_app = crate::ingress::build_ingress_router(offline_state);
         let (offline_shutdown_tx, offline_shutdown_rx) = tokio::sync::oneshot::channel();
-        let offline_task = tokio::spawn(serve_http(offline_listener, offline_app, offline_shutdown_rx));
+        let offline_task = tokio::spawn(serve_http(
+            offline_listener,
+            offline_app,
+            offline_shutdown_rx,
+        ));
         let offline_response = reqwest::get(format!("http://{offline_address}/hello"))
             .await
             .unwrap();
