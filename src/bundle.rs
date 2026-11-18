@@ -14,6 +14,7 @@ const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_HANDLER_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_COMPONENT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ASSERTIONS_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_SPEC_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_ASSERTIONS_PER_SUITE: usize = 100;
 
 /// Load a previously exported bundle, verify its integrity and both assertion
@@ -45,7 +46,13 @@ pub fn load_and_verify(bundle_dir: &Path) -> anyhow::Result<(ActiveGeneration, B
 
     let manifest: ExportManifest = serde_json::from_slice(&manifest_bytes)
         .context("Bundle manifest.json is not a valid export manifest")?;
-    let _spec_digest = validate_digest("spec_sha256", &manifest.spec_sha256)?;
+    let spec_digest = validate_digest("spec_sha256", &manifest.spec_sha256)?;
+    if let Some(spec_bytes) = read_optional_bundle_file(bundle_dir, "SPEC.md", MAX_SPEC_BYTES)? {
+        let embedded_spec_digest = format!("{:x}", Sha256::digest(&spec_bytes));
+        if embedded_spec_digest != spec_digest {
+            bail!("Bundle SPEC.md SHA-256 does not match manifest spec_sha256");
+        }
+    }
     let module_digest = validate_digest("module_hash", &manifest.module_hash)?;
     let component_manifest_digest =
         validate_digest("component_sha256", &manifest.component_sha256)?;
@@ -63,11 +70,18 @@ pub fn load_and_verify(bundle_dir: &Path) -> anyhow::Result<(ActiveGeneration, B
 
     let assertions: ExportAssertions = serde_json::from_slice(&assertions_bytes)
         .context("Bundle assertions.json is not a valid assertion document")?;
-    if assertions.trusted_assertions.is_empty() {
-        bail!("Bundle trusted assertion suite must not be empty");
-    }
-    if assertions.generated_assertions.is_empty() {
-        bail!("Bundle generated assertion suite must not be empty");
+    match manifest.policy_mode.as_str() {
+        "operator" if assertions.trusted_assertions.is_empty() => {
+            bail!("Operator-policy bundle trusted assertion suite must not be empty");
+        }
+        "draft" if !assertions.trusted_assertions.is_empty() => {
+            bail!("Draft-policy bundle must not contain operator-trusted assertions");
+        }
+        "draft" if assertions.generated_assertions.is_empty() => {
+            bail!("Draft-policy bundle generated assertion suite must not be empty");
+        }
+        "operator" | "draft" => {}
+        other => bail!("Unsupported bundle policy_mode '{other}'"),
     }
     if assertions.trusted_assertions.len() > MAX_ASSERTIONS_PER_SUITE
         || assertions.generated_assertions.len() > MAX_ASSERTIONS_PER_SUITE
@@ -126,6 +140,21 @@ pub struct BundleSummary {
     pub trusted_assertions: usize,
     pub generated_assertions: usize,
     pub bundle_path: PathBuf,
+}
+
+fn read_optional_bundle_file(
+    directory: &Path,
+    name: &str,
+    max_bytes: u64,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let path = directory.join(name);
+    match fs::symlink_metadata(&path) {
+        Ok(_) => read_bundle_file(directory, name, max_bytes).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| {
+            format!("Failed to inspect optional bundle artifact {}", path.display())
+        }),
+    }
 }
 
 fn read_bundle_file(directory: &Path, name: &str, max_bytes: u64) -> anyhow::Result<Vec<u8>> {
@@ -256,6 +285,7 @@ mod tests {
             trusted_assertions_count: 1,
             generated_assertions_count: 1,
             rationale: Some("test bundle".into()),
+            policy_mode: "operator".into(),
         };
         let assertions = ExportAssertions {
             trusted_assertions: vec![assertion("trusted")],
