@@ -295,12 +295,13 @@ impl PreparationContext {
             .map(|(spec, spec_text)| (spec, spec_text, self.policy.spec_assertions.clone()));
         let engine = self.engine.clone();
         let policy = self.policy.clone();
+        let source_for_prepared = js_source.clone();
         let mut prepared = tokio::task::spawn_blocking(move || {
             prepare_compiled(
                 engine,
                 policy,
                 compiled,
-                js_source.clone(),
+                source_for_prepared,
                 SourceType::DirectJs,
                 Vec::new(),
                 supplemental_assertions,
@@ -1239,6 +1240,9 @@ mod tests {
         let context = PreparationContext {
             engine,
             spec: Some(spec),
+            spec_text: None,
+            draft_spec: false,
+            draft_assertions: Vec::new(),
             cache: Some(cache),
             policy,
         };
