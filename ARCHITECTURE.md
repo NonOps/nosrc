@@ -7,14 +7,14 @@ nosrc is an experimental, single-process Rust service. It now has a working SPEC
 At startup the executable:
 
 1. Reads and parses the configured `SPEC.md`.
-2. Validates the human-authored verification suite in `SPEC.md` and calls an OpenAI-compatible chat-completions endpoint to synthesize a JavaScript ES module and supplemental contract assertions.
-3. Componentizes the JavaScript in-process with `componentize-qjs` using the `nosrc:runtime/handler` WIT world.
-4. Compiles the resulting component with Wasmtime 50.
+2. Validates the human-authored verification suite in `SPEC.md` and derives a content-addressed cache key from the raw SPEC, configured provider/model, synthesis prompt, WIT contract, resource budgets, componentizer/runtime versions, and `Cargo.lock`.
+3. Loads a matching local artifact when available; otherwise calls the OpenAI-compatible endpoint to synthesize a JavaScript ES module and supplemental assertions, then componentizes it with `componentize-qjs`.
+4. Compiles the component with the current Wasmtime 50 engine, including cache hits.
 5. Instantiates an isolated candidate and runs the trusted SPEC-authored verification cases.
 6. Instantiates a second isolated candidate and runs model-generated assertions as supplemental checks.
 7. Rejects startup if either suite fails.
 8. Creates a fresh production instance and activates it only after both suites pass.
-9. Starts the HTTP server and routes application requests to the active generation.
+9. Stores newly verified artifacts atomically in the local cache, then starts the HTTP server and routes application requests to the active generation.
 
 The runtime requires Rust 1.97 or later. JavaScript module-level state is retained between requests to the same active generation. Requests to one handler instance are serialized so this state has deterministic behavior.
 
@@ -36,7 +36,7 @@ The runtime requires Rust 1.97 or later. JavaScript module-level state is retain
 
 The CLI loads the SPEC, requires `LLM_API_KEY`, and calls the configured OpenAI-compatible endpoint. `LLM_BASE_URL` and `LLM_MODEL` are optional. The synthesizer must return `code_format: "javascript"`, non-empty handler source, and a non-empty deterministic supplemental assertion suite. `SPEC.md` must also contain human-authored verification cases covering every declared endpoint.
 
-The generated JavaScript is self-contained. It cannot import packages or use ambient host APIs.
+The generated JavaScript is self-contained. It cannot import packages or use ambient host APIs. The default `.nosrc-cache/` stores component bytes and the synthesis metadata in SHA-256-keyed directories. Cache hits avoid the provider request and componentization, but do not bypass component compilation or either verification suite. The cache key includes the dependency lockfile so dependency updates naturally invalidate prior entries. Use `--no-cache` to force fresh synthesis or `--cache-dir` to select another local cache directory. Cache contents are local operator-managed files, not a trust boundary; keep the directory writable only by the service operator.
 
 ### Componentization and execution
 
@@ -70,7 +70,7 @@ The Axum router handles health and status endpoints itself. Other requests are c
 
 ## Next engineering milestones
 
-1. Retain human-authored regression cases across handler revisions and add provenance records for SPEC hashes, model identifiers, component hashes, and verification outcomes.
+1. Extend artifact provenance with durable verification records and retained human-authored regression cases across handler revisions. The current cache records input identity, synthesis metadata, and component digest, and reruns verification at startup.
 2. Add explicit WIT-backed embedded KV operations with bounded key/value sizes and isolated candidate state.
 3. Preserve binary request bodies through a versioned or otherwise explicit handler ABI change; the current text ABI rejects non-UTF-8 bodies.
 4. Add safe generation replacement and in-flight request draining before any hot-reload feature.

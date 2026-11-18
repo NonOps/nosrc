@@ -1,3 +1,4 @@
+pub mod artifact_cache;
 pub mod engine;
 pub mod error;
 pub mod ingress;
@@ -10,11 +11,12 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use artifact_cache::ArtifactCache;
 use engine::http_envelope::RequestEnvelope;
 use engine::quickjs::{QuickJsEngine, DEFAULT_COMPONENT_FUEL};
 use ingress::{ActiveGeneration, IngressState};
 use spec::ServiceSpec;
-use synthesizer::{ContractAssertion, LlmConfig, Synthesizer};
+use synthesizer::{ContractAssertion, LlmConfig, SynthesisOutput, Synthesizer};
 use verifier::ShadowVerifier;
 
 #[derive(Parser, Debug)]
@@ -36,6 +38,14 @@ pub struct Cli {
     /// Enable detailed generation-pipeline and HTTP request diagnostics.
     #[arg(short, long, action = clap::ArgAction::SetTrue)]
     pub verbose: bool,
+
+    /// Directory for content-addressed, locally cached verified artifacts.
+    #[arg(long, default_value = "./.nosrc-cache")]
+    pub cache_dir: std::path::PathBuf,
+
+    /// Bypass artifact cache reads and writes and always synthesize a new handler.
+    #[arg(long)]
+    pub no_cache: bool,
 }
 
 fn validate_runtime_spec(spec: &ServiceSpec) -> anyhow::Result<()> {
@@ -63,31 +73,8 @@ fn validate_runtime_spec(spec: &ServiceSpec) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Synthesize, compile, verify, and instantiate one production generation.
-///
-/// Keeping this lifecycle in one function lets the executable and the offline
-/// end-to-end test exercise exactly the same startup path.
-async fn prepare_generation(
-    spec: &ServiceSpec,
-    synthesizer: &Synthesizer,
-) -> anyhow::Result<(ActiveGeneration, usize, usize, Option<String>)> {
-    let validation_started = Instant::now();
-    tracing::debug!("Validating runtime capabilities and trusted SPEC verification suite");
-    validate_runtime_spec(spec)?;
-    tracing::debug!(
-        elapsed_ms = validation_started.elapsed().as_millis(),
-        "SPEC validation completed"
-    );
-
-    let synthesis_started = Instant::now();
-    let output = synthesizer.synthesize(spec, &[]).await?;
-    tracing::debug!(
-        elapsed_ms = synthesis_started.elapsed().as_millis(),
-        code_format = %output.code_format,
-        handler_bytes = output.handler_code.len(),
-        generated_assertions = output.assertions.len(),
-        "Handler synthesis completed"
-    );
+/// Validate synthesis output before it is compiled or loaded from cache.
+fn validate_synthesis_output(output: &SynthesisOutput) -> anyhow::Result<()> {
     if output.code_format != "javascript" {
         anyhow::bail!(
             "Synthesizer returned unsupported code format '{}'; expected 'javascript'",
@@ -97,16 +84,89 @@ async fn prepare_generation(
     if output.handler_code.trim().is_empty() {
         anyhow::bail!("Synthesizer returned an empty JavaScript handler");
     }
+    Ok(())
+}
 
-    let compilation_started = Instant::now();
-    tracing::debug!("Initializing QuickJS/Wasm engine and compiling generated JavaScript");
-    let engine = QuickJsEngine::new()?;
-    let compiled = engine.compile_handler(&output.handler_code).await?;
+/// Synthesize (or load), compile, verify, and instantiate one production generation.
+///
+/// Cache hits skip provider synthesis and componentization, but are always recompiled
+/// by the current Wasmtime engine and rerun through both isolated verification suites.
+async fn prepare_generation(
+    spec: &ServiceSpec,
+    synthesizer: &Synthesizer,
+    cache: Option<&ArtifactCache>,
+) -> anyhow::Result<(ActiveGeneration, usize, usize, Option<String>)> {
+    let validation_started = Instant::now();
+    tracing::debug!("Validating runtime capabilities and trusted SPEC verification suite");
+    validate_runtime_spec(spec)?;
     tracing::debug!(
-        elapsed_ms = compilation_started.elapsed().as_millis(),
-        module_hash = %compiled.module_hash,
-        "Wasm component compilation completed"
+        elapsed_ms = validation_started.elapsed().as_millis(),
+        "SPEC validation completed"
     );
+
+    let engine = QuickJsEngine::new()?;
+    let cache_key = synthesizer.artifact_cache_key(spec);
+    let cached = cache.and_then(|artifact_cache| artifact_cache.load(&cache_key));
+
+    let (output, compiled, component_bytes, cache_hit) = match cached {
+        Some(cached_artifact) => match engine.compile_component(&cached_artifact.component_bytes) {
+            Ok(compiled) => {
+                tracing::info!(cache_key = %cache_key, "Loaded component artifact from cache");
+                (
+                    cached_artifact.synthesis,
+                    compiled,
+                    cached_artifact.component_bytes,
+                    true,
+                )
+            }
+            Err(error) => {
+                tracing::warn!(cache_key = %cache_key, %error, "Cached component could not be loaded; regenerating");
+                let synthesis_started = Instant::now();
+                let output = synthesizer.synthesize(spec, &[]).await?;
+                validate_synthesis_output(&output)?;
+                tracing::debug!(
+                    elapsed_ms = synthesis_started.elapsed().as_millis(),
+                    code_format = %output.code_format,
+                    handler_bytes = output.handler_code.len(),
+                    generated_assertions = output.assertions.len(),
+                    "Handler synthesis completed"
+                );
+                let compilation_started = Instant::now();
+                let (compiled, component_bytes) = engine
+                    .compile_handler_with_artifact(&output.handler_code)
+                    .await?;
+                tracing::debug!(
+                    elapsed_ms = compilation_started.elapsed().as_millis(),
+                    module_hash = %compiled.module_hash,
+                    "Wasm component compilation completed"
+                );
+                (output, compiled, component_bytes, false)
+            }
+        },
+        None => {
+            let synthesis_started = Instant::now();
+            let output = synthesizer.synthesize(spec, &[]).await?;
+            validate_synthesis_output(&output)?;
+            tracing::debug!(
+                elapsed_ms = synthesis_started.elapsed().as_millis(),
+                code_format = %output.code_format,
+                handler_bytes = output.handler_code.len(),
+                generated_assertions = output.assertions.len(),
+                "Handler synthesis completed"
+            );
+            let compilation_started = Instant::now();
+            tracing::debug!("Initializing QuickJS/Wasm engine and compiling generated JavaScript");
+            let (compiled, component_bytes) = engine
+                .compile_handler_with_artifact(&output.handler_code)
+                .await?;
+            tracing::debug!(
+                elapsed_ms = compilation_started.elapsed().as_millis(),
+                module_hash = %compiled.module_hash,
+                "Wasm component compilation completed"
+            );
+            (output, compiled, component_bytes, false)
+        }
+    };
 
     // SPEC-authored cases are independent of the model that generated the handler.
     // Separate candidate instances prevent the supplemental suite from mutating trusted-test state.
@@ -169,6 +229,16 @@ async fn prepare_generation(
         module_hash: compiled.module_hash,
         handler: Arc::new(Mutex::new(active_handler)),
     };
+
+    if !cache_hit {
+        if let Some(artifact_cache) = cache {
+            if let Err(error) = artifact_cache.store(&cache_key, &output, &component_bytes) {
+                tracing::warn!(cache_key = %cache_key, %error, "Could not persist verified artifact cache entry");
+            } else {
+                tracing::info!(cache_key = %cache_key, "Stored verified component artifact in cache");
+            }
+        }
+    }
 
     Ok((
         generation,
@@ -244,8 +314,14 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let synthesizer = Synthesizer::new(LlmConfig::from_env()?);
+    let cache = if cli.no_cache {
+        tracing::info!("Artifact cache is disabled");
+        None
+    } else {
+        Some(ArtifactCache::new(cli.cache_dir.clone()))
+    };
     let (generation, trusted_assertions, generated_assertions, _rationale) =
-        prepare_generation(&spec, &synthesizer).await?;
+        prepare_generation(&spec, &synthesizer, cache.as_ref()).await?;
 
     tracing::info!(
         trusted_assertions,
@@ -284,6 +360,16 @@ mod tests {
     fn debug_diagnostics_are_disabled_by_default() {
         let cli = Cli::try_parse_from(["nosrc"]).unwrap();
         assert!(!cli.verbose);
+    }
+
+    #[test]
+    fn artifact_cache_is_enabled_by_default_and_can_be_bypassed() {
+        let cli = Cli::try_parse_from(["nosrc"]).unwrap();
+        assert!(!cli.no_cache);
+        assert_eq!(cli.cache_dir, std::path::PathBuf::from("./.nosrc-cache"));
+
+        let cli = Cli::try_parse_from(["nosrc", "--no-cache"]).unwrap();
+        assert!(cli.no_cache);
     }
 
     #[test]
@@ -423,8 +509,12 @@ mod tests {
             temperature: 0.0,
         });
 
+        let cache_directory = tempfile::tempdir().unwrap();
+        let cache = ArtifactCache::new(cache_directory.path());
         let (generation, trusted_count, generated_count, rationale) =
-            prepare_generation(&spec, &synthesizer).await.unwrap();
+            prepare_generation(&spec, &synthesizer, Some(&cache))
+                .await
+                .unwrap();
 
         assert_eq!(trusted_count, 1);
         assert_eq!(generated_count, 1);
@@ -432,6 +522,18 @@ mod tests {
             rationale.as_deref(),
             Some("Deterministic handler returned by the test provider")
         );
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+
+        // A second startup must load the cached component, rerun both suites,
+        // and avoid a second request to the model provider.
+        let (cached_generation, cached_trusted, cached_generated, cached_rationale) =
+            prepare_generation(&spec, &synthesizer, Some(&cache))
+                .await
+                .unwrap();
+        assert_eq!(cached_trusted, trusted_count);
+        assert_eq!(cached_generated, generated_count);
+        assert_eq!(cached_rationale, rationale);
+        assert_eq!(cached_generation.module_hash, generation.module_hash);
         assert_eq!(request_count.load(Ordering::SeqCst), 1);
 
         let state = Arc::new(IngressState::new());

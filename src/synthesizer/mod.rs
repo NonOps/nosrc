@@ -151,6 +151,40 @@ impl Synthesizer {
         }
     }
 
+    /// Stable identity for inputs and toolchain settings that affect a generated artifact.
+    ///
+    /// The API key is deliberately excluded. The configured provider URL and model name
+    /// are included, but mutable provider-side model aliases cannot guarantee reproducibility.
+    pub fn artifact_cache_key(&self, spec: &ServiceSpec) -> String {
+        use sha2::{Digest, Sha256};
+
+        let prompt = self.build_system_prompt();
+        let temperature = self.config.temperature.to_bits().to_be_bytes();
+        let fuel = crate::engine::quickjs::DEFAULT_COMPONENT_FUEL.to_be_bytes();
+        let memory = (crate::engine::quickjs::DEFAULT_COMPONENT_MEMORY_BYTES as u64).to_be_bytes();
+        let fields: [&[u8]; 12] = [
+            b"nosrc-artifact-cache-v1",
+            spec.raw_markdown.as_bytes(),
+            self.config.base_url.as_bytes(),
+            self.config.model.as_bytes(),
+            &temperature,
+            prompt.as_bytes(),
+            crate::engine::quickjs::HANDLER_WIT.as_bytes(),
+            b"componentize-qjs-0.6.0;wasmtime-50;runtime-default-sync;stub-wasi=true;disable-gc=false;component-model=true;consume-fuel=true",
+            env!("CARGO_PKG_VERSION").as_bytes(),
+            include_bytes!("../../Cargo.lock"),
+            &fuel,
+            &memory,
+        ];
+
+        let mut hasher = Sha256::new();
+        for field in fields {
+            hasher.update((field.len() as u64).to_be_bytes());
+            hasher.update(field);
+        }
+        format!("{:x}", hasher.finalize())
+    }
+
     /// Build the strict JavaScript handler and contract-assertion prompt.
     pub fn build_system_prompt(&self) -> String {
         r#"You are the nosrc service implementation synthesizer.
@@ -312,6 +346,28 @@ mod tests {
     use axum::body::Body;
     use axum::routing::get;
     use axum::Router;
+
+    #[test]
+    fn artifact_cache_identity_changes_with_spec_and_model() {
+        let base_markdown = include_str!("../../examples/minimal/SPEC.md");
+        let spec = ServiceSpec::parse(base_markdown).unwrap();
+        let changed_spec = ServiceSpec::parse(&format!("{base_markdown}\n")).unwrap();
+        let config = LlmConfig {
+            api_key: "not-part-of-cache-identity".into(),
+            base_url: "https://provider.example/v1".into(),
+            model: "model-a".into(),
+            temperature: 0.1,
+        };
+        let synthesizer = Synthesizer::new(config.clone());
+        let changed_model = Synthesizer::new(LlmConfig {
+            model: "model-b".into(),
+            ..config
+        });
+
+        let original_key = synthesizer.artifact_cache_key(&spec);
+        assert_ne!(original_key, synthesizer.artifact_cache_key(&changed_spec));
+        assert_ne!(original_key, changed_model.artifact_cache_key(&spec));
+    }
 
     #[test]
     fn serialized_request_writer_stops_at_configured_limit() {
