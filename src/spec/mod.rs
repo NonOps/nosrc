@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::error::HostAbiError;
 
@@ -52,10 +52,15 @@ pub struct SpecResponse {
 pub struct SpecVerification {
     pub method: String,
     pub path: String,
-    pub headers: std::collections::HashMap<String, String>,
+    /// Request query parameters decoded from the query string in the case heading.
+    pub query: HashMap<String, String>,
+    /// Headers sent with the request.
+    pub headers: HashMap<String, String>,
     pub body: Option<String>,
     pub expected_status: Option<u16>,
     pub body_contains: Option<String>,
+    /// Expected response headers, independent of request headers.
+    pub response_headers: HashMap<String, String>,
 }
 
 impl ServiceSpec {
@@ -191,9 +196,10 @@ impl ServiceSpec {
                 let cleaned = title.trim().trim_matches('`').trim();
                 let mut parts = cleaned.split_whitespace();
                 let method = parts.next().unwrap_or("GET").to_uppercase();
-                let path = parts.next().unwrap_or("/").to_string();
+                let target = parts.next().unwrap_or("/");
                 match current_section {
                     "endpoints" | "endpoint_detail" => {
+                        let path = target.to_string();
                         if let Some(ep) = current_endpoint.take() {
                             endpoints.push(ep);
                         }
@@ -211,13 +217,16 @@ impl ServiceSpec {
                         if let Some(case) = current_verification.take() {
                             verification.push(case);
                         }
+                        let (path, query) = parse_verification_target(target)?;
                         current_verification = Some(SpecVerification {
                             method,
                             path,
-                            headers: std::collections::HashMap::new(),
+                            query,
+                            headers: HashMap::new(),
                             body: None,
                             expected_status: None,
                             body_contains: None,
+                            response_headers: HashMap::new(),
                         });
                         current_section = "verification_detail";
                     }
@@ -258,24 +267,34 @@ impl ServiceSpec {
                         if let Some(item) = trimmed.strip_prefix("- ") {
                             let item = item.trim();
                             if let Some(body) = item.strip_prefix("Body:") {
+                                if case.body.is_some() {
+                                    return Err(duplicate_verification_field("Body"));
+                                }
                                 case.body = Some(body.trim().to_string());
                             } else if let Some(header) = item.strip_prefix("Header:") {
-                                let (name, value) = header.trim().split_once('=').ok_or_else(|| {
-                                    HostAbiError::MalformedJson(format!(
-                                        "invalid verification header '{header}'; expected name=value"
-                                    ))
-                                })?;
-                                if name.trim().is_empty() {
-                                    return Err(HostAbiError::MalformedJson(
-                                        "verification header name cannot be empty".into(),
-                                    ));
+                                let (name, value) = parse_verification_header(header)?;
+                                if case.headers.insert(name.clone(), value).is_some() {
+                                    return Err(duplicate_verification_field(&format!(
+                                        "request header '{name}'"
+                                    )));
                                 }
-                                case.headers
-                                    .insert(name.trim().to_lowercase(), value.trim().to_string());
+                            } else if let Some(header) = item.strip_prefix("Response header:") {
+                                let (name, value) = parse_verification_header(header)?;
+                                if case.response_headers.insert(name.clone(), value).is_some() {
+                                    return Err(duplicate_verification_field(&format!(
+                                        "response header '{name}'"
+                                    )));
+                                }
                             } else if let Some(status) = item.strip_prefix("Response ") {
+                                if case.expected_status.is_some() {
+                                    return Err(duplicate_verification_field("Response status"));
+                                }
                                 let status = status.trim().trim_matches('`');
                                 case.expected_status = Some(parse_http_status(status)?);
                             } else if let Some(expected) = item.strip_prefix("Body contains:") {
+                                if case.body_contains.is_some() {
+                                    return Err(duplicate_verification_field("Body contains"));
+                                }
                                 case.body_contains =
                                     Some(expected.trim().trim_matches('`').to_string());
                             } else {
@@ -338,6 +357,54 @@ impl ServiceSpec {
             raw_markdown: markdown.to_string(),
         })
     }
+}
+
+fn duplicate_verification_field(field: &str) -> HostAbiError {
+    HostAbiError::MalformedJson(format!("duplicate verification field '{field}'"))
+}
+
+fn parse_verification_header(header: &str) -> Result<(String, String), HostAbiError> {
+    let (name, value) = header.trim().split_once('=').ok_or_else(|| {
+        HostAbiError::MalformedJson(format!(
+            "invalid verification header '{header}'; expected name=value"
+        ))
+    })?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(HostAbiError::MalformedJson(
+            "verification header name cannot be empty".into(),
+        ));
+    }
+    Ok((name.to_ascii_lowercase(), value.trim().to_string()))
+}
+
+/// Parse a concrete request target from a trusted verification heading.
+/// The current request ABI stores one value per query key, so duplicate keys are rejected.
+fn parse_verification_target(
+    target: &str,
+) -> Result<(String, HashMap<String, String>), HostAbiError> {
+    if target.contains('#') {
+        return Err(HostAbiError::MalformedJson(
+            "verification request targets must not contain URL fragments".into(),
+        ));
+    }
+    let (path, query_string) = target.split_once('?').unwrap_or((target, ""));
+    if !path.starts_with('/') {
+        return Err(HostAbiError::MalformedJson(format!(
+            "verification request path must start with '/', got '{path}'"
+        )));
+    }
+
+    let mut query = HashMap::new();
+    for (key, value) in form_urlencoded::parse(query_string.as_bytes()) {
+        let key = key.into_owned();
+        if query.insert(key.clone(), value.into_owned()).is_some() {
+            return Err(HostAbiError::MalformedJson(format!(
+                "duplicate verification query parameter '{key}' is unsupported"
+            )));
+        }
+    }
+    Ok((path.to_string(), query))
 }
 
 fn parse_http_status(value: &str) -> Result<u16, HostAbiError> {
@@ -471,6 +538,93 @@ A resilient spec-driven URL shortener.
         assert_eq!(spec.verification[0].path, "/items/42");
         assert_eq!(spec.verification[0].expected_status, Some(200));
         assert_eq!(spec.verification[0].body_contains.as_deref(), Some("item"));
+    }
+
+    #[test]
+    fn verification_query_parameters_are_decoded_and_separated_from_path() {
+        let markdown = r#"
+# Service: Example
+## Endpoints
+### `GET /search`
+- Response `200`: results
+## Verification
+### `GET /search?q=hello%20world&tag=rust%2Bwasm`
+- Response `200`
+"#;
+        let spec = ServiceSpec::parse(markdown).unwrap();
+        spec.validate_verification().unwrap();
+        let case = &spec.verification[0];
+        assert_eq!(case.path, "/search");
+        assert_eq!(case.query.get("q").map(String::as_str), Some("hello world"));
+        assert_eq!(case.query.get("tag").map(String::as_str), Some("rust+wasm"));
+    }
+
+    #[test]
+    fn duplicate_query_parameters_are_rejected() {
+        let markdown = r#"
+# Service: Example
+## Endpoints
+### `GET /search`
+- Response `200`: results
+## Verification
+### `GET /search?q=one&q=two`
+- Response `200`
+"#;
+        let error = ServiceSpec::parse(markdown).unwrap_err().to_string();
+        assert!(error.contains("duplicate verification query parameter 'q'"));
+    }
+
+    #[test]
+    fn duplicate_verification_scalar_fields_are_rejected() {
+        for fields in [
+            "- Body: first\n- Body: second",
+            "- Body contains: first\n- Body contains: second",
+            "- Response `200`\n- Response `200`",
+        ] {
+            let markdown = format!(
+                "# Service: Example\n## Endpoints\n### `GET /one`\n- Response `200`: ok\n## Verification\n### `GET /one`\n{fields}\n"
+            );
+            assert!(ServiceSpec::parse(&markdown).is_err(), "accepted: {fields}");
+        }
+    }
+
+    #[test]
+    fn request_and_response_headers_are_parsed_separately_and_duplicates_rejected() {
+        let markdown = r#"
+# Service: Example
+## Endpoints
+### `GET /one`
+- Response `200`: ok
+## Verification
+### `GET /one`
+- Header: accept=application/json
+- Response header: content-type=application/json
+- Response `200`
+"#;
+        let spec = ServiceSpec::parse(markdown).unwrap();
+        let case = &spec.verification[0];
+        assert_eq!(
+            case.headers.get("accept").map(String::as_str),
+            Some("application/json")
+        );
+        assert_eq!(
+            case.response_headers
+                .get("content-type")
+                .map(String::as_str),
+            Some("application/json")
+        );
+
+        let duplicate = markdown.replace(
+            "- Response header: content-type=application/json",
+            "- Response header: content-type=application/json\n- Response header: content-type=text/plain",
+        );
+        assert!(ServiceSpec::parse(&duplicate).is_err());
+
+        let duplicate_request = markdown.replace(
+            "- Header: accept=application/json",
+            "- Header: accept=application/json\n- Header: Accept=text/plain",
+        );
+        assert!(ServiceSpec::parse(&duplicate_request).is_err());
     }
 
     #[test]

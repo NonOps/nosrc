@@ -208,8 +208,16 @@ pub(crate) mod test_support {
             if (request.path === "/health") {
                 return JSON.stringify({
                     status: 200,
-                    headers: { "content-type": "text/plain" },
+                    headers: { "Content-Type": "text/plain" },
                     body: "healthy"
+                });
+            }
+
+            if (request.path === "/query") {
+                return JSON.stringify({
+                    status: 200,
+                    headers: { "content-type": "text/plain" },
+                    body: request.query.q || "missing"
                 });
             }
 

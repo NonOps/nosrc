@@ -31,16 +31,18 @@ Do not use this prototype to serve production traffic or execute untrusted gener
 
 ## SPEC verification format
 
-Every declared endpoint must have at least one matching case under `## Verification`. Cases use a concrete request path (including a sample value for each `:parameter` segment) and a response status documented by that endpoint:
+Every declared endpoint must have at least one matching case under `## Verification`. Cases use a concrete request target (including a sample value for each `:parameter` segment) and a response status documented by that endpoint. Query parameters may be included in the heading and are percent-decoded into the request envelope:
 
 ```markdown
 ## Verification
-### `GET /hello`
+### `GET /search?q=hello%20world&limit=10`
+- Header: accept=application/json
 - Response `200`
+- Response header: content-type=application/json
 - Body contains: `hello`
 ```
 
-Optional request data uses `- Header: name=value` and `- Body: ...`. Verification cases are human-authored acceptance criteria; generated assertions are checked separately and are never their substitute.
+`Header:` sets a request header; `Response header:` asserts an exact response-header value. `Body:`, `Body contains:`, and `Response` are scalar fields and may appear at most once per case. Header names are case-insensitive. Repeated query keys in trusted verification headings are rejected because the current handler ABI represents each query key with one string value; it cannot express multi-valued query parameters. Verification cases are human-authored acceptance criteria; generated assertions are checked separately and are never their substitute.
 
 ## Requirements
 

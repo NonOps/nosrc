@@ -129,7 +129,12 @@ fn evaluate_response(
 
     if let Some(headers) = &assertion.header_matches {
         for (name, expected_value) in headers {
-            match response.headers.get(name) {
+            let actual = response
+                .headers
+                .iter()
+                .find(|(actual_name, _)| actual_name.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value);
+            match actual {
                 Some(actual_value) if actual_value == expected_value => {}
                 Some(actual_value) => {
                     return (
@@ -187,6 +192,49 @@ mod tests {
             .unwrap();
 
         assert_eq!(results.len(), 1);
+        assert!(results[0].passed);
+    }
+
+    #[tokio::test]
+    async fn verifier_enforces_expected_response_headers() {
+        let (engine, compiled) = test_support::compiled().await;
+        let mut candidate = engine
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .unwrap();
+        let mut expected = assertion(200, Some("healthy"));
+        expected.header_matches = Some(HashMap::from([(
+            "content-type".to_string(),
+            "text/plain".to_string(),
+        )]));
+
+        let results = ShadowVerifier::new()
+            .verify_handler(&mut candidate, &[expected])
+            .unwrap();
+        assert!(results[0].passed);
+
+        let mut wrong_header = assertion(200, Some("healthy"));
+        wrong_header.header_matches = Some(HashMap::from([(
+            "content-type".to_string(),
+            "application/json".to_string(),
+        )]));
+        assert!(ShadowVerifier::new()
+            .verify_handler(&mut candidate, &[wrong_header])
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn verifier_passes_query_parameters_to_the_guest_handler() {
+        let (engine, compiled) = test_support::compiled().await;
+        let mut candidate = engine
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .unwrap();
+        let mut query_assertion = assertion(200, Some("rust wasm"));
+        query_assertion.request.path = "/query".to_string();
+        query_assertion.request.query = HashMap::from([("q".to_string(), "rust wasm".to_string())]);
+
+        let results = ShadowVerifier::new()
+            .verify_handler(&mut candidate, &[query_assertion])
+            .unwrap();
         assert!(results[0].passed);
     }
 
