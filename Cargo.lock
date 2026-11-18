@@ -1692,6 +1692,7 @@ dependencies = [
  "componentize-qjs",
  "dashmap",
  "form_urlencoded",
+ "libc",
  "redb",
  "reqwest",
  "rmcp",
