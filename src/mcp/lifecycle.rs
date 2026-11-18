@@ -253,7 +253,7 @@ fn validate_mcp_synthesis(output: &SynthesisOutput) -> Result<(), EngineError> {
 #[derive(Clone)]
 pub struct PreparationContext {
     engine: QuickJsEngine,
-    spec: ServiceSpec,
+    spec: Option<ServiceSpec>,
     cache: Option<ArtifactCache>,
     policy: AcceptancePolicy,
 }
@@ -312,9 +312,41 @@ impl PreparationContext {
         self,
         supplemental_assertions: Vec<ContractAssertion>,
     ) -> Result<PreparedGeneration, PreparationError> {
+        if self.spec.is_none() {
+            return Err(PreparationError::Runtime(EngineError::Internal(
+                "No operator SPEC is loaded; provide draft_spec to prepare an agent-authored contract".into(),
+            )));
+        }
         let synthesizer = Synthesizer::new(LlmConfig::from_env()?);
         self.prepare_from_spec_with_synthesizer(supplemental_assertions, synthesizer)
             .await
+    }
+
+    /// Synthesize from an agent-provided draft SPEC without changing the acceptance policy.
+    pub async fn prepare_from_draft_spec(
+        mut self,
+        spec_text: String,
+        supplemental_assertions: Vec<ContractAssertion>,
+    ) -> Result<PreparedGeneration, PreparationError> {
+        if spec_text.len() > MAX_JS_SOURCE_BYTES {
+            return Err(PreparationError::Runtime(EngineError::Internal(
+                "Draft SPEC exceeds the 2 MiB input limit".into(),
+            )));
+        }
+        let draft = ServiceSpec::parse(&spec_text).map_err(|error| {
+            PreparationError::Runtime(EngineError::Internal(format!("Invalid draft SPEC: {error}")))
+        })?;
+        if draft.capabilities.state != "volatile" || !draft.capabilities.egress.is_empty() || !draft.schema.is_empty() {
+            return Err(PreparationError::Runtime(EngineError::Internal(
+                "Draft SPEC requests capabilities unavailable in this runtime".into(),
+            )));
+        }
+        draft.validate_verification().map_err(|error| {
+            PreparationError::Runtime(EngineError::Internal(format!("Invalid draft SPEC verification: {error}")))
+        })?;
+        // The draft controls synthesis input only; the startup acceptance policy is unchanged.
+        self.spec = Some(draft);
+        self.prepare_from_spec(supplemental_assertions).await
     }
 
     async fn prepare_from_spec_with_synthesizer(
@@ -324,8 +356,11 @@ impl PreparationContext {
     ) -> Result<PreparedGeneration, PreparationError> {
         validate_assertions(&supplemental_assertions, "supplemental")?;
         self.policy.validate().map_err(EngineError::Internal)?;
+        let spec = self.spec.as_ref().ok_or_else(|| {
+            EngineError::Internal("No SPEC is available for synthesis".into())
+        })?.clone();
 
-        let cache_key = synthesizer.artifact_cache_key(&self.spec);
+        let cache_key = synthesizer.artifact_cache_key(&spec);
         let cached = match self.cache.clone() {
             Some(cache) => {
                 let key = cache_key.clone();
@@ -355,7 +390,7 @@ impl PreparationContext {
                     Ok(compiled) => (cached.synthesis, compiled, component_bytes, true),
                     Err(error) => {
                         tracing::warn!(%error, "Cached MCP artifact failed compilation; synthesizing again");
-                        let output = synthesizer.synthesize(&self.spec, &[]).await?;
+                        let output = synthesizer.synthesize(&spec, &[]).await?;
                         validate_mcp_synthesis(&output)?;
                         let engine = self.engine.clone();
                         let source = output.handler_code.clone();
@@ -373,7 +408,7 @@ impl PreparationContext {
                 }
             }
             None => {
-                let output = synthesizer.synthesize(&self.spec, &[]).await?;
+                let output = synthesizer.synthesize(&spec, &[]).await?;
                 validate_mcp_synthesis(&output)?;
                 let engine = self.engine.clone();
                 let source = output.handler_code.clone();
@@ -557,9 +592,23 @@ impl AppLifecycle {
     pub fn new(spec: &ServiceSpec, cache: Option<ArtifactCache>) -> Result<Self, EngineError> {
         let policy = AcceptancePolicy::from_spec(spec).map_err(EngineError::Internal)?;
         policy.validate().map_err(EngineError::Internal)?;
+        Self::with_policy(Some(spec.clone()), cache, policy)
+    }
+
+    pub fn new_mcp_first(cache: Option<ArtifactCache>) -> Result<Self, EngineError> {
+        let policy = AcceptancePolicy::baseline();
+        policy.validate().map_err(EngineError::Internal)?;
+        Self::with_policy(None, cache, policy)
+    }
+
+    fn with_policy(
+        spec: Option<ServiceSpec>,
+        cache: Option<ArtifactCache>,
+        policy: AcceptancePolicy,
+    ) -> Result<Self, EngineError> {
         Ok(Self {
             engine: QuickJsEngine::new()?,
-            spec: spec.clone(),
+            spec,
             cache,
             policy,
             generations: HashMap::new(),
@@ -579,7 +628,7 @@ impl AppLifecycle {
     pub fn preparation_context(&self) -> PreparationContext {
         PreparationContext {
             engine: self.engine.clone(),
-            spec: self.spec.clone(),
+            spec: Some(self.spec.clone()),
             cache: self.cache.clone(),
             policy: self.policy.clone(),
         }

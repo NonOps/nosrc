@@ -19,6 +19,7 @@ use crate::mcp::lifecycle::{AppLifecycle, GenerationId, PreparationError, Prepar
 #[schemars(crate = "rmcp::schemars")]
 enum PrepareSource {
     Spec,
+    DraftSpec,
     DirectJs,
 }
 
@@ -30,6 +31,8 @@ struct PrepareAppParams {
     source: PrepareSource,
     /// ES module source exporting handle(requestJson).
     js_code: Option<String>,
+    /// Agent-authored draft contract used as synthesis input, never as operator policy.
+    draft_spec: Option<String>,
     /// Optional informational assertions; these never replace SPEC assertions.
     supplemental_assertions: Option<Vec<serde_json::Value>>,
 }
@@ -134,16 +137,29 @@ impl NosrcMcpServer {
     ) -> CallToolResult {
         let source = params.source;
         let js_code = params.js_code;
+        let draft_spec = params.draft_spec;
         if source == PrepareSource::DirectJs && js_code.is_none() {
             return CallToolResult::structured_error(json!({
                 "error": "missing_js_code",
                 "message": "js_code is required when source is 'direct_js'"
             }));
         }
-        if source == PrepareSource::Spec && js_code.is_some() {
+        if source != PrepareSource::DirectJs && js_code.is_some() {
             return CallToolResult::structured_error(json!({
                 "error": "unexpected_js_code",
-                "message": "js_code must be omitted when source is 'spec'"
+                "message": "js_code is accepted only when source is 'direct_js'"
+            }));
+        }
+        if source == PrepareSource::DraftSpec && draft_spec.is_none() {
+            return CallToolResult::structured_error(json!({
+                "error": "missing_draft_spec",
+                "message": "draft_spec is required when source is 'draft_spec'"
+            }));
+        }
+        if source != PrepareSource::DraftSpec && draft_spec.is_some() {
+            return CallToolResult::structured_error(json!({
+                "error": "unexpected_draft_spec",
+                "message": "draft_spec is accepted only when source is 'draft_spec'"
             }));
         }
         let assertions = match params.supplemental_assertions {
@@ -177,6 +193,12 @@ impl NosrcMcpServer {
                     )),
                 },
                 PrepareSource::Spec => context.prepare_from_spec(assertions).await,
+                PrepareSource::DraftSpec => match draft_spec {
+                    Some(spec) => context.prepare_from_draft_spec(spec, assertions).await,
+                    None => Err(PreparationError::Runtime(
+                        crate::error::EngineError::Internal("draft_spec is required".into()),
+                    )),
+                },
             }
         };
         prepare_and_publish(
@@ -404,6 +426,7 @@ mod tests {
             .prepare_app(Parameters(PrepareAppParams {
                 source: PrepareSource::DirectJs,
                 js_code: Some(HANDLER_SOURCE.to_string()),
+                draft_spec: None,
                 supplemental_assertions: None,
             }))
             .await;
