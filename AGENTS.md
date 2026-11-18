@@ -15,7 +15,7 @@ You are building **`nosrc`**, an experimental Rust service intended to turn a de
 1. **Zero External Runtime Dependencies:** Never shell out to `node`, `npm`, `cargo`, `rustc`, `gcc`, `python`, or external CLI tools at runtime. Everything must compile, snapshot, and execute in-process inside one static Rust binary (`musl`-compatible).
 2. **Strict Capability Isolation:** QuickJS guest code must have zero direct OS, filesystem, process, or socket access. The current component world exposes only the handler entrypoint; do not add capabilities without a narrow WIT interface and tests.
 3. **Honest State Semantics:** JavaScript module-level state is in-memory and generation-scoped. It is not durable across restarts or handler replacement. Do not claim SQLite, redb, PostgreSQL, or Redis persistence is wired into the QuickJS request path.
-4. **Never Route Unverified Code:** Never activate a QuickJS component until it compiles, instantiates, and passes 100% of the human-authored SPEC verification cases and the separate model-generated supplemental assertions. Run the suites in separate isolated candidate instances, then instantiate a separate production instance.
+4. **Never Route Unverified Code:** CLI startup and MCP `source: "spec"` preparation must pass 100% of the human-authored SPEC verification cases and the separate model-generated assertion suite. MCP `source: "direct_js"` must pass every trusted SPEC case; optional agent-supplied assertions are informational and cannot replace or weaken the SPEC policy. Run trusted and model-generated suites on separate isolated candidate instances, then instantiate a separate production instance. Never activate a failed candidate.
 5. **Deterministic Sandboxing:** Every QuickJS component store must enforce CPU fuel limits and a bounded linear-memory budget. Keep tests against the component runtime, not only the legacy core-module engine.
 
 ---
@@ -38,6 +38,7 @@ Keep the dependency tree lean, fast to compile, and static-link friendly:
   * Never call `.unwrap()` or `.expect()` on network inputs, LLM responses, or Wasm guest outputs in production paths.
 * **Concurrency & Locking:**
   * Never hold a `std::sync::Mutex` or `rusqlite::Connection` across an `.await` point. Offload blocking SQLite/Wasm execution to `tokio::task::spawn_blocking` or dedicated worker channels.
+  * Do not hold the async MCP lifecycle mutex during LLM requests, componentization, candidate verification, or guest execution. Snapshot immutable preparation inputs, do expensive work outside the lock, and lock only to publish the completed candidate. Componentization and Wasm verification must run on the blocking pool.
   * Use the existing `ArcSwap<Option<ActiveGeneration>>` pattern for reading the active generation on the HTTP request path so reads remain wait-free.
 * **Security Rules in `host_abi.rs`:**
   * Block private/loopback/link-local IP ranges (`127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`) inside `host_http_fetch`.
@@ -63,3 +64,10 @@ Run the service with an explicit SPEC path and port (requires `LLM_API_KEY`):
 2. **Design the WIT Contract Before Guest JS:** Whenever adding a capability (KV, SQL, HTTP, Crypto), define its WIT interface, Rust host implementation, capability gate, resource bounds, and tests first, then update the LLM system prompt in `src/synthesizer/`.
 3. **Write Component Sandbox Tests:** Every new capability or runtime behavior must include an integration test proving that invalid or resource-exhausting guest code is contained without crashing the host process.
 4. **Keep Milestones Incremental:** Complete the single-process JavaScript-to-Wasm request lifecycle, including persistence and candidate verification, before adding file watching, autonomous behavior, external persistence, dashboards, or Kubernetes operators.
+
+
+## 7. MCP control plane conventions
+- The `nosrc mcp` command is a separate stdio process mode; it does not start the HTTP listener. Do not retain unused HTTP hot-swap state in the MCP lifecycle manager.
+- Expose explicit `prepare_app`, `activate_app`, `invoke_app`, `get_app_status`, and `rollback_app` tools. Rollback may only restore the immediately previous retained generation.
+- MCP request header names must be normalized to lowercase and query parameters must follow the HTTP request-envelope semantics (last value wins for repeated query keys).
+- Runtime resource policies must be enforced by the actual component store and response validation, not only reported in status.

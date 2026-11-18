@@ -3,6 +3,7 @@ pub mod engine;
 pub mod error;
 pub mod export;
 pub mod ingress;
+pub mod mcp;
 pub mod spec;
 pub mod synthesizer;
 pub mod verifier;
@@ -73,6 +74,21 @@ pub enum Commands {
         no_cache: bool,
 
         /// Enable verbose diagnostics
+        #[arg(short, long, action = clap::ArgAction::SetTrue)]
+        verbose: bool,
+    },
+    /// Run as an MCP server over stdio
+    Mcp {
+        /// Path to the operator-controlled service specification
+        #[arg(short, long, default_value = "./SPEC.md")]
+        spec: std::path::PathBuf,
+        /// Directory for content-addressed, locally cached verified artifacts
+        #[arg(long, default_value = "./.nosrc-cache")]
+        cache_dir: std::path::PathBuf,
+        /// Bypass artifact cache
+        #[arg(long)]
+        no_cache: bool,
+        /// Enable verbose diagnostics (to stderr)
         #[arg(short, long, action = clap::ArgAction::SetTrue)]
         verbose: bool,
     },
@@ -347,6 +363,7 @@ async fn main() -> anyhow::Result<()> {
                 });
             tracing_subscriber::fmt()
                 .with_env_filter(filter)
+                .with_writer(std::io::stderr)
                 .with_target(false)
                 .init();
 
@@ -400,6 +417,34 @@ async fn main() -> anyhow::Result<()> {
             );
             Ok(())
         }
+        Some(Commands::Mcp {
+            spec: spec_path,
+            cache_dir,
+            no_cache,
+            verbose,
+        }) => {
+            let filter =
+                tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                    tracing_subscriber::EnvFilter::new(default_log_filter(verbose))
+                });
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_writer(std::io::stderr)
+                .with_target(false)
+                .init();
+
+            let spec_text = tokio::fs::read_to_string(&spec_path)
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("Failed to read SPEC at {}: {error}", spec_path.display())
+                })?;
+            let spec = ServiceSpec::parse(&spec_text).map_err(|error| {
+                anyhow::anyhow!("Failed to parse SPEC at {}: {error}", spec_path.display())
+            })?;
+            validate_runtime_spec(&spec)?;
+            tracing::info!(service = %spec.name, "Starting nosrc MCP stdio server");
+            mcp::serve(spec, cache_dir, no_cache).await
+        }
         None => {
             let filter =
                 tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
@@ -407,6 +452,7 @@ async fn main() -> anyhow::Result<()> {
                 });
             tracing_subscriber::fmt()
                 .with_env_filter(filter)
+                .with_writer(std::io::stderr)
                 .with_target(false)
                 .init();
 
@@ -488,6 +534,35 @@ mod tests {
                 assert_eq!(out_dir, std::path::PathBuf::from("./out"));
             }
             _ => panic!("Expected Commands::Export"),
+        }
+    }
+
+    #[test]
+    fn mcp_subcommand_parses_operator_spec_and_cache_options() {
+        let cli = Cli::try_parse_from([
+            "nosrc",
+            "mcp",
+            "--spec",
+            "./SERVICE.md",
+            "--cache-dir",
+            "./cache",
+            "--no-cache",
+            "--verbose",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Mcp {
+                spec,
+                cache_dir,
+                no_cache,
+                verbose,
+            }) => {
+                assert_eq!(spec, std::path::PathBuf::from("./SERVICE.md"));
+                assert_eq!(cache_dir, std::path::PathBuf::from("./cache"));
+                assert!(no_cache);
+                assert!(verbose);
+            }
+            _ => panic!("Expected Commands::Mcp"),
         }
     }
 

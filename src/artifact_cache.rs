@@ -27,6 +27,7 @@ pub struct CachedArtifact {
 
 /// A best-effort, content-addressed cache. Cache entries are never trusted as
 /// verification results: callers must rerun both verification suites.
+#[derive(Clone)]
 pub struct ArtifactCache {
     root: PathBuf,
 }
