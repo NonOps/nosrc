@@ -235,7 +235,7 @@ mod tests {
         write_valid_bundle(directory.path()).await;
         fs::write(directory.path().join("component.wasm"), b"tampered").unwrap();
 
-        let error = load_and_verify(directory.path()).unwrap_err();
+        let error = load_and_verify(directory.path()).err().unwrap();
         assert!(error.to_string().contains("SHA-256"));
     }
 
