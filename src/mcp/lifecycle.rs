@@ -61,6 +61,7 @@ pub enum SourceType {
 pub struct GenerationExport {
     pub spec: ServiceSpec,
     pub spec_text: String,
+    pub module_hash: String,
     pub output: SynthesisOutput,
     pub component_bytes: Vec<u8>,
     pub trusted_assertions: Vec<ContractAssertion>,
@@ -335,6 +336,7 @@ impl PreparationContext {
             prepared.export_data = Some(GenerationExport {
                 spec,
                 spec_text,
+                module_hash: prepared.module_hash.clone(),
                 output: SynthesisOutput {
                     handler_code: js_source,
                     code_format: "javascript".to_string(),
@@ -510,6 +512,7 @@ impl PreparationContext {
         prepared.export_data = Some(GenerationExport {
             spec,
             spec_text,
+            module_hash: prepared.module_hash.clone(),
             output: output.clone(),
             component_bytes: component_bytes.clone(),
             trusted_assertions: self.policy.spec_assertions.clone(),
@@ -659,6 +662,7 @@ pub(super) fn prepare_compiled(
 pub struct AppLifecycle {
     engine: QuickJsEngine,
     spec: Option<ServiceSpec>,
+    spec_text: Option<String>,
     cache: Option<ArtifactCache>,
     policy: AcceptancePolicy,
     generations: HashMap<GenerationId, PreparedGeneration>,

@@ -517,7 +517,7 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!(
                 service = spec
                     .as_ref()
-                    .map(|value| value.name.as_str())
+                    .map(|(value, _)| value.name.as_str())
                     .unwrap_or("<uninitialized>"),
                 shared_http = http_port.is_some(),
                 mcp_first = spec.is_none(),

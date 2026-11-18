@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,6 +44,16 @@ struct PrepareAppParams {
 struct ActivateAppParams {
     /// Opaque generation ID returned by prepare_app.
     generation_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+struct ExportAppParams {
+    /// Opaque generation ID returned by prepare_app.
+    generation_id: String,
+    /// New or absent destination directory for the complete offline bundle.
+    out_dir: PathBuf,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -224,6 +235,57 @@ impl NosrcMcpServer {
             })),
             Err(error) => CallToolResult::structured_error(json!({
                 "error": "activation_failed",
+                "message": error.to_string()
+            })),
+        }
+    }
+
+    #[tool(
+        description = "Export a prepared generation using the same atomic artifact pipeline as the CLI. The resulting bundle can be served offline with 'nosrc serve --bundle' without provider credentials."
+    )]
+    async fn export_app(
+        &self,
+        Parameters(params): Parameters<ExportAppParams>,
+    ) -> CallToolResult {
+        let export = {
+            let lifecycle = self.lifecycle.lock().await;
+            match lifecycle.export_generation(&GenerationId::from_string(params.generation_id.clone())) {
+                Ok(export) => export,
+                Err(error) => {
+                    return CallToolResult::structured_error(json!({
+                        "error": "export_unavailable",
+                        "message": error.to_string()
+                    }));
+                }
+            }
+        };
+        let out_dir = params.out_dir;
+        let policy_mode = export.policy_mode.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            crate::export::export_artifacts_with_policy(
+                &out_dir,
+                &export.spec,
+                &export.spec_text,
+                &export.output,
+                &export.component_bytes,
+                &export.module_hash,
+                &export.trusted_assertions,
+                &export.policy_mode,
+            )
+        })
+        .await;
+        match result {
+            Ok(Ok(path)) => CallToolResult::structured(json!({
+                "generation_id": params.generation_id,
+                "bundle_path": path.display().to_string(),
+                "policy_mode": policy_mode
+            })),
+            Ok(Err(error)) => CallToolResult::structured_error(json!({
+                "error": "export_failed",
+                "message": error.to_string()
+            })),
+            Err(error) => CallToolResult::structured_error(json!({
+                "error": "export_task_failed",
                 "message": error.to_string()
             })),
         }

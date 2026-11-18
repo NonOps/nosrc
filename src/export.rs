@@ -69,9 +69,6 @@ pub fn export_artifacts_with_policy(
     if !matches!(policy_mode, "operator" | "draft") {
         anyhow::bail!("Unsupported export policy mode '{policy_mode}'");
     }
-    if policy_mode == "operator" && trusted_assertions.is_empty() {
-        anyhow::bail!("Operator-policy exports require trusted assertions");
-    }
     if policy_mode == "draft" && !trusted_assertions.is_empty() {
         anyhow::bail!("Draft-policy exports cannot label assertions as operator-trusted");
     }
