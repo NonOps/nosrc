@@ -334,15 +334,22 @@ impl PreparationContext {
             )));
         }
         let draft = ServiceSpec::parse(&spec_text).map_err(|error| {
-            PreparationError::Runtime(EngineError::Internal(format!("Invalid draft SPEC: {error}")))
+            PreparationError::Runtime(EngineError::Internal(format!(
+                "Invalid draft SPEC: {error}"
+            )))
         })?;
-        if draft.capabilities.state != "volatile" || !draft.capabilities.egress.is_empty() || !draft.schema.is_empty() {
+        if draft.capabilities.state != "volatile"
+            || !draft.capabilities.egress.is_empty()
+            || !draft.schema.is_empty()
+        {
             return Err(PreparationError::Runtime(EngineError::Internal(
                 "Draft SPEC requests capabilities unavailable in this runtime".into(),
             )));
         }
         draft.validate_verification().map_err(|error| {
-            PreparationError::Runtime(EngineError::Internal(format!("Invalid draft SPEC verification: {error}")))
+            PreparationError::Runtime(EngineError::Internal(format!(
+                "Invalid draft SPEC verification: {error}"
+            )))
         })?;
         // The draft controls synthesis input only; the startup acceptance policy is unchanged.
         self.spec = Some(draft);
@@ -356,9 +363,11 @@ impl PreparationContext {
     ) -> Result<PreparedGeneration, PreparationError> {
         validate_assertions(&supplemental_assertions, "supplemental")?;
         self.policy.validate().map_err(EngineError::Internal)?;
-        let spec = self.spec.as_ref().ok_or_else(|| {
-            EngineError::Internal("No SPEC is available for synthesis".into())
-        })?.clone();
+        let spec = self
+            .spec
+            .as_ref()
+            .ok_or_else(|| EngineError::Internal("No SPEC is available for synthesis".into()))?
+            .clone();
 
         let cache_key = synthesizer.artifact_cache_key(&spec);
         let cached = match self.cache.clone() {

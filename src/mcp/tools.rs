@@ -513,7 +513,10 @@ mod tests {
             }))
             .await;
         assert_eq!(prepared.is_error, Some(false));
-        assert_eq!(prepared.structured_content.unwrap()["trusted_assertions_passed"], 0);
+        assert_eq!(
+            prepared.structured_content.unwrap()["trusted_assertions_passed"],
+            0
+        );
     }
 
     #[tokio::test]

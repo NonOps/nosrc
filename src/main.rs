@@ -515,12 +515,21 @@ async fn main() -> anyhow::Result<()> {
                 None => None,
             };
             tracing::info!(
-                service = spec.as_ref().map(|value| value.name.as_str()).unwrap_or("<uninitialized>"),
+                service = spec
+                    .as_ref()
+                    .map(|value| value.name.as_str())
+                    .unwrap_or("<uninitialized>"),
                 shared_http = http_port.is_some(),
                 mcp_first = spec.is_none(),
                 "Starting nosrc MCP stdio server"
             );
-            mcp::serve(spec, cache_dir, no_cache, http_port.map(|port| (http_bind, port))).await
+            mcp::serve(
+                spec,
+                cache_dir,
+                no_cache,
+                http_port.map(|port| (http_bind, port)),
+            )
+            .await
         }
         None => {
             let filter =
@@ -690,7 +699,9 @@ mod tests {
     fn mcp_subcommand_can_start_without_an_operator_spec() {
         let cli = Cli::try_parse_from(["nosrc", "mcp", "--no-cache"]).unwrap();
         match cli.command {
-            Some(Commands::Mcp { spec, http_port, .. }) => {
+            Some(Commands::Mcp {
+                spec, http_port, ..
+            }) => {
                 assert!(spec.is_none());
                 assert_eq!(http_port, None);
             }
