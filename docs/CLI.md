@@ -70,11 +70,11 @@ MCP uses stdio and does not open an HTTP listener. The API key is needed when us
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_API_KEY` | none | Required when synthesis is performed |
+| `LLM_API_KEY` | none | Required by HTTP and export startup, including cache hits; MCP requires it when using SPEC-driven synthesis. Direct-JavaScript MCP preparation does not require an LLM call |
 | `LLM_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API base URL |
 | `LLM_MODEL` | `gpt-4o-mini` | Model identifier |
 
-`RUST_LOG` overrides the default scoped tracing filter. Without it, normal mode uses `warn,nosrc=info`; verbose mode uses `warn,nosrc=debug`. Diagnostics are emitted to stderr. Broad filters such as `RUST_LOG=trace` can enable verbose dependency logging.
+HTTP and export currently construct the LLM configuration before cache lookup, so `LLM_API_KEY` must be set even when a valid cache entry exists. MCP direct-JavaScript preparation can run without it.\n\n`RUST_LOG` overrides the default scoped tracing filter. Without it, normal mode uses `warn,nosrc=info`; verbose mode uses `warn,nosrc=debug`. Diagnostics are emitted to stderr. Broad filters such as `RUST_LOG=trace` can enable verbose dependency logging.
 
 ## Exit and failure behavior
 
