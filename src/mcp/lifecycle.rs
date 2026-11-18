@@ -57,11 +57,14 @@ pub enum SourceType {
     DirectJs,
 }
 
-#[derive(Clone)]
-fn has_unambiguous_export_provenance(draft_spec: bool, trusted_assertions: &[ContractAssertion]) -> bool {
+fn has_unambiguous_export_provenance(
+    draft_spec: bool,
+    trusted_assertions: &[ContractAssertion],
+) -> bool {
     !(draft_spec && !trusted_assertions.is_empty())
 }
 
+#[derive(Clone)]
 pub struct GenerationExport {
     pub spec: ServiceSpec,
     pub spec_text: String,
