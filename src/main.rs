@@ -597,6 +597,49 @@ mod tests {
     use super::*;
     use axum::extract::State;
 
+    const MCP_EXAMPLE_CONFIG: &str = include_str!("../examples/mcp/mcp.json");
+    const README: &str = include_str!("../README.md");
+    const CARGO_TOML: &str = include_str!("../Cargo.toml");
+    const MCP_EXAMPLE_SPEC: &str = "/absolute/path/to/SPEC.md";
+    const MCP_EXAMPLE_CACHE_DIR: &str = "/absolute/path/to/.nosrc-cache";
+
+    /// Parses every fenced ```json block in a Markdown document.
+    fn fenced_json_blocks(markdown: &str) -> Vec<serde_json::Value> {
+        let mut blocks = Vec::new();
+        let mut current: Option<String> = None;
+        for line in markdown.lines() {
+            let line = line.trim_end();
+            match current.as_mut() {
+                Some(buffer) if line == "```" => {
+                    blocks.push(
+                        serde_json::from_str(buffer).expect("fenced json block must be valid JSON"),
+                    );
+                    current = None;
+                }
+                Some(buffer) => {
+                    buffer.push_str(line);
+                    buffer.push('\n');
+                }
+                None if line == "```json" => current = Some(String::new()),
+                None => {}
+            }
+        }
+        blocks
+    }
+
+    /// Reads a top-level `key = "value"` string from this crate's Cargo.toml.
+    fn cargo_toml_string(key: &str) -> String {
+        let prefix = format!("{key} = \"");
+        CARGO_TOML
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix(&prefix)
+                    .and_then(|rest| rest.strip_suffix('"'))
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| panic!("Cargo.toml has no `{key}` entry"))
+    }
+
     #[test]
     fn verbose_flag_enables_debug_diagnostics() {
         let cli = Cli::try_parse_from(["nosrc", "--verbose"]).unwrap();
@@ -707,6 +750,66 @@ mod tests {
             }
             _ => panic!("Expected Commands::Mcp"),
         }
+    }
+
+    #[test]
+    fn example_mcp_client_config_is_accepted_by_the_cli() {
+        let config: serde_json::Value = serde_json::from_str(MCP_EXAMPLE_CONFIG)
+            .expect("examples/mcp/mcp.json must be valid JSON");
+        let entry = &config["mcpServers"]["nosrc"];
+        assert_eq!(entry["command"], "nosrc");
+        assert!(
+            entry["env"]["LLM_API_KEY"].is_string(),
+            "config must show where LLM_API_KEY goes"
+        );
+
+        let args = entry["args"].as_array().expect("args must be an array");
+        let argv = std::iter::once("nosrc").chain(
+            args.iter()
+                .map(|arg| arg.as_str().expect("every arg must be a string")),
+        );
+        let cli = Cli::try_parse_from(argv).expect("CLI must accept the documented MCP arguments");
+        match cli.command {
+            Some(Commands::Mcp {
+                spec, cache_dir, ..
+            }) => {
+                assert_eq!(spec, Some(std::path::PathBuf::from(MCP_EXAMPLE_SPEC)));
+                assert_eq!(cache_dir, std::path::PathBuf::from(MCP_EXAMPLE_CACHE_DIR));
+            }
+            _ => panic!("Expected Commands::Mcp"),
+        }
+    }
+
+    #[test]
+    fn readme_mcp_client_config_matches_the_example_file() {
+        let example: serde_json::Value = serde_json::from_str(MCP_EXAMPLE_CONFIG)
+            .expect("examples/mcp/mcp.json must be valid JSON");
+        assert!(
+            fenced_json_blocks(README).contains(&example),
+            "README.md must contain a ```json block identical to examples/mcp/mcp.json"
+        );
+    }
+
+    #[test]
+    fn readme_badges_match_repository_metadata() {
+        let ci_workflow = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(".github")
+            .join("workflows")
+            .join("ci.yml");
+        assert!(ci_workflow.is_file(), "the CI badge targets ci.yml");
+        assert!(README.contains("/actions/workflows/ci.yml/badge.svg"));
+
+        let rust_version = cargo_toml_string("rust-version");
+        assert!(
+            README.contains(&format!("badge/rust-{rust_version}%2B-")),
+            "Rust badge must show Cargo.toml rust-version {rust_version}"
+        );
+
+        let license = cargo_toml_string("license");
+        assert!(
+            README.contains(&format!("badge/license-{}-", license.replace('-', "--"))),
+            "license badge must show Cargo.toml license {license}"
+        );
     }
 
     #[test]

@@ -81,6 +81,16 @@ cargo test --all-targets
 
 Add component-runtime tests for new guest-visible behavior, including disabled-capability, malformed-input, resource-exhaustion, and failure-recovery cases as applicable. Update docs whenever CLI flags, public interfaces, artifact formats, security guarantees, limits, or lifecycle semantics change.
 
+### Test placement
+
+Follow the existing layout instead of creating new test locations:
+
+- **Unit and module tests live inline in `src/`**, in a `#[cfg(test)] mod tests` block at the bottom of the file they cover. A module whose tests are too large for that may use a sibling `tests.rs` declared as `#[cfg(test)] mod tests;` (as `src/engine/tests.rs` does). Prefer extending the nearest existing `tests` module over starting a new file.
+- **`tests/` is only for black-box tests that spawn the built executable** through `env!("CARGO_BIN_EXE_nosrc")` (for example, `tests/mcp_stdio.rs` driving the real stdio protocol). nosrc is a binary-only crate with no `lib.rs`, so files in `tests/` cannot import internal modules. If a test does not need to launch the binary, it belongs in `src/`.
+- **Consistency checks for docs, example files, and metadata** (the MCP client config in `examples/mcp/mcp.json`, README badges) are unit tests in the `tests` module of `src/main.rs`. Read repository files with `include_str!`, and keep them free of network access, API keys, and running servers.
+- **Shell tooling under `scripts/`** carries its own `--self-test`, which CI runs (see section 10).
+- **Test-only helpers stay with their tests.** Do not add test utilities or fixtures to non-test code paths.
+
 ## 9. Documentation synchronization rule
 
 For every new externally observable capability or changed contract, update all relevant documentation in the same PR:
