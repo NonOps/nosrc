@@ -1154,7 +1154,7 @@ mod tests {
         let policy = AcceptancePolicy::from_spec(&spec).unwrap();
         let context = PreparationContext {
             engine,
-            spec,
+            spec: Some(spec),
             cache: Some(cache),
             policy,
         };
