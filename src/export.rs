@@ -37,15 +37,24 @@ pub fn export_artifacts(
     module_hash: &str,
     trusted_assertions: &[ContractAssertion],
 ) -> anyhow::Result<PathBuf> {
-    let file_name = out_dir.file_name().with_context(|| {
-        format!("Export destination must name a directory: {}", out_dir.display())
-    })?;
+    let file_name = out_dir
+        .file_name()
+        .with_context(|| {
+            format!(
+                "Export destination must name a directory: {}",
+                out_dir.display()
+            )
+        })?;
     let parent = out_dir
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent)
-        .with_context(|| format!("Failed to create export parent directory at {}", parent.display()))?;
+    std::fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "Failed to create export parent directory at {}",
+            parent.display()
+        )
+    })?;
 
     match std::fs::symlink_metadata(out_dir) {
         Ok(_) => anyhow::bail!(
@@ -156,14 +165,20 @@ mod tests {
         .unwrap();
 
         assert_eq!(path, out_dir);
-        assert_eq!(std::fs::read_to_string(path.join("handler.js")).unwrap(), output.handler_code);
+        assert_eq!(
+            std::fs::read_to_string(path.join("handler.js")).unwrap(),
+            output.handler_code
+        );
         assert!(path.join("assertions.json").is_file());
         assert_eq!(std::fs::read(path.join("component.wasm")).unwrap(), component_bytes);
         let manifest: ExportManifest =
             serde_json::from_slice(&std::fs::read(path.join("manifest.json")).unwrap()).unwrap();
         assert_eq!(manifest.service_name, "Test");
         assert_eq!(manifest.module_hash, "mock_hash_123");
-        assert_eq!(manifest.component_sha256, format!("{:x}", Sha256::digest(&component_bytes)));
+        assert_eq!(
+            manifest.component_sha256,
+            format!("{:x}", Sha256::digest(&component_bytes))
+        );
     }
 
     #[test]
@@ -180,7 +195,10 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("already exists"));
-        assert_eq!(std::fs::read_to_string(out_dir.join("keep.txt")).unwrap(), "original");
+        assert_eq!(
+            std::fs::read_to_string(out_dir.join("keep.txt")).unwrap(),
+            "original"
+        );
         assert!(!out_dir.join("handler.js").exists());
     }
 
