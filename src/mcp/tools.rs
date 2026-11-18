@@ -925,4 +925,236 @@ mod tests {
             ]
         );
     }
+
+    #[tokio::test]
+    async fn mcp_first_draft_lifecycle_exports_and_serves_offline_end_to_end() {
+        use axum::extract::State;
+        use axum::routing::post;
+        use axum::{Json, Router};
+        use serde_json::{json, Value};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        async fn mock_draft_synthesis(
+            State(request_count): State<Arc<AtomicUsize>>,
+        ) -> Json<Value> {
+            request_count.fetch_add(1, Ordering::SeqCst);
+            let synthesis = json!({
+                "handler_code": r#"
+                    export function handle(requestJson) {
+                        const request = JSON.parse(requestJson);
+                        if (request.method === "GET" && request.path === "/hello") {
+                            return JSON.stringify({
+                                status: 200,
+                                headers: { "content-type": "text/plain" },
+                                body: "hello from nosrc"
+                            });
+                        }
+                        return JSON.stringify({
+                            status: 404,
+                            headers: { "content-type": "text/plain" },
+                            body: "not found"
+                        });
+                    }
+                "#,
+                "code_format": "javascript",
+                "assertions": [{
+                    "name": "generated hello response",
+                    "request": {
+                        "method": "GET",
+                        "path": "/hello",
+                        "query": {},
+                        "headers": {},
+                        "body": null
+                    },
+                    "expected_status": 200,
+                    "body_contains": "hello from nosrc"
+                }],
+                "rationale": "Deterministic MCP-first end-to-end fixture"
+            });
+            Json(json!({
+                "choices": [{
+                    "message": {
+                        "content": serde_json::to_string(&synthesis).unwrap()
+                    }
+                }]
+            }))
+        }
+
+        async fn serve_http(
+            listener: tokio::net::TcpListener,
+            app: axum::Router,
+            shutdown: tokio::sync::oneshot::Receiver<()>,
+        ) {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = shutdown.await;
+                })
+                .await
+                .unwrap();
+        }
+
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let mock_provider = Router::new()
+            .route("/v1/chat/completions", post(mock_draft_synthesis))
+            .with_state(request_count.clone());
+        let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let provider_address = provider_listener.local_addr().unwrap();
+        let (provider_shutdown_tx, provider_shutdown_rx) = tokio::sync::oneshot::channel();
+        let provider_task = tokio::spawn(serve_http(
+            provider_listener,
+            mock_provider,
+            provider_shutdown_rx,
+        ));
+
+        // MCP-first startup has no active generation and needs no operator SPEC.
+        let lifecycle = AppLifecycle::new_mcp_first(None).unwrap();
+        assert_eq!(lifecycle.get_status().status, "idle");
+        assert!(lifecycle.get_status().active_generation.is_none());
+        let server = NosrcMcpServer {
+            lifecycle: Arc::new(Mutex::new(lifecycle)),
+        };
+
+        // Start the same HTTP ingress state that MCP activation will publish into.
+        let ingress_state = server.lifecycle.lock().await.ingress_state();
+        let shared_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let shared_address = shared_listener.local_addr().unwrap();
+        let shared_app = crate::ingress::build_ingress_router(ingress_state);
+        let (shared_shutdown_tx, shared_shutdown_rx) = tokio::sync::oneshot::channel();
+        let shared_task = tokio::spawn(serve_http(
+            shared_listener,
+            shared_app,
+            shared_shutdown_rx,
+        ));
+
+        let unavailable = reqwest::get(format!("http://{shared_address}/hello"))
+            .await
+            .unwrap();
+        assert_eq!(unavailable.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+
+        let draft_spec = "# Service: mcp-first-e2e\n\n## Capabilities\n- state: volatile\n- egress: []\n\n## Endpoints\n### `GET /hello`\n- Response `200`: hello from nosrc\n\n## Verification\n### `GET /hello`\n- Response `200`\n- Body contains: `hello from nosrc`\n";
+        let synthesizer = crate::synthesizer::Synthesizer::new(
+            crate::synthesizer::LlmConfig {
+                api_key: "test-only-key".into(),
+                base_url: format!("http://{provider_address}/v1"),
+                model: "nosrc-mcp-first-e2e".into(),
+                temperature: 0.0,
+            },
+        );
+        let context = server.lifecycle.lock().await.preparation_context();
+        let preparation = context.prepare_from_draft_spec_with_synthesizer(
+            draft_spec.to_string(),
+            Vec::new(),
+            synthesizer,
+        );
+        // This is the same publication path used by the MCP prepare_app tool.
+        let prepared = prepare_and_publish(
+            server.lifecycle.clone(),
+            Duration::from_secs(120),
+            preparation,
+        )
+        .await;
+        assert_eq!(
+            prepared.is_error,
+            Some(false),
+            "draft preparation failed: {:?}",
+            prepared.structured_content
+        );
+        let generation_id = prepared.structured_content.unwrap()["generation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+
+        let activated = server
+            .activate_app(Parameters(ActivateAppParams {
+                generation_id: generation_id.clone(),
+            }))
+            .await;
+        assert_eq!(
+            activated.structured_content.unwrap()["state"],
+            "active"
+        );
+
+        // Activation must immediately change the already-running shared listener.
+        let live_response = reqwest::get(format!("http://{shared_address}/hello"))
+            .await
+            .unwrap();
+        assert_eq!(live_response.status(), reqwest::StatusCode::OK);
+        assert_eq!(live_response.text().await.unwrap(), "hello from nosrc");
+
+        // Export through the MCP tool and confirm the intent and implementation coexist.
+        let temp = tempfile::tempdir().unwrap();
+        let bundle_path = temp.path().join("mcp-first-bundle");
+        let exported = server
+            .export_app(Parameters(ExportAppParams {
+                generation_id,
+                out_dir: bundle_path.clone(),
+            }))
+            .await;
+        assert_eq!(
+            exported.is_error,
+            Some(false),
+            "export failed: {:?}",
+            exported.structured_content
+        );
+        assert_eq!(
+            std::fs::read_to_string(bundle_path.join("SPEC.md")).unwrap(),
+            draft_spec
+        );
+        assert!(bundle_path.join("handler.js").is_file());
+        assert!(bundle_path.join("component.wasm").is_file());
+        assert!(bundle_path.join("assertions.json").is_file());
+        assert!(bundle_path.join("manifest.json").is_file());
+        let manifest: Value = serde_json::from_slice(
+            &std::fs::read(bundle_path.join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest["policy_mode"], "draft");
+
+        // A fresh offline runtime validates the exported component and both suites.
+        let (offline_generation, summary) =
+            crate::bundle::load_and_verify(&bundle_path).unwrap();
+        assert_eq!(summary.service_name, "mcp-first-e2e");
+        assert_eq!(summary.trusted_assertions, 0);
+        assert_eq!(summary.generated_assertions, 2);
+        let offline_state = Arc::new(crate::ingress::IngressState::new());
+        offline_state.hot_swap(offline_generation);
+        let offline_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let offline_address = offline_listener.local_addr().unwrap();
+        let offline_app = crate::ingress::build_ingress_router(offline_state);
+        let (offline_shutdown_tx, offline_shutdown_rx) = tokio::sync::oneshot::channel();
+        let offline_task = tokio::spawn(serve_http(
+            offline_listener,
+            offline_app,
+            offline_shutdown_rx,
+        ));
+        let offline_response = reqwest::get(format!("http://{offline_address}/hello"))
+            .await
+            .unwrap();
+        assert_eq!(offline_response.status(), reqwest::StatusCode::OK);
+        assert_eq!(offline_response.text().await.unwrap(), "hello from nosrc");
+
+        // Offline serving must not synthesize again or contact the mock provider.
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+
+        // Process-local MCP state is intentionally empty after a restart.
+        let restarted = AppLifecycle::new_mcp_first(None).unwrap();
+        assert_eq!(restarted.get_status().status, "idle");
+        assert!(restarted.get_status().active_generation.is_none());
+
+        let _ = offline_shutdown_tx.send(());
+        let _ = shared_shutdown_tx.send(());
+        let _ = provider_shutdown_tx.send(());
+        offline_task.await.unwrap();
+        shared_task.await.unwrap();
+        provider_task.await.unwrap();
+    }
+
 }
