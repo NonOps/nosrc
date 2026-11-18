@@ -426,6 +426,11 @@ mod tests {
             .await;
         assert_eq!(activated.structured_content.unwrap()["state"], "active");
 
+        // MCP activation publishes the selected generation to the shared HTTP ingress state.
+        let ingress_state = server.lifecycle.lock().await.ingress_state();
+        let published = ingress_state.active_generation.load();
+        assert!(published.is_some());
+
         let invoked = server
             .invoke_app(Parameters(InvokeAppParams {
                 path: "/health".into(),

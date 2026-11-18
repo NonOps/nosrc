@@ -9,6 +9,7 @@ use crate::artifact_cache::ArtifactCache;
 use crate::engine::http_envelope::{RequestEnvelope, ResponseEnvelope};
 use crate::engine::quickjs::{CompiledHandler, QuickJsEngine, QuickJsHandler};
 use crate::error::EngineError;
+use crate::ingress::{ActiveGeneration, IngressState};
 use crate::spec::ServiceSpec;
 use crate::synthesizer::{ContractAssertion, LlmConfig, SynthesisOutput, Synthesizer};
 use crate::verifier::{AssertionResult, ShadowVerifier};
@@ -549,6 +550,7 @@ pub struct AppLifecycle {
     previous_id: Option<GenerationId>,
     next_sequence: u64,
     max_generations: usize,
+    ingress_state: Arc<IngressState>,
 }
 
 impl AppLifecycle {
@@ -565,7 +567,13 @@ impl AppLifecycle {
             previous_id: None,
             next_sequence: 1,
             max_generations: 5,
+            ingress_state: Arc::new(IngressState::new()),
         })
+    }
+
+    /// Shared HTTP ingress state. MCP activation and rollback publish to this state.
+    pub fn ingress_state(&self) -> Arc<IngressState> {
+        self.ingress_state.clone()
     }
 
     pub fn preparation_context(&self) -> PreparationContext {
@@ -635,6 +643,11 @@ impl AppLifecycle {
         })?;
         generation.state = GenerationState::Active;
         self.active_id = Some(id.clone());
+        self.ingress_state.hot_swap(ActiveGeneration {
+            generation_id: generation.sequence,
+            module_hash: generation.module_hash.clone(),
+            handler: generation.handler.clone(),
+        });
         Ok(())
     }
 
@@ -764,6 +777,11 @@ impl AppLifecycle {
         previous.state = GenerationState::Active;
         self.active_id = Some(id.clone());
         self.previous_id = current;
+        self.ingress_state.hot_swap(ActiveGeneration {
+            generation_id: previous.sequence,
+            module_hash: previous.module_hash.clone(),
+            handler: previous.handler.clone(),
+        });
         Ok(id)
     }
 
