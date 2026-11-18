@@ -1,12 +1,13 @@
 pub mod artifact_cache;
 pub mod engine;
 pub mod error;
+pub mod export;
 pub mod ingress;
 pub mod spec;
 pub mod synthesizer;
 pub mod verifier;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -25,6 +26,9 @@ use verifier::ShadowVerifier;
     about = "Specification-driven JavaScript service runtime"
 )]
 pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+
     #[arg(short, long, default_value = "./SPEC.md")]
     pub spec: std::path::PathBuf,
 
@@ -46,6 +50,32 @@ pub struct Cli {
     /// Bypass artifact cache reads and writes and always synthesize a new handler.
     #[arg(long)]
     pub no_cache: bool,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Export verified JavaScript handler, contract assertions, and Wasm component to disk
+    Export {
+        /// Path to the service specification
+        #[arg(short, long, default_value = "./SPEC.md")]
+        spec: std::path::PathBuf,
+
+        /// Output directory for exported verified artifacts
+        #[arg(short, long, default_value = "./dist")]
+        out_dir: std::path::PathBuf,
+
+        /// Directory for content-addressed, locally cached verified artifacts
+        #[arg(long, default_value = "./.nosrc-cache")]
+        cache_dir: std::path::PathBuf,
+
+        /// Bypass artifact cache reads and writes
+        #[arg(long)]
+        no_cache: bool,
+
+        /// Enable verbose diagnostics
+        #[arg(short, long, action = clap::ArgAction::SetTrue)]
+        verbose: bool,
+    },
 }
 
 fn validate_runtime_spec(spec: &ServiceSpec) -> anyhow::Result<()> {
@@ -95,7 +125,15 @@ async fn prepare_generation(
     spec: &ServiceSpec,
     synthesizer: &Synthesizer,
     cache: Option<&ArtifactCache>,
-) -> anyhow::Result<(ActiveGeneration, usize, usize, Option<String>)> {
+) -> anyhow::Result<(
+    ActiveGeneration,
+    usize,
+    usize,
+    Option<String>,
+    SynthesisOutput,
+    Vec<u8>,
+    Vec<ContractAssertion>,
+)> {
     let validation_started = Instant::now();
     tracing::debug!("Validating runtime capabilities and trusted SPEC verification suite");
     validate_runtime_spec(spec)?;
@@ -240,11 +278,15 @@ async fn prepare_generation(
         }
     }
 
+    let rationale = output.rationale.clone();
     Ok((
         generation,
         trusted_results.len(),
         generated_results.len(),
-        output.rationale,
+        rationale,
+        output,
+        component_bytes,
+        trusted_assertions,
     ))
 }
 
@@ -290,59 +332,132 @@ fn default_log_filter(verbose: bool) -> &'static str {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_log_filter(cli.verbose)));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .init();
 
-    let spec_text = tokio::fs::read_to_string(&cli.spec)
-        .await
-        .map_err(|error| {
-            anyhow::anyhow!("Failed to read SPEC at {}: {error}", cli.spec.display())
-        })?;
-    let spec = ServiceSpec::parse(&spec_text).map_err(|error| {
-        anyhow::anyhow!("Failed to parse SPEC at {}: {error}", cli.spec.display())
-    })?;
+    match cli.command {
+        Some(Commands::Export {
+            spec: spec_path,
+            out_dir,
+            cache_dir,
+            no_cache,
+            verbose,
+        }) => {
+            let filter =
+                tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                    tracing_subscriber::EnvFilter::new(default_log_filter(verbose))
+                });
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_target(false)
+                .init();
 
-    tracing::info!(
-        service = %spec.name,
-        endpoints = spec.endpoints.len(),
-        spec = %cli.spec.display(),
-        "Loaded service specification"
-    );
+            let spec_text = tokio::fs::read_to_string(&spec_path)
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("Failed to read SPEC at {}: {error}", spec_path.display())
+                })?;
+            let spec = ServiceSpec::parse(&spec_text).map_err(|error| {
+                anyhow::anyhow!("Failed to parse SPEC at {}: {error}", spec_path.display())
+            })?;
 
-    let synthesizer = Synthesizer::new(LlmConfig::from_env()?);
-    let cache = if cli.no_cache {
-        tracing::info!("Artifact cache is disabled");
-        None
-    } else {
-        Some(ArtifactCache::new(cli.cache_dir.clone()))
-    };
-    let (generation, trusted_assertions, generated_assertions, _rationale) =
-        prepare_generation(&spec, &synthesizer, cache.as_ref()).await?;
+            let synthesizer = Synthesizer::new(LlmConfig::from_env()?);
+            let cache = if no_cache {
+                None
+            } else {
+                Some(ArtifactCache::new(cache_dir))
+            };
 
-    tracing::info!(
-        trusted_assertions,
-        generated_assertions,
-        module_hash = %generation.module_hash,
-        "Candidate compiled and passed contract verification"
-    );
+            let (
+                generation,
+                trusted_count,
+                generated_count,
+                _rationale,
+                output,
+                component_bytes,
+                trusted_assertions,
+            ) = prepare_generation(&spec, &synthesizer, cache.as_ref()).await?;
 
-    let state = Arc::new(IngressState::new());
-    state.hot_swap(generation);
+            export::export_artifacts(
+                &out_dir,
+                &spec,
+                &spec_text,
+                &output,
+                &component_bytes,
+                &generation.module_hash,
+                &trusted_assertions,
+            )?;
 
-    let app = ingress::build_ingress_router(state);
-    let listener = tokio::net::TcpListener::bind((cli.bind, cli.port)).await?;
+            tracing::info!(
+                service = %spec.name,
+                trusted_assertions = trusted_count,
+                generated_assertions = generated_count,
+                out_dir = %out_dir.display(),
+                "Verified artifacts exported successfully"
+            );
+            println!(
+                "Exported verified artifacts for '{}' to {}",
+                spec.name,
+                out_dir.display()
+            );
+            Ok(())
+        }
+        None => {
+            let filter =
+                tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                    tracing_subscriber::EnvFilter::new(default_log_filter(cli.verbose))
+                });
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_target(false)
+                .init();
 
-    tracing::info!(
-        address = %listener.local_addr()?,
-        "nosrc is listening with a verified JavaScript handler"
-    );
+            let spec_text = tokio::fs::read_to_string(&cli.spec)
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("Failed to read SPEC at {}: {error}", cli.spec.display())
+                })?;
+            let spec = ServiceSpec::parse(&spec_text).map_err(|error| {
+                anyhow::anyhow!("Failed to parse SPEC at {}: {error}", cli.spec.display())
+            })?;
 
-    axum::serve(listener, app).await?;
-    Ok(())
+            tracing::info!(
+                service = %spec.name,
+                endpoints = spec.endpoints.len(),
+                spec = %cli.spec.display(),
+                "Loaded service specification"
+            );
+
+            let synthesizer = Synthesizer::new(LlmConfig::from_env()?);
+            let cache = if cli.no_cache {
+                tracing::info!("Artifact cache is disabled");
+                None
+            } else {
+                Some(ArtifactCache::new(cli.cache_dir.clone()))
+            };
+            let (generation, trusted_assertions, generated_assertions, _rationale, _, _, _) =
+                prepare_generation(&spec, &synthesizer, cache.as_ref()).await?;
+
+            tracing::info!(
+                trusted_assertions,
+                generated_assertions,
+                module_hash = %generation.module_hash,
+                "Candidate compiled and passed contract verification"
+            );
+
+            let state = Arc::new(IngressState::new());
+            state.hot_swap(generation);
+
+            let app = ingress::build_ingress_router(state);
+            let listener = tokio::net::TcpListener::bind((cli.bind, cli.port)).await?;
+
+            tracing::info!(
+                address = %listener.local_addr()?,
+                "nosrc is listening with a verified JavaScript handler"
+            );
+
+            axum::serve(listener, app).await?;
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -354,6 +469,26 @@ mod tests {
     fn verbose_flag_enables_debug_diagnostics() {
         let cli = Cli::try_parse_from(["nosrc", "--verbose"]).unwrap();
         assert!(cli.verbose);
+    }
+
+    #[test]
+    fn export_subcommand_parses_arguments() {
+        let cli = Cli::try_parse_from([
+            "nosrc",
+            "export",
+            "--spec",
+            "./MY_SPEC.md",
+            "--out-dir",
+            "./out",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Export { spec, out_dir, .. }) => {
+                assert_eq!(spec, std::path::PathBuf::from("./MY_SPEC.md"));
+                assert_eq!(out_dir, std::path::PathBuf::from("./out"));
+            }
+            _ => panic!("Expected Commands::Export"),
+        }
     }
 
     #[test]
@@ -511,7 +646,7 @@ mod tests {
 
         let cache_directory = tempfile::tempdir().unwrap();
         let cache = ArtifactCache::new(cache_directory.path());
-        let (generation, trusted_count, generated_count, rationale) =
+        let (generation, trusted_count, generated_count, rationale, _, _, _) =
             prepare_generation(&spec, &synthesizer, Some(&cache))
                 .await
                 .unwrap();
@@ -526,7 +661,7 @@ mod tests {
 
         // A second startup must load the cached component, rerun both suites,
         // and avoid a second request to the model provider.
-        let (cached_generation, cached_trusted, cached_generated, cached_rationale) =
+        let (cached_generation, cached_trusted, cached_generated, cached_rationale, _, _, _) =
             prepare_generation(&spec, &synthesizer, Some(&cache))
                 .await
                 .unwrap();
