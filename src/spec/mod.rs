@@ -608,7 +608,9 @@ A resilient spec-driven URL shortener.
             Some("application/json")
         );
         assert_eq!(
-            case.response_headers.get("content-type").map(String::as_str),
+            case.response_headers
+                .get("content-type")
+                .map(String::as_str),
             Some("application/json")
         );
 
