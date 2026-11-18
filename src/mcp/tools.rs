@@ -464,7 +464,7 @@ mod tests {
     #[tokio::test]
     async fn rollback_tool_restores_previous_generation() {
         use crate::engine::quickjs::test_support;
-        use crate::mcp::lifecycle::{prepare_compiled, SourceType};
+        use crate::mcp::lifecycle::prepare_compiled;
         use crate::mcp::policy::AcceptancePolicy;
         use crate::spec::ServiceSpec;
 
@@ -550,7 +550,7 @@ mod tests {
         use crate::spec::ServiceSpec;
 
         let spec = ServiceSpec::parse(
-            "# Service: mcp-timeout-test\n\n## Capabilities\n- state: volatile\n- egress: []\n\n## Endpoints\n### \`GET /health\`\n- Response \`200\`: \`healthy\`\n\n## Verification\n### \`GET /health\`\n- Response \`200\`\n- Body contains: \`healthy\`\n",
+            "# Service: mcp-timeout-test\n\n## Capabilities\n- state: volatile\n- egress: []\n\n## Endpoints\n### `GET /health`\n- Response `200`: `healthy`\n\n## Verification\n### `GET /health`\n- Response `200`\n- Body contains: `healthy`\n",
         )
         .unwrap();
         let lifecycle = Arc::new(Mutex::new(AppLifecycle::new(&spec, None).unwrap()));
@@ -612,7 +612,7 @@ mod tests {
         use rmcp::ServiceExt;
 
         let spec = ServiceSpec::parse(
-            "# Service: mcp-tools-list-test\n\n## Capabilities\n- state: volatile\n- egress: []\n\n## Endpoints\n### \`GET /health\`\n- Response \`200\`: \`healthy\`\n\n## Verification\n### \`GET /health\`\n- Response \`200\`\n",
+            "# Service: mcp-tools-list-test\n\n## Capabilities\n- state: volatile\n- egress: []\n\n## Endpoints\n### `GET /health`\n- Response `200`: `healthy`\n\n## Verification\n### `GET /health`\n- Response `200`\n",
         )
         .unwrap();
         let server = NosrcMcpServer {
