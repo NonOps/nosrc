@@ -230,8 +230,7 @@ mod tests {
             .unwrap();
         let mut query_assertion = assertion(200, Some("rust wasm"));
         query_assertion.request.path = "/query".to_string();
-        query_assertion.request.query =
-            HashMap::from([("q".to_string(), "rust wasm".to_string())]);
+        query_assertion.request.query = HashMap::from([("q".to_string(), "rust wasm".to_string())]);
 
         let results = ShadowVerifier::new()
             .verify_handler(&mut candidate, &[query_assertion])
