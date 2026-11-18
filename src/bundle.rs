@@ -20,10 +20,17 @@ const MAX_ASSERTIONS_PER_SUITE: usize = 100;
 /// suites, then create a fresh production handler. This path never synthesizes
 /// code, reads LLM credentials, or makes provider requests.
 pub fn load_and_verify(bundle_dir: &Path) -> anyhow::Result<(ActiveGeneration, BundleSummary)> {
-    let directory_metadata = fs::symlink_metadata(bundle_dir)
-        .with_context(|| format!("Failed to inspect bundle directory {}", bundle_dir.display()))?;
+    let directory_metadata = fs::symlink_metadata(bundle_dir).with_context(|| {
+        format!(
+            "Failed to inspect bundle directory {}",
+            bundle_dir.display()
+        )
+    })?;
     if !directory_metadata.file_type().is_dir() {
-        bail!("Bundle path {} must be a real directory, not a symlink or file", bundle_dir.display());
+        bail!(
+            "Bundle path {} must be a real directory, not a symlink or file",
+            bundle_dir.display()
+        );
     }
 
     // Read and validate every required artifact as a regular, bounded file.
@@ -125,7 +132,10 @@ fn read_bundle_file(directory: &Path, name: &str, max_bytes: u64) -> anyhow::Res
     let metadata = fs::symlink_metadata(&path)
         .with_context(|| format!("Missing required bundle artifact {}", path.display()))?;
     if !metadata.file_type().is_file() {
-        bail!("Bundle artifact {} must be a regular file, not a symlink", path.display());
+        bail!(
+            "Bundle artifact {} must be a regular file, not a symlink",
+            path.display()
+        );
     }
     if metadata.len() > max_bytes {
         bail!(
@@ -206,8 +216,16 @@ mod tests {
         };
         fs::write(directory.join("handler.js"), test_support::HANDLER_SOURCE).unwrap();
         fs::write(directory.join("component.wasm"), component_bytes).unwrap();
-        fs::write(directory.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
-        fs::write(directory.join("assertions.json"), serde_json::to_vec(&assertions).unwrap()).unwrap();
+        fs::write(
+            directory.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            directory.join("assertions.json"),
+            serde_json::to_vec(&assertions).unwrap(),
+        )
+        .unwrap();
     }
 
     #[tokio::test]
@@ -269,7 +287,8 @@ mod tests {
             write_valid_bundle(directory.path()).await;
             let outside = tempfile::NamedTempFile::new().unwrap();
             fs::remove_file(directory.path().join("handler.js")).unwrap();
-            std::os::unix::fs::symlink(outside.path(), directory.path().join("handler.js")).unwrap();
+            std::os::unix::fs::symlink(outside.path(), directory.path().join("handler.js"))
+                .unwrap();
 
             let error = load_and_verify(directory.path()).err().unwrap();
             assert!(error.to_string().contains("regular file"));
