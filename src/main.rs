@@ -109,41 +109,40 @@ async fn prepare_generation(
     let cached = cache.and_then(|artifact_cache| artifact_cache.load(&cache_key));
 
     let (output, compiled, component_bytes, cache_hit) = match cached {
-        Some(cached_artifact) => {
-            match engine.compile_component(&cached_artifact.component_bytes) {
-                Ok(compiled) => {
-                    tracing::info!(cache_key = %cache_key, "Loaded component artifact from cache");
-                    (
-                        cached_artifact.synthesis,
-                        compiled,
-                        cached_artifact.component_bytes,
-                        true,
-                    )
-                }
-                Err(error) => {
-                    tracing::warn!(cache_key = %cache_key, %error, "Cached component could not be loaded; regenerating");
-                    let synthesis_started = Instant::now();
-                    let output = synthesizer.synthesize(spec, &[]).await?;
-                    validate_synthesis_output(&output)?;
-                    tracing::debug!(
-                        elapsed_ms = synthesis_started.elapsed().as_millis(),
-                        code_format = %output.code_format,
-                        handler_bytes = output.handler_code.len(),
-                        generated_assertions = output.assertions.len(),
-                        "Handler synthesis completed"
-                    );
-                    let compilation_started = Instant::now();
-                    let (compiled, component_bytes) =
-                        engine.compile_handler_with_artifact(&output.handler_code).await?;
-                    tracing::debug!(
-                        elapsed_ms = compilation_started.elapsed().as_millis(),
-                        module_hash = %compiled.module_hash,
-                        "Wasm component compilation completed"
-                    );
-                    (output, compiled, component_bytes, false)
-                }
+        Some(cached_artifact) => match engine.compile_component(&cached_artifact.component_bytes) {
+            Ok(compiled) => {
+                tracing::info!(cache_key = %cache_key, "Loaded component artifact from cache");
+                (
+                    cached_artifact.synthesis,
+                    compiled,
+                    cached_artifact.component_bytes,
+                    true,
+                )
             }
-        }
+            Err(error) => {
+                tracing::warn!(cache_key = %cache_key, %error, "Cached component could not be loaded; regenerating");
+                let synthesis_started = Instant::now();
+                let output = synthesizer.synthesize(spec, &[]).await?;
+                validate_synthesis_output(&output)?;
+                tracing::debug!(
+                    elapsed_ms = synthesis_started.elapsed().as_millis(),
+                    code_format = %output.code_format,
+                    handler_bytes = output.handler_code.len(),
+                    generated_assertions = output.assertions.len(),
+                    "Handler synthesis completed"
+                );
+                let compilation_started = Instant::now();
+                let (compiled, component_bytes) = engine
+                    .compile_handler_with_artifact(&output.handler_code)
+                    .await?;
+                tracing::debug!(
+                    elapsed_ms = compilation_started.elapsed().as_millis(),
+                    module_hash = %compiled.module_hash,
+                    "Wasm component compilation completed"
+                );
+                (output, compiled, component_bytes, false)
+            }
+        },
         None => {
             let synthesis_started = Instant::now();
             let output = synthesizer.synthesize(spec, &[]).await?;
@@ -157,8 +156,9 @@ async fn prepare_generation(
             );
             let compilation_started = Instant::now();
             tracing::debug!("Initializing QuickJS/Wasm engine and compiling generated JavaScript");
-            let (compiled, component_bytes) =
-                engine.compile_handler_with_artifact(&output.handler_code).await?;
+            let (compiled, component_bytes) = engine
+                .compile_handler_with_artifact(&output.handler_code)
+                .await?;
             tracing::debug!(
                 elapsed_ms = compilation_started.elapsed().as_millis(),
                 module_hash = %compiled.module_hash,
@@ -512,7 +512,9 @@ mod tests {
         let cache_directory = tempfile::tempdir().unwrap();
         let cache = ArtifactCache::new(cache_directory.path());
         let (generation, trusted_count, generated_count, rationale) =
-            prepare_generation(&spec, &synthesizer, Some(&cache)).await.unwrap();
+            prepare_generation(&spec, &synthesizer, Some(&cache))
+                .await
+                .unwrap();
 
         assert_eq!(trusted_count, 1);
         assert_eq!(generated_count, 1);
