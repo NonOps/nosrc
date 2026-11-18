@@ -719,6 +719,7 @@ mod tests {
             .prepare_app(Parameters(PrepareAppParams {
                 source: PrepareSource::DirectJs,
                 js_code: Some("export function handle(".into()),
+                draft_spec: None,
                 supplemental_assertions: None,
             }))
             .await;
@@ -769,6 +770,7 @@ mod tests {
             .prepare_app(Parameters(PrepareAppParams {
                 source: PrepareSource::DirectJs,
                 js_code: Some(bad_handler.into()),
+                draft_spec: None,
                 supplemental_assertions: Some(vec![serde_json::to_value(supplemental).unwrap()]),
             }))
             .await;
