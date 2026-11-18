@@ -53,7 +53,18 @@ pub enum GenerationState {
 #[serde(rename_all = "snake_case")]
 pub enum SourceType {
     Spec,
+    DraftSpec,
     DirectJs,
+}
+
+#[derive(Clone)]
+pub struct GenerationExport {
+    pub spec: ServiceSpec,
+    pub spec_text: String,
+    pub output: SynthesisOutput,
+    pub component_bytes: Vec<u8>,
+    pub trusted_assertions: Vec<ContractAssertion>,
+    pub policy_mode: String,
 }
 
 pub struct PreparedGeneration {
@@ -68,6 +79,7 @@ pub struct PreparedGeneration {
     pub supplemental_results: Vec<AssertionResult>,
     pub created_at: Instant,
     pub handler: Arc<Mutex<QuickJsHandler>>,
+    pub export_data: Option<GenerationExport>,
 }
 
 #[derive(Debug, Serialize)]
@@ -254,6 +266,8 @@ fn validate_mcp_synthesis(output: &SynthesisOutput) -> Result<(), EngineError> {
 pub struct PreparationContext {
     engine: QuickJsEngine,
     spec: Option<ServiceSpec>,
+    spec_text: Option<String>,
+    draft_spec: bool,
     cache: Option<ArtifactCache>,
     policy: AcceptancePolicy,
 }
@@ -279,22 +293,33 @@ impl PreparationContext {
 
         let engine = self.engine.clone();
         let source_for_compile = js_source.clone();
-        let compiled = tokio::task::spawn_blocking(move || {
-            compile_handler_on_blocking_thread(engine, source_for_compile)
+        let (compiled, component_bytes) = tokio::task::spawn_blocking(move || {
+            compile_handler_with_artifact_on_blocking_thread(engine, source_for_compile)
         })
         .await
         .map_err(|error| {
             EngineError::Internal(format!("Componentization worker failed: {error}"))
         })??;
 
+        let export_context = self
+            .spec
+            .clone()
+            .zip(self.spec_text.clone())
+            .map(|(spec, spec_text)| {
+                (
+                    spec,
+                    spec_text,
+                    self.policy.spec_assertions.clone(),
+                )
+            });
         let engine = self.engine.clone();
         let policy = self.policy.clone();
-        tokio::task::spawn_blocking(move || {
+        let mut prepared = tokio::task::spawn_blocking(move || {
             prepare_compiled(
                 engine,
                 policy,
                 compiled,
-                js_source,
+                js_source.clone(),
                 SourceType::DirectJs,
                 Vec::new(),
                 supplemental_assertions,
@@ -305,7 +330,23 @@ impl PreparationContext {
             PreparationError::Runtime(EngineError::Internal(format!(
                 "Candidate verification worker failed: {error}"
             )))
-        })?
+        })??;
+        if let Some((spec, spec_text, trusted_assertions)) = export_context {
+            prepared.export_data = Some(GenerationExport {
+                spec,
+                spec_text,
+                output: SynthesisOutput {
+                    handler_code: js_source,
+                    code_format: "javascript".to_string(),
+                    assertions: Vec::new(),
+                    rationale: None,
+                },
+                component_bytes,
+                trusted_assertions,
+                policy_mode: "operator".to_string(),
+            });
+        }
+        Ok(prepared)
     }
 
     pub async fn prepare_from_spec(
@@ -353,6 +394,8 @@ impl PreparationContext {
         })?;
         // The draft controls synthesis input only; the startup acceptance policy is unchanged.
         self.spec = Some(draft);
+        self.spec_text = Some(spec_text);
+        self.draft_spec = true;
         self.prepare_from_spec(supplemental_assertions).await
     }
 
@@ -369,6 +412,9 @@ impl PreparationContext {
             .ok_or_else(|| EngineError::Internal("No SPEC is available for synthesis".into()))?
             .clone();
 
+        let spec_text = self.spec_text.clone().ok_or_else(|| {
+            EngineError::Internal("Original SPEC text is unavailable for artifact export".into())
+        })?;
         let cache_key = synthesizer.artifact_cache_key(&spec);
         let cached = match self.cache.clone() {
             Some(cache) => {
@@ -437,13 +483,18 @@ impl PreparationContext {
         let policy = self.policy.clone();
         let model_assertions = output.assertions.clone();
         let js_source = output.handler_code.clone();
+        let source_type = if self.draft_spec {
+            SourceType::DraftSpec
+        } else {
+            SourceType::Spec
+        };
         let prepared = tokio::task::spawn_blocking(move || {
             prepare_compiled(
                 engine,
                 policy,
                 compiled,
                 js_source,
-                SourceType::Spec,
+                source_type,
                 model_assertions,
                 supplemental_assertions,
             )
@@ -454,6 +505,20 @@ impl PreparationContext {
                 "Candidate verification worker failed: {error}"
             )))
         })??;
+
+        let mut prepared = prepared;
+        prepared.export_data = Some(GenerationExport {
+            spec,
+            spec_text,
+            output: output.clone(),
+            component_bytes: component_bytes.clone(),
+            trusted_assertions: self.policy.spec_assertions.clone(),
+            policy_mode: if self.policy.spec_assertions.is_empty() {
+                "draft".to_string()
+            } else {
+                "operator".to_string()
+            },
+        });
 
         if !cache_hit {
             if let Some(cache) = self.cache.clone() {
@@ -538,7 +603,7 @@ pub(super) fn prepare_compiled(
     // The CLI invariant also applies to SPEC-driven MCP synthesis: generated
     // regression assertions must all pass, in sequence, on their own instance.
     let mut model_results = Vec::new();
-    if source_type == SourceType::Spec {
+    if source_type != SourceType::DirectJs {
         let mut model_candidate = instantiate(&engine)?;
         model_results =
             ShadowVerifier::new().evaluate_handler(&mut model_candidate, &model_assertions)?;
@@ -585,6 +650,7 @@ pub(super) fn prepare_compiled(
         supplemental_results,
         created_at: Instant::now(),
         handler: Arc::new(Mutex::new(handler)),
+        export_data: None,
     })
 }
 
@@ -607,23 +673,35 @@ impl AppLifecycle {
     pub fn new(spec: &ServiceSpec, cache: Option<ArtifactCache>) -> Result<Self, EngineError> {
         let policy = AcceptancePolicy::from_spec(spec).map_err(EngineError::Internal)?;
         policy.validate().map_err(EngineError::Internal)?;
-        Self::with_policy(Some(spec.clone()), cache, policy)
+        Self::with_policy(Some(spec.clone()), None, cache, policy)
+    }
+
+    pub fn new_with_spec_text(
+        spec: &ServiceSpec,
+        spec_text: String,
+        cache: Option<ArtifactCache>,
+    ) -> Result<Self, EngineError> {
+        let policy = AcceptancePolicy::from_spec(spec).map_err(EngineError::Internal)?;
+        policy.validate().map_err(EngineError::Internal)?;
+        Self::with_policy(Some(spec.clone()), Some(spec_text), cache, policy)
     }
 
     pub fn new_mcp_first(cache: Option<ArtifactCache>) -> Result<Self, EngineError> {
         let policy = AcceptancePolicy::baseline();
         policy.validate().map_err(EngineError::Internal)?;
-        Self::with_policy(None, cache, policy)
+        Self::with_policy(None, None, cache, policy)
     }
 
     fn with_policy(
         spec: Option<ServiceSpec>,
+        spec_text: Option<String>,
         cache: Option<ArtifactCache>,
         policy: AcceptancePolicy,
     ) -> Result<Self, EngineError> {
         Ok(Self {
             engine: QuickJsEngine::new()?,
             spec,
+            spec_text,
             cache,
             policy,
             generations: HashMap::new(),
@@ -644,9 +722,24 @@ impl AppLifecycle {
         PreparationContext {
             engine: self.engine.clone(),
             spec: self.spec.clone(),
+            spec_text: self.spec_text.clone(),
+            draft_spec: false,
             cache: self.cache.clone(),
             policy: self.policy.clone(),
         }
+    }
+
+    pub fn export_generation(&self, id: &GenerationId) -> Result<GenerationExport, EngineError> {
+        let generation = self
+            .generations
+            .get(id)
+            .ok_or_else(|| EngineError::Internal("Unknown generation ID".into()))?;
+        generation.export_data.clone().ok_or_else(|| {
+            EngineError::Internal(
+                "Generation has no exportable SPEC contract; prepare it with draft_spec first"
+                    .into(),
+            )
+        })
     }
 
     pub fn insert_prepared(&mut self, mut generation: PreparedGeneration) -> GenerationId {

@@ -17,7 +17,7 @@ use tools::NosrcMcpServer;
 
 /// Run the MCP server over stdio. stdout is owned exclusively by the protocol transport.
 pub async fn serve(
-    spec: Option<ServiceSpec>,
+    spec: Option<(ServiceSpec, String)>,
     cache_dir: PathBuf,
     no_cache: bool,
     http_listener: Option<(IpAddr, u16)>,
@@ -27,8 +27,8 @@ pub async fn serve(
     } else {
         Some(ArtifactCache::new(cache_dir))
     };
-    let lifecycle = match spec.as_ref() {
-        Some(spec) => AppLifecycle::new(spec, cache)?,
+    let lifecycle = match spec {
+        Some((spec, spec_text)) => AppLifecycle::new_with_spec_text(&spec, spec_text, cache)?,
         None => AppLifecycle::new_mcp_first(cache)?,
     };
     let ingress_state = lifecycle.ingress_state();

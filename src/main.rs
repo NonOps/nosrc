@@ -510,7 +510,7 @@ async fn main() -> anyhow::Result<()> {
                         anyhow::anyhow!("Failed to parse SPEC at {}: {error}", path.display())
                     })?;
                     validate_runtime_spec(&spec)?;
-                    Some(spec)
+                    Some((spec, spec_text))
                 }
                 None => None,
             };
