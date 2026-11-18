@@ -146,6 +146,14 @@ impl NosrcMcpServer {
         &self,
         Parameters(params): Parameters<PrepareAppParams>,
     ) -> CallToolResult {
+        self.prepare_app_with_synthesizer(params, None).await
+    }
+
+    async fn prepare_app_with_synthesizer(
+        &self,
+        params: PrepareAppParams,
+        draft_synthesizer: Option<crate::synthesizer::Synthesizer>,
+    ) -> CallToolResult {
         let source = params.source;
         let js_code = params.js_code;
         let draft_spec = params.draft_spec;
@@ -205,7 +213,18 @@ impl NosrcMcpServer {
                 },
                 PrepareSource::Spec => context.prepare_from_spec(assertions).await,
                 PrepareSource::DraftSpec => match draft_spec {
-                    Some(spec) => context.prepare_from_draft_spec(spec, assertions).await,
+                    Some(spec) => match draft_synthesizer {
+                        Some(synthesizer) => {
+                            context
+                                .prepare_from_draft_spec_with_synthesizer(
+                                    spec,
+                                    assertions,
+                                    synthesizer,
+                                )
+                                .await
+                        }
+                        None => context.prepare_from_draft_spec(spec, assertions).await,
+                    },
                     None => Err(PreparationError::Runtime(
                         crate::error::EngineError::Internal("draft_spec is required".into()),
                     )),
@@ -1045,19 +1064,19 @@ mod tests {
                 temperature: 0.0,
             },
         );
-        let context = server.lifecycle.lock().await.preparation_context();
-        let preparation = context.prepare_from_draft_spec_with_synthesizer(
-            draft_spec.to_string(),
-            Vec::new(),
-            synthesizer,
-        );
-        // This is the same publication path used by the MCP prepare_app tool.
-        let prepared = prepare_and_publish(
-            server.lifecycle.clone(),
-            Duration::from_secs(120),
-            preparation,
-        )
-        .await;
+        // Exercise the same validation, preparation, and publication path as the MCP tool,
+        // injecting only the local mock provider instead of reading process credentials.
+        let prepared = server
+            .prepare_app_with_synthesizer(
+                PrepareAppParams {
+                    source: PrepareSource::DraftSpec,
+                    js_code: None,
+                    draft_spec: Some(draft_spec.to_string()),
+                    supplemental_assertions: None,
+                },
+                Some(synthesizer),
+            )
+            .await;
         assert_eq!(
             prepared.is_error,
             Some(false),
