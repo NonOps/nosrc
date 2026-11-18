@@ -15,6 +15,7 @@ struct CacheManifest {
     schema_version: u32,
     cache_key: String,
     component_sha256: String,
+    synthesis_sha256: String,
     synthesis: SynthesisOutput,
 }
 
@@ -84,6 +85,19 @@ impl ArtifactCache {
             return None;
         }
 
+        let synthesis_bytes = match serde_json::to_vec(&manifest.synthesis) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::warn!(cache_key = %key, %error, "Ignoring artifact cache entry with invalid synthesis metadata");
+                return None;
+            }
+        };
+        let synthesis_digest = format!("{:x}", Sha256::digest(&synthesis_bytes));
+        if synthesis_digest != manifest.synthesis_sha256 {
+            tracing::warn!(cache_key = %key, "Ignoring artifact cache entry with a synthesis metadata digest mismatch");
+            return None;
+        }
+
         if manifest.synthesis.code_format != "javascript"
             || manifest.synthesis.handler_code.trim().is_empty()
         {
@@ -121,6 +135,10 @@ impl ArtifactCache {
             schema_version: CACHE_SCHEMA_VERSION,
             cache_key: key.to_string(),
             component_sha256: format!("{:x}", Sha256::digest(component_bytes)),
+            synthesis_sha256: format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(synthesis)?)
+            ),
             synthesis: synthesis.clone(),
         };
         let manifest_bytes = serde_json::to_vec(&manifest)?;
@@ -178,7 +196,7 @@ mod tests {
         let loaded = cache.load(&key).unwrap();
 
         assert_eq!(loaded.synthesis.handler_code, synthesis().handler_code);
-        assert_eq!(loaded.component_bytes, component);
+        assert_eq!(loaded.component_bytes.as_slice(), component);
     }
 
     #[test]
