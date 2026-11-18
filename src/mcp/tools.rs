@@ -559,6 +559,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn export_app_reuses_existing_bundle_pipeline_and_serves_offline() {
+        use crate::engine::quickjs::test_support::HANDLER_SOURCE;
+        use crate::spec::ServiceSpec;
+
+        let spec_text = "# Service: mcp-export-test\n\n## Capabilities\n- state: volatile\n- egress: []\n\n## Endpoints\n### `GET /health`\n- Response `200`: `healthy`\n\n## Verification\n### `GET /health`\n- Response `200`\n- Body contains: `healthy`\n";
+        let spec = ServiceSpec::parse(spec_text).unwrap();
+        let lifecycle =
+            AppLifecycle::new_with_spec_text(&spec, spec_text.to_string(), None).unwrap();
+        let server = NosrcMcpServer {
+            lifecycle: Arc::new(Mutex::new(lifecycle)),
+        };
+        let prepared = server
+            .prepare_app(Parameters(PrepareAppParams {
+                source: PrepareSource::DirectJs,
+                js_code: Some(HANDLER_SOURCE.to_string()),
+                draft_spec: None,
+                supplemental_assertions: None,
+            }))
+            .await;
+        assert_eq!(prepared.is_error, Some(false));
+        let generation_id = prepared.structured_content.unwrap()["generation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let temp = tempfile::tempdir().unwrap();
+        let bundle_path = temp.path().join("offline-bundle");
+        let exported = server
+            .export_app(Parameters(ExportAppParams {
+                generation_id,
+                out_dir: bundle_path.clone(),
+            }))
+            .await;
+        assert_eq!(exported.is_error, Some(false));
+        assert_eq!(
+            std::fs::read_to_string(bundle_path.join("SPEC.md")).unwrap(),
+            spec_text
+        );
+
+        let (_, summary) = crate::bundle::load_and_verify(&bundle_path).unwrap();
+        assert_eq!(summary.service_name, "mcp-export-test");
+        assert_eq!(summary.trusted_assertions, 1);
+        assert_eq!(summary.generated_assertions, 0);
+    }
+
+    #[tokio::test]
     async fn mcp_first_mode_prepares_direct_javascript_without_operator_policy() {
         use crate::engine::quickjs::test_support::HANDLER_SOURCE;
 
@@ -729,7 +775,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stdio_tools_list_exposes_rollback_app() {
+    async fn stdio_tools_list_exposes_export_app() {
         use crate::spec::ServiceSpec;
         use rmcp::ServiceExt;
 
@@ -757,6 +803,7 @@ mod tests {
             names,
             vec![
                 "activate_app",
+                "export_app",
                 "get_app_status",
                 "invoke_app",
                 "prepare_app",
@@ -853,7 +900,7 @@ mod tests {
     }
 
     #[test]
-    fn server_registers_exactly_the_four_v02_lifecycle_tools() {
+    fn server_registers_all_six_lifecycle_tools() {
         let tools = NosrcMcpServer::tool_router().list_all();
         let mut names: Vec<String> = tools
             .into_iter()
@@ -864,6 +911,7 @@ mod tests {
             names,
             vec![
                 "activate_app".to_string(),
+                "export_app".to_string(),
                 "get_app_status".to_string(),
                 "invoke_app".to_string(),
                 "prepare_app".to_string(),

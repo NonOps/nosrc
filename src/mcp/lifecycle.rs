@@ -212,21 +212,6 @@ fn validate_assertions(assertions: &[ContractAssertion], label: &str) -> Result<
     Ok(())
 }
 
-fn compile_handler_on_blocking_thread(
-    engine: QuickJsEngine,
-    source: String,
-) -> Result<CompiledHandler, EngineError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| {
-            EngineError::Internal(format!(
-                "Failed to create componentization runtime: {error}"
-            ))
-        })?;
-    runtime.block_on(engine.compile_handler(&source))
-}
-
 fn compile_handler_with_artifact_on_blocking_thread(
     engine: QuickJsEngine,
     source: String,

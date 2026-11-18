@@ -114,13 +114,14 @@ Incoming HTTP request bodies and serialized guest response envelopes are limited
 
 ### MCP control plane
 
-`nosrc mcp --spec ./SPEC.md` starts a local MCP server over stdio and does not start an HTTP listener. The five tools are:
+`nosrc mcp --spec ./SPEC.md` starts a local MCP server over stdio and does not start an HTTP listener. The six tools are:
 
 - `prepare_app` — prepare a candidate from the operator SPEC or direct JavaScript; does not activate it.
 - `activate_app` — activate a retained ready generation.
 - `invoke_app` — invoke the active generation through the QuickJS handler.
 - `get_app_status` — inspect active, previous, and retained generations, verification summaries, and effective resource limits.
 - `rollback_app` — reactivate the immediately previous retained generation.
+- `export_app` — publish a prepared generation through the existing atomic artifact exporter for offline serving.
 
 The stdio process has no MCP-level authentication or authorization. Trust is inherited from the local launcher and ownership of its stdin/stdout pipes. Protocol messages use stdout; diagnostics are sent to stderr.
 
@@ -135,7 +136,8 @@ Generation identifiers, prepared/active generations, and rollback history are pr
 - `handler.js` — synthesized JavaScript handler source.
 - `component.wasm` — compiled WebAssembly component bytes.
 - `assertions.json` — trusted and generated assertion suites.
-- `manifest.json` — service name, SPEC digest, module/component digests, assertion counts, and synthesis rationale.
+- `SPEC.md` — exact SPEC text used for synthesis.
+- `manifest.json` — service name, SPEC digest, module/component digests, assertion counts, synthesis rationale, and whether assertions are operator-policy or draft-policy.
 
 The export manifest is provenance metadata. It does not contain a signed attestation, explicit per-assertion result records, toolchain identity, effective resource policy, or a cryptographic signature. Export writes all files into a temporary sibling directory and publishes the completed bundle with one same-filesystem directory rename. The destination must not already exist; export refuses replacement rather than performing a non-atomic directory swap. See `docs/ARTIFACTS.md`.
 

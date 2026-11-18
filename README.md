@@ -60,7 +60,7 @@ export LLM_API_KEY="your-api-key" # required for source: "spec"
 cargo run -- mcp --spec ./examples/minimal/SPEC.md
 ```
 
-The default MCP mode uses stdio and does not open an HTTP listener. It exposes five tools: `prepare_app`, `activate_app`, `invoke_app`, `get_app_status`, and `rollback_app`. Rollback is limited to the immediately previous retained generation. Generation state and rollback history are process-local and disappear when the MCP process exits.
+The default MCP mode uses stdio and does not open an HTTP listener. It exposes six tools: `prepare_app`, `activate_app`, `invoke_app`, `get_app_status`, `rollback_app`, and `export_app`. Rollback is limited to the immediately previous retained generation. Generation state and rollback history are process-local and disappear when the MCP process exits.
 
 MCP can also start without an operator SPEC:
 
@@ -68,7 +68,7 @@ MCP can also start without an operator SPEC:
 cargo run -- mcp
 ```
 
-This starts with empty application state and baseline runtime resource limits. The agent can prepare direct JavaScript with `source: "direct_js"`, or provide a draft contract with `source: "draft_spec"` and a `draft_spec` Markdown string. Draft SPEC data is synthesis input, not trusted operator policy; generated assertions are candidate checks, and the baseline sandbox limits remain in force. To establish an operator-controlled acceptance policy, review the exported draft and restart with `--spec PATH`.
+This starts with empty application state and baseline runtime resource limits. The agent can prepare direct JavaScript with `source: "direct_js"`, or provide a draft contract with `source: "draft_spec"` and a `draft_spec` Markdown string. Draft SPEC data is synthesis input, not trusted operator policy; generated assertions are candidate checks, and the baseline sandbox limits remain in force. Use `export_app` with the prepared generation ID to write the same offline bundle format as the CLI exporter. The bundle includes `SPEC.md`, handler source, component, assertions, and manifest, and can be served without an API key. To establish an operator-controlled acceptance policy, review the exported draft and restart with `--spec PATH`.
 
 To expose HTTP from the same process and share the active generation with MCP, add `--http-port` (and optionally `--http-bind`):
 
@@ -90,7 +90,8 @@ The export command runs synthesis (or loads a cache entry), componentization/com
 - `handler.js` — synthesized JavaScript handler source.
 - `component.wasm` — compiled WebAssembly component.
 - `assertions.json` — trusted SPEC assertions and generated assertions.
-- `manifest.json` — service name, SPEC SHA-256, module/component hashes, assertion counts, and synthesis rationale.
+- `SPEC.md` — exact SPEC text used for synthesis.
+- `manifest.json` — service name, SPEC SHA-256, module/component hashes, assertion counts, synthesis rationale, and policy mode.
 
 The export directory is for inspection, audit support, and version control. The manifest is provenance metadata, not a signed attestation or independent proof of correctness. Export is staged in a temporary sibling directory and published with a single directory rename. The destination must not already exist; remove or move an earlier export before rerunning. See [Artifact format](docs/ARTIFACTS.md).
 

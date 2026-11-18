@@ -127,6 +127,7 @@ async fn stdio_protocol_supports_prepare_status_activate_and_invoke() {
     assert!(names.contains(&"get_app_status"));
     assert!(names.contains(&"activate_app"));
     assert!(names.contains(&"invoke_app"));
+    assert!(names.contains(&"export_app"));
 
     let js_code = r#"
         export function handle(requestJson) {
