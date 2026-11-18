@@ -8,7 +8,8 @@ The current implementation is a runnable single-process prototype, not a product
 ## Current implementation
 
 - Loads and parses the configured `SPEC.md`.
-- Calls an OpenAI-compatible chat-completions endpoint to synthesize a self-contained JavaScript ES module and contract assertions.
+- Calls an OpenAI-compatible chat-completions endpoint to synthesize a self-contained JavaScript ES module and contract assertions when no matching artifact is cached.
+- Caches component artifacts by a SHA-256 identity covering the raw SPEC, provider URL and configured model, synthesis prompt, WIT contract, resource budgets, componentizer/runtime versions, and `Cargo.lock`.
 - Componentizes JavaScript in-process with `componentize-qjs` and executes it with Wasmtime's component model.
 - Applies Wasm fuel and linear-memory limits to the component store.
 - Runs human-authored verification cases from `SPEC.md` and a separate model-generated supplemental assertion suite against isolated candidate instances before activation.
@@ -25,6 +26,7 @@ The current implementation is a runnable single-process prototype, not a product
 - Requests to one active handler instance are serialized to preserve its JavaScript state.
 - HTTP request bodies and serialized guest response envelopes are limited to 1 MiB. Non-UTF-8 request bodies remain unsupported by the current text-based handler ABI.
 - The LLM client limits serialized synthesis requests to 2 MiB, uses a 10-second connect timeout and 120-second total timeout, and caps success responses at 4 MiB and error responses at 8 KiB.
+- The local artifact cache is an optimization, not a verification bypass: cached components are recompiled by the current Wasmtime engine and both verification suites run on every startup. Cache entries are stored under `.nosrc-cache/` by default; pass `--cache-dir` to change the location or `--no-cache` to force fresh synthesis. The cache is local and should be writable only by the service operator.
 - There is no automatic rebuild, file watching, self-healing, automatic rollback, external persistence, or Kubernetes orchestration.
 - Outbound HTTP, SQL, and durable KV capabilities are not exposed to generated code.
 
@@ -102,7 +104,7 @@ export LLM_BASE_URL="https://your-provider.example/v1"
 export LLM_MODEL="your-model-name"
 ```
 
-The service validates the SPEC-authored verification suite, synthesizes and componentizes a handler, then runs the trusted cases and a separate model-generated assertion suite before binding the HTTP listener. The listener binds to `127.0.0.1` by default; pass `--bind 0.0.0.0` to expose it on all IPv4 interfaces. Startup fails closed if either suite fails. Keep this terminal running.
+The service validates the SPEC-authored verification suite, synthesizes and componentizes a handler, then runs the trusted cases and a separate model-generated assertion suite before binding the HTTP listener. The listener binds to `127.0.0.1` by default; pass `--bind 0.0.0.0` to expose it on all IPv4 interfaces. The local artifact cache is enabled by default at `.nosrc-cache/`; use `--cache-dir PATH` to choose another directory or `--no-cache` to bypass it. Startup fails closed if either suite fails. Keep this terminal running.
 
 In a second terminal, check health and the active generation:
 
