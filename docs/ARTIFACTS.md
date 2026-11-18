@@ -80,7 +80,9 @@ The manifest records SPEC and component digests, but it does not capture every i
 
 ## Filesystem behavior and handling
 
-The export function creates the destination directory if necessary and writes the four files individually. It does not stage and atomically rename a complete directory. A write failure can therefore leave a partial or mixed output directory, especially when overwriting an existing export.
+The export function creates the destination's parent directory if necessary, writes all four files into a uniquely named temporary sibling directory, and publishes the completed directory with a same-filesystem rename. Readers see either no destination or the complete bundle; a failure while staging leaves the destination untouched and the temporary directory is cleaned up.
+
+The destination itself must not already exist. Export intentionally refuses to overwrite an existing file, directory, or symlink. This avoids claiming atomic replacement where portable filesystems do not provide an atomic replacement operation for non-empty directories. To export again, remove or move the previous destination first. Concurrent exports targeting the same absent destination are not a supported coordination mechanism; only one publication can win.
 
 Treat exported source and components as build artifacts. Review them before deployment, restrict write access to export locations, and do not assume that the manifest is tamper-evident. Hashes detect accidental/mismatched content only when compared against a trusted manifest copy; the manifest itself is not signed.
 

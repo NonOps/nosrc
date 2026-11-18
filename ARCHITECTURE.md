@@ -133,7 +133,7 @@ Generation identifiers, prepared/active generations, and rollback history are pr
 - `assertions.json` — trusted and generated assertion suites.
 - `manifest.json` — service name, SPEC digest, module/component digests, assertion counts, and synthesis rationale.
 
-The export manifest is provenance metadata. It does not contain a signed attestation, explicit per-assertion result records, toolchain identity, effective resource policy, or a cryptographic signature. Export files are written individually into the destination directory; the export operation is not an atomic directory transaction. See `docs/ARTIFACTS.md`.
+The export manifest is provenance metadata. It does not contain a signed attestation, explicit per-assertion result records, toolchain identity, effective resource policy, or a cryptographic signature. Export writes all files into a temporary sibling directory and publishes the completed bundle with one same-filesystem directory rename. The destination must not already exist; export refuses replacement rather than performing a non-atomic directory swap. See `docs/ARTIFACTS.md`.
 
 ## Configuration and operational limits
 
