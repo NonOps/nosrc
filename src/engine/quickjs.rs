@@ -9,7 +9,7 @@ use crate::error::{EngineError, SandboxTrap};
 pub const DEFAULT_COMPONENT_FUEL: u64 = 50_000_000;
 pub const DEFAULT_COMPONENT_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 
-const HANDLER_WIT: &str = r#"
+pub const HANDLER_WIT: &str = r#"
 package nosrc:runtime;
 
 world handler {
@@ -56,10 +56,16 @@ impl QuickJsEngine {
     }
 
     /// Compile an ES module into a standalone QuickJS WebAssembly component.
-    ///
-    /// The source is intentionally self-contained in this first runtime slice.
-    /// Filesystem module imports and WASI capabilities are not granted.
     pub async fn compile_handler(&self, javascript: &str) -> Result<CompiledHandler, EngineError> {
+        let (compiled, _) = self.compile_handler_with_artifact(javascript).await?;
+        Ok(compiled)
+    }
+
+    /// Componentize source and return the exact bytes that can be cached.
+    pub async fn compile_handler_with_artifact(
+        &self,
+        javascript: &str,
+    ) -> Result<(CompiledHandler, Vec<u8>), EngineError> {
         let wit_dir = tempfile::tempdir().map_err(|error| {
             EngineError::Internal(format!("Failed to create temporary WIT directory: {error}"))
         })?;
@@ -83,7 +89,13 @@ impl QuickJsEngine {
             EngineError::Internal(format!("QuickJS componentization failed: {error:#}"))
         })?;
 
-        let module_hash = format!("{:x}", Sha256::digest(&component_bytes));
+        let compiled = self.compile_component(&component_bytes)?;
+        Ok((compiled, component_bytes))
+    }
+
+    /// Compile a previously componentized artifact with this engine configuration.
+    pub fn compile_component(&self, component_bytes: &[u8]) -> Result<CompiledHandler, EngineError> {
+        let module_hash = format!("{:x}", Sha256::digest(component_bytes));
         let component = Component::new(&self.engine, component_bytes).map_err(|error| {
             EngineError::Internal(format!("Invalid handler component: {error}"))
         })?;
