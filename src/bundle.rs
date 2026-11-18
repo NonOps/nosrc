@@ -1,7 +1,7 @@
 use anyhow::{bail, Context};
 use sha2::{Digest, Sha256};
-use std::fs::{self, File};
-use std::io::{Read, Take};
+use std::fs::{self, File, OpenOptions};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -45,18 +45,19 @@ pub fn load_and_verify(bundle_dir: &Path) -> anyhow::Result<(ActiveGeneration, B
 
     let manifest: ExportManifest = serde_json::from_slice(&manifest_bytes)
         .context("Bundle manifest.json is not a valid export manifest")?;
-    validate_digest("spec_sha256", &manifest.spec_sha256)?;
-    validate_digest("module_hash", &manifest.module_hash)?;
-    validate_digest("component_sha256", &manifest.component_sha256)?;
+    let _spec_digest = validate_digest("spec_sha256", &manifest.spec_sha256)?;
+    let module_digest = validate_digest("module_hash", &manifest.module_hash)?;
+    let component_manifest_digest =
+        validate_digest("component_sha256", &manifest.component_sha256)?;
     if manifest.service_name.trim().is_empty() {
         bail!("Bundle manifest service_name must not be empty");
     }
 
     let component_digest = format!("{:x}", Sha256::digest(&component_bytes));
-    if component_digest != manifest.component_sha256 {
+    if component_digest != component_manifest_digest {
         bail!("Bundle component.wasm SHA-256 does not match manifest component_sha256");
     }
-    if component_digest != manifest.module_hash {
+    if component_digest != module_digest {
         bail!("Bundle component.wasm SHA-256 does not match manifest module_hash");
     }
 
@@ -83,7 +84,7 @@ pub fn load_and_verify(bundle_dir: &Path) -> anyhow::Result<(ActiveGeneration, B
     // The engine independently compiles the component and derives its own hash.
     let engine = QuickJsEngine::new()?;
     let compiled = engine.compile_component(&component_bytes)?;
-    if compiled.module_hash != manifest.module_hash {
+    if compiled.module_hash != module_digest {
         bail!("Compiled component hash does not match manifest module_hash");
     }
 
@@ -129,8 +130,26 @@ pub struct BundleSummary {
 
 fn read_bundle_file(directory: &Path, name: &str, max_bytes: u64) -> anyhow::Result<Vec<u8>> {
     let path = directory.join(name);
-    let metadata = fs::symlink_metadata(&path)
-        .with_context(|| format!("Missing required bundle artifact {}", path.display()))?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+
+    // O_NOFOLLOW makes the path lookup and open one operation with respect to
+    // the final path component, preventing a symlink swap on Unix.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+
+    let file = options
+        .open(&path)
+        .with_context(|| format!("Failed to open bundle artifact {} without following symlinks", path.display()))?;
+
+    // Validate the opened object, not metadata obtained from a path lookup
+    // that could refer to a different file by the time it is opened.
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("Failed to inspect opened bundle artifact {}", path.display()))?;
     if !metadata.file_type().is_file() {
         bail!(
             "Bundle artifact {} must be a regular file, not a symlink",
@@ -145,11 +164,8 @@ fn read_bundle_file(directory: &Path, name: &str, max_bytes: u64) -> anyhow::Res
         );
     }
 
-    let file = File::open(&path)
-        .with_context(|| format!("Failed to open bundle artifact {}", path.display()))?;
-    let mut limited: Take<File> = file.take(max_bytes + 1);
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    limited
+    let mut bytes = Vec::with_capacity(metadata.len().min(max_bytes) as usize);
+    file.take(max_bytes + 1)
         .read_to_end(&mut bytes)
         .with_context(|| format!("Failed to read bundle artifact {}", path.display()))?;
     if bytes.len() as u64 > max_bytes {
@@ -162,11 +178,11 @@ fn read_bundle_file(directory: &Path, name: &str, max_bytes: u64) -> anyhow::Res
     Ok(bytes)
 }
 
-fn validate_digest(field: &str, digest: &str) -> anyhow::Result<()> {
+fn validate_digest(field: &str, digest: &str) -> anyhow::Result<String> {
     if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         bail!("Bundle manifest {field} must be a 64-character SHA-256 hex digest");
     }
-    Ok(())
+    Ok(digest.to_ascii_lowercase())
 }
 
 #[cfg(test)]
@@ -239,6 +255,22 @@ mod tests {
         assert_eq!(summary.trusted_assertions, 1);
         assert_eq!(summary.generated_assertions, 1);
         assert_eq!(generation.generation_id, 1);
+    }
+
+    #[tokio::test]
+    async fn accepts_uppercase_manifest_digests() {
+        let directory = tempfile::tempdir().unwrap();
+        write_valid_bundle(directory.path()).await;
+        let path = directory.path().join("manifest.json");
+        let mut manifest: ExportManifest =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        manifest.module_hash.make_ascii_uppercase();
+        manifest.component_sha256.make_ascii_uppercase();
+        manifest.spec_sha256.make_ascii_uppercase();
+        fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+        let (_, summary) = load_and_verify(directory.path()).unwrap();
+        assert_eq!(summary.service_name, "Bundle test");
     }
 
     #[tokio::test]
