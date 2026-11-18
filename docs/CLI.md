@@ -97,7 +97,7 @@ cargo run -- serve --bundle ./dist --bind 127.0.0.1 --port 8080
 | `LLM_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API base URL |
 | `LLM_MODEL` | `gpt-4o-mini` | Model identifier |
 
-HTTP and export currently construct the LLM configuration before cache lookup, so `LLM_API_KEY` must be set even when a valid cache entry exists. MCP direct-JavaScript preparation can run without it.
+HTTP and export currently construct the LLM configuration before cache lookup, so `LLM_API_KEY` must be set even when a valid cache entry exists. MCP direct-JavaScript preparation and `serve --bundle` can run without it; offline bundle serving does not construct an LLM client or contact a provider.
 
 `RUST_LOG` overrides the default scoped tracing filter. Without it, normal mode uses `warn,nosrc=info`; verbose mode uses `warn,nosrc=debug`. Diagnostics are emitted to stderr. Broad filters such as `RUST_LOG=trace` can enable verbose dependency logging.
 
