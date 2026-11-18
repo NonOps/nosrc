@@ -129,7 +129,12 @@ fn evaluate_response(
 
     if let Some(headers) = &assertion.header_matches {
         for (name, expected_value) in headers {
-            match response.headers.get(name) {
+            let actual = response
+                .headers
+                .iter()
+                .find(|(actual_name, _)| actual_name.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value);
+            match actual {
                 Some(actual_value) if actual_value == expected_value => {}
                 Some(actual_value) => {
                     return (

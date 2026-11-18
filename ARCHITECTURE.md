@@ -50,7 +50,7 @@ Each handler store has a fuel budget and a 64 MiB per-linear-memory growth limit
 
 The runtime executes SPEC-authored cases against one disposable candidate instance, then runs model-generated assertions against a different disposable instance. The model cannot supply the only acceptance criteria, and supplemental tests cannot mutate trusted-suite state. A third, fresh instance is created for production only after both suites pass.
 
-The verifier checks response status, configured body substrings, and expected response headers. Trusted SPEC cases can also set request headers and decoded query parameters. In the current string-map request ABI, repeated query keys are rejected rather than collapsed. Duplicate scalar verification fields and duplicate normalized header names are rejected during parsing. These remain authored contract checks—not proof that generated code is correct or secure.
+The verifier checks response status, configured body substrings, and expected response headers. Trusted SPEC cases can also set request headers and decoded query parameters. The current string-map request ABI cannot express multi-valued query parameters; repeated query keys in trusted verification headings are rejected rather than silently collapsed. Duplicate scalar verification fields and duplicate normalized header names are rejected during parsing. These remain authored contract checks—not proof that generated code is correct or secure.
 
 ### HTTP ingress
 
