@@ -336,4 +336,22 @@ mod tests {
             "Expected fuel exhaustion, got: {error}"
         );
     }
+
+    #[tokio::test]
+    async fn handler_remains_usable_after_fuel_exhaustion() {
+        let (engine, compiled) = test_support::compiled().await;
+        let mut handler = engine.instantiate(compiled, 100_000).unwrap();
+
+        let error = handler.invoke(&request("/loop")).unwrap_err();
+        assert!(
+            matches!(error, EngineError::Trap(SandboxTrap::FuelExhausted)),
+            "Expected fuel exhaustion, got: {error}"
+        );
+
+        let response = handler
+            .invoke(&request("/health"))
+            .expect("same handler should accept a healthy request after a guest trap");
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body.as_deref(), Some("healthy"));
+    }
 }
