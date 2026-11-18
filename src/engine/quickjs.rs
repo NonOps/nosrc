@@ -21,6 +21,9 @@ struct ComponentStoreState {
     limits: StoreLimits,
 }
 
+type ComponentHandle = TypedFunc<(String,), (String,)>;
+type InstantiatedComponent = (Store<ComponentStoreState>, ComponentHandle);
+
 /// Wasmtime component-model engine for JavaScript handlers compiled with QuickJS.
 pub struct QuickJsEngine {
     engine: Engine,
@@ -32,8 +35,10 @@ pub struct CompiledHandler {
 }
 
 pub struct QuickJsHandler {
+    engine: Engine,
+    component: Component,
     store: Store<ComponentStoreState>,
-    handle: TypedFunc<(String,), (String,)>,
+    handle: ComponentHandle,
     fuel_budget: u64,
 }
 
@@ -95,38 +100,12 @@ impl QuickJsEngine {
         compiled: &CompiledHandler,
         fuel_budget: u64,
     ) -> Result<QuickJsHandler, EngineError> {
-        let limits = StoreLimitsBuilder::new()
-            .memory_size(DEFAULT_COMPONENT_MEMORY_BYTES)
-            .table_elements(10_000)
-            .instances(16)
-            .tables(4)
-            .memories(4)
-            .build();
-
-        let mut store = Store::new(&self.engine, ComponentStoreState { limits });
-        store.set_fuel(fuel_budget).map_err(|error| {
-            EngineError::Internal(format!("Failed to set component fuel: {error}"))
-        })?;
-        store.limiter(|state| &mut state.limits);
-        store.set_max_component_handles(1_024);
-
-        let linker = Linker::<ComponentStoreState>::new(&self.engine);
-        let instance = linker
-            .instantiate(&mut store, &compiled.component)
-            .map_err(|error| {
-                EngineError::Instantiation(format!(
-                    "Failed to instantiate handler component: {error}"
-                ))
-            })?;
-        let handle = instance
-            .get_typed_func::<(String,), (String,)>(&mut store, "handle")
-            .map_err(|error| {
-                EngineError::Instantiation(format!(
-                    "Handler component must export handle(request: string) -> string: {error}"
-                ))
-            })?;
+        let (store, handle) =
+            instantiate_component(&self.engine, &compiled.component, fuel_budget)?;
 
         Ok(QuickJsHandler {
+            engine: self.engine.clone(),
+            component: compiled.component.clone(),
             store,
             handle,
             fuel_budget,
@@ -134,9 +113,44 @@ impl QuickJsEngine {
     }
 }
 
+fn instantiate_component(
+    engine: &Engine,
+    component: &Component,
+    fuel_budget: u64,
+) -> Result<InstantiatedComponent, EngineError> {
+    let limits = StoreLimitsBuilder::new()
+        .memory_size(DEFAULT_COMPONENT_MEMORY_BYTES)
+        .table_elements(10_000)
+        .instances(16)
+        .tables(4)
+        .memories(4)
+        .build();
+
+    let mut store = Store::new(engine, ComponentStoreState { limits });
+    store
+        .set_fuel(fuel_budget)
+        .map_err(|error| EngineError::Internal(format!("Failed to set component fuel: {error}")))?;
+    store.limiter(|state| &mut state.limits);
+    store.set_max_component_handles(1_024);
+
+    let linker = Linker::<ComponentStoreState>::new(engine);
+    let instance = linker.instantiate(&mut store, component).map_err(|error| {
+        EngineError::Instantiation(format!("Failed to instantiate handler component: {error}"))
+    })?;
+    let handle = instance
+        .get_typed_func::<(String,), (String,)>(&mut store, "handle")
+        .map_err(|error| {
+            EngineError::Instantiation(format!(
+                "Handler component must export handle(request: string) -> string: {error}"
+            ))
+        })?;
+
+    Ok((store, handle))
+}
+
 impl QuickJsHandler {
     /// Invoke the handler while retaining the same component instance between calls.
-    /// This preserves JavaScript module state across HTTP requests.
+    /// This preserves JavaScript module state across successful requests.
     pub fn invoke(&mut self, request: &RequestEnvelope) -> Result<ResponseEnvelope, EngineError> {
         let request_json = serde_json::to_string(request).map_err(|error| {
             EngineError::Internal(format!("Failed to serialize request envelope: {error}"))
@@ -146,10 +160,27 @@ impl QuickJsHandler {
             EngineError::Internal(format!("Failed to reset component fuel: {error}"))
         })?;
 
-        let (response_json,) = self
-            .handle
-            .call(&mut self.store, (request_json,))
-            .map_err(classify_component_trap)?;
+        let response_json = match self.handle.call(&mut self.store, (request_json,)) {
+            Ok((response_json,)) => response_json,
+            Err(error) => {
+                let trap = classify_component_trap(error);
+                // Wasmtime component instances cannot be re-entered after a guest trap.
+                // Recreate the instance from the already-compiled component so one bad
+                // request does not permanently take this generation's handler offline.
+                match instantiate_component(&self.engine, &self.component, self.fuel_budget) {
+                    Ok((store, handle)) => {
+                        self.store = store;
+                        self.handle = handle;
+                    }
+                    Err(recovery_error) => {
+                        return Err(EngineError::Internal(format!(
+                            "Guest trapped ({trap}); failed to recreate handler instance: {recovery_error}"
+                        )));
+                    }
+                }
+                return Err(trap);
+            }
+        };
 
         if response_json.len() > MAX_HANDLER_RESPONSE_BYTES {
             return Err(EngineError::Internal(format!(
@@ -335,5 +366,23 @@ mod tests {
             matches!(error, EngineError::Trap(SandboxTrap::FuelExhausted)),
             "Expected fuel exhaustion, got: {error}"
         );
+    }
+
+    #[tokio::test]
+    async fn handler_remains_usable_after_fuel_exhaustion() {
+        let (engine, compiled) = test_support::compiled().await;
+        let mut handler = engine.instantiate(compiled, 100_000).unwrap();
+
+        let error = handler.invoke(&request("/loop")).unwrap_err();
+        assert!(
+            matches!(error, EngineError::Trap(SandboxTrap::FuelExhausted)),
+            "Expected fuel exhaustion, got: {error}"
+        );
+
+        let response = handler
+            .invoke(&request("/health"))
+            .expect("same handler should accept a healthy request after a guest trap");
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body.as_deref(), Some("healthy"));
     }
 }
