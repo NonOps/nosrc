@@ -2,11 +2,12 @@
 
 ## Status and scope
 
-nosrc is an experimental, single-process Rust application runtime. It transforms an operator-authored `SPEC.md` into a self-contained JavaScript handler, componentizes that handler for QuickJS/WebAssembly, verifies it, and makes it available through one of three operating modes:
+nosrc is an experimental, single-process Rust application runtime. It transforms an operator-authored `SPEC.md` into a self-contained JavaScript handler, componentizes that handler for QuickJS/WebAssembly, verifies it, and makes it available through four operating modes:
 
 1. **HTTP runtime** — verifies and activates a handler during startup, then serves HTTP requests.
 2. **MCP control plane** — exposes lifecycle and invocation tools over local stdio in a separate process.
-3. **Artifact export** — runs the same preparation and verification pipeline, then writes source, component, assertions, and manifest files for review and version control.
+3. **Artifact export** — runs the synthesis and verification pipeline, then writes source, component, assertions, and manifest files for review and version control.
+4. **Offline bundle serving** — loads an exported component, checks its digest and manifest metadata, reruns both exported assertion suites, and starts HTTP ingress without an LLM/provider dependency.
 
 These are workflows around the same handler contract and engine, not separate guest runtimes. HTTP and MCP processes do not share active generations or in-memory state.
 
@@ -32,6 +33,9 @@ flowchart TD
     MODES --> HTTP["HTTP ingress"]
     MODES --> MCP["MCP stdio lifecycle"]
     MODES --> EXPORT["Artifact export"]
+    MODES --> OFFLINE["Offline bundle validation"]
+    OFFLINE --> VERIFYB["Compile + rerun exported assertions"]
+    VERIFYB --> HTTP
     EXPORT --> FILES["handler.js / component.wasm / assertions.json / manifest.json"]
 ```
 
@@ -52,7 +56,7 @@ The HTTP and export CLI paths:
 9. Instantiate a fresh production handler only after successful verification.
 10. Store newly generated verified artifacts in the local cache when caching is enabled.
 
-The export command then writes the exported files and exits without starting HTTP ingress. The HTTP command starts its listener only after successful preparation.
+The export command then writes the exported files and exits without starting HTTP ingress. The HTTP command starts its listener only after successful preparation. The `serve --bundle` command instead loads the exported component and assertion suites, verifies integrity metadata, reruns both suites on isolated candidates, and opens HTTP ingress only after successful verification. It does not load a SPEC, instantiate the synthesizer, or read LLM credentials.
 
 MCP `source: "spec"` uses the same mandatory trusted and generated suites. MCP `source: "direct_js"` skips LLM synthesis and has no model-generated suite, but must still pass every trusted SPEC assertion. Optional client-supplied assertions in direct-JavaScript mode are informational and cannot relax the trusted policy.
 
