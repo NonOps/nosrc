@@ -2,7 +2,7 @@
 
 ## 1. Project identity
 
-nosrc is an experimental Rust runtime that transforms an operator-authored `SPEC.md` into a JavaScript request handler, compiles it into a QuickJS-backed WebAssembly component, verifies it, and exposes it through HTTP, MCP stdio, or verified artifact export.
+nosrc is an experimental Rust runtime that transforms an operator-authored `SPEC.md` into a JavaScript request handler, compiles it into a QuickJS-backed WebAssembly component, verifies it, and exposes it through HTTP, MCP stdio, verified artifact export, or offline bundle serving.
 
 Read `ARCHITECTURE.md` before changing module boundaries, execution contracts, security assumptions, or lifecycle behavior. Read the relevant documents under `docs/` when changing CLI behavior, export formats, or security boundaries.
 
