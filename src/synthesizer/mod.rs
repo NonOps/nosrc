@@ -347,6 +347,28 @@ mod tests {
     use axum::Router;
 
     #[test]
+    fn artifact_cache_identity_changes_with_spec_and_model() {
+        let base_markdown = include_str!("../../examples/minimal/SPEC.md");
+        let spec = ServiceSpec::parse(base_markdown).unwrap();
+        let changed_spec = ServiceSpec::parse(&format!("{base_markdown}\n")).unwrap();
+        let config = LlmConfig {
+            api_key: "not-part-of-cache-identity".into(),
+            base_url: "https://provider.example/v1".into(),
+            model: "model-a".into(),
+            temperature: 0.1,
+        };
+        let synthesizer = Synthesizer::new(config.clone());
+        let changed_model = Synthesizer::new(LlmConfig {
+            model: "model-b".into(),
+            ..config
+        });
+
+        let original_key = synthesizer.artifact_cache_key(&spec);
+        assert_ne!(original_key, synthesizer.artifact_cache_key(&changed_spec));
+        assert_ne!(original_key, changed_model.artifact_cache_key(&spec));
+    }
+
+    #[test]
     fn serialized_request_writer_stops_at_configured_limit() {
         let mut writer = LimitedBodyWriter::new(4);
         writer.write_all(b"1234").unwrap();
