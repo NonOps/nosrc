@@ -6,6 +6,7 @@ pub mod synthesizer;
 pub mod verifier;
 
 use clap::Parser;
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -27,6 +28,10 @@ pub struct Cli {
 
     #[arg(short, long, default_value = "8080")]
     pub port: u16,
+
+    /// Address to listen on. Defaults to loopback; use 0.0.0.0 explicitly for external access.
+    #[arg(long, default_value = "127.0.0.1")]
+    pub bind: IpAddr,
 
     /// Enable detailed generation-pipeline and HTTP request diagnostics.
     #[arg(short, long, action = clap::ArgAction::SetTrue)]
@@ -253,7 +258,7 @@ async fn main() -> anyhow::Result<()> {
     state.hot_swap(generation);
 
     let app = ingress::build_ingress_router(state);
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", cli.port)).await?;
+    let listener = tokio::net::TcpListener::bind((cli.bind, cli.port)).await?;
 
     tracing::info!(
         address = %listener.local_addr()?,
@@ -279,6 +284,15 @@ mod tests {
     fn debug_diagnostics_are_disabled_by_default() {
         let cli = Cli::try_parse_from(["nosrc"]).unwrap();
         assert!(!cli.verbose);
+    }
+
+    #[test]
+    fn listener_defaults_to_loopback_and_allows_explicit_external_bind() {
+        let cli = Cli::try_parse_from(["nosrc"]).unwrap();
+        assert_eq!(cli.bind, "127.0.0.1".parse::<IpAddr>().unwrap());
+
+        let cli = Cli::try_parse_from(["nosrc", "--bind", "0.0.0.0"]).unwrap();
+        assert_eq!(cli.bind, "0.0.0.0".parse::<IpAddr>().unwrap());
     }
 
     #[test]
