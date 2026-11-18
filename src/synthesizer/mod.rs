@@ -162,7 +162,7 @@ impl Synthesizer {
         let temperature = self.config.temperature.to_bits().to_be_bytes();
         let fuel = crate::engine::quickjs::DEFAULT_COMPONENT_FUEL.to_be_bytes();
         let memory = (crate::engine::quickjs::DEFAULT_COMPONENT_MEMORY_BYTES as u64).to_be_bytes();
-        let fields: [&[u8]; 11] = [
+        let fields: [&[u8]; 12] = [
             b"nosrc-artifact-cache-v1",
             spec.raw_markdown.as_bytes(),
             self.config.base_url.as_bytes(),
@@ -170,7 +170,8 @@ impl Synthesizer {
             &temperature,
             prompt.as_bytes(),
             crate::engine::quickjs::HANDLER_WIT.as_bytes(),
-            b"componentize-qjs-0.6.0;wasmtime-50;runtime-default-sync",
+            b"componentize-qjs-0.6.0;wasmtime-50;runtime-default-sync;stub-wasi=true;disable-gc=false;component-model=true;consume-fuel=true",
+            env!("CARGO_PKG_VERSION").as_bytes(),
             include_bytes!("../../Cargo.lock"),
             &fuel,
             &memory,
