@@ -37,14 +37,12 @@ pub fn export_artifacts(
     module_hash: &str,
     trusted_assertions: &[ContractAssertion],
 ) -> anyhow::Result<PathBuf> {
-    let file_name = out_dir
-        .file_name()
-        .with_context(|| {
-            format!(
-                "Export destination must name a directory: {}",
-                out_dir.display()
-            )
-        })?;
+    let file_name = out_dir.file_name().with_context(|| {
+        format!(
+            "Export destination must name a directory: {}",
+            out_dir.display()
+        )
+    })?;
     let parent = out_dir
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -180,10 +178,8 @@ mod tests {
             std::fs::read(path.join("component.wasm")).unwrap(),
             component_bytes
         );
-        let manifest: ExportManifest = serde_json::from_slice(
-            &std::fs::read(path.join("manifest.json")).unwrap(),
-        )
-        .unwrap();
+        let manifest: ExportManifest =
+            serde_json::from_slice(&std::fs::read(path.join("manifest.json")).unwrap()).unwrap();
         assert_eq!(manifest.service_name, "Test");
         assert_eq!(manifest.module_hash, "mock_hash_123");
         assert_eq!(
