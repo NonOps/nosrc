@@ -577,7 +577,7 @@ pub(super) fn prepare_compiled(
 /// single-process and single-application; MCP tool calls serialize state changes.
 pub struct AppLifecycle {
     engine: QuickJsEngine,
-    spec: ServiceSpec,
+    spec: Option<ServiceSpec>,
     cache: Option<ArtifactCache>,
     policy: AcceptancePolicy,
     generations: HashMap<GenerationId, PreparedGeneration>,
@@ -628,7 +628,7 @@ impl AppLifecycle {
     pub fn preparation_context(&self) -> PreparationContext {
         PreparationContext {
             engine: self.engine.clone(),
-            spec: Some(self.spec.clone()),
+            spec: self.spec.clone(),
             cache: self.cache.clone(),
             policy: self.policy.clone(),
         }

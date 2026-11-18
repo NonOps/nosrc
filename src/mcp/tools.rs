@@ -497,6 +497,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mcp_first_mode_prepares_direct_javascript_without_operator_policy() {
+        use crate::engine::quickjs::test_support::HANDLER_SOURCE;
+
+        let lifecycle = AppLifecycle::new_mcp_first(None).unwrap();
+        let server = NosrcMcpServer {
+            lifecycle: Arc::new(Mutex::new(lifecycle)),
+        };
+        let prepared = server
+            .prepare_app(Parameters(PrepareAppParams {
+                source: PrepareSource::DirectJs,
+                js_code: Some(HANDLER_SOURCE.to_string()),
+                draft_spec: None,
+                supplemental_assertions: None,
+            }))
+            .await;
+        assert_eq!(prepared.is_error, Some(false));
+        assert_eq!(prepared.structured_content.unwrap()["trusted_assertions_passed"], 0);
+    }
+
+    #[tokio::test]
     async fn rollback_tool_restores_previous_generation() {
         use crate::engine::quickjs::test_support;
         use crate::mcp::lifecycle::{prepare_compiled, SourceType};
