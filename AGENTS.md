@@ -91,3 +91,12 @@ For every new externally observable capability or changed contract, update all r
 - `AGENTS.md`: contributor/reviewer invariants that future agents must preserve.
 
 Do not document planned work as implemented. Mark backlog items as planned/deferred and describe current behavior separately.
+
+
+## 10. Release versioning
+
+- Actual Git tags and GitHub Release names use exactly `vMAJOR.MINOR` (for example, `v0.1` and `v0.2`).
+- Do not create three-component release tags such as `v0.1.0`, or patch-level release tags such as `v0.1.1`.
+- Keep `Cargo.toml`'s package version in valid three-component SemVer form (for example, `0.1.0`). Its major/minor components must match the release tag.
+- Run `bash scripts/check-release-tag.sh --self-test` when changing the release validation script. CI runs this test automatically.
+- See `docs/RELEASING.md` before tagging or publishing a release.

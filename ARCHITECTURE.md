@@ -200,3 +200,8 @@ Autonomous self-healing, automatic regeneration from production failures, automa
 - Candidate verification must use isolated state and must not leak temporary artifacts.
 - Resource limits must be tested against the actual QuickJS component runtime.
 - LLM output is untrusted input and must be schema-validated, componentized, and verified before activation.
+
+
+## Release versioning
+
+The project publishes milestone releases using two-component Git tags and GitHub Release names: `v0.1`, `v0.2`, and so on. The Cargo package version remains a valid three-component SemVer value (for example, `0.1.0`) because Cargo requires that format. The package major/minor components must match the release tag. Patch-level tags and releases such as `v0.1.1` or `v0.1.0` are invalid for this project. The release workflow validates this mapping before creating a GitHub Release. See `docs/RELEASING.md`.

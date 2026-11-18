@@ -156,6 +156,10 @@ cargo test --all-targets
 
 The test suite includes a deterministic end-to-end startup run against a local mock OpenAI-compatible endpoint. It exercises synthesis, QuickJS componentization, verification, production activation, and HTTP dispatch without an external API key.
 
+## Release versions
+
+Git tags and GitHub Releases use the short milestone form: `v0.1`, `v0.2`, `v0.3`, and so on. The Cargo package keeps a three-component SemVer version (currently `0.1.0`) for Rust tooling; its major/minor components map to the release tag. Patch-level Git tags and GitHub Releases are not used. See [Release process](docs/RELEASING.md).
+
 ## Project documentation
 
 - [Architecture and implemented design](ARCHITECTURE.md)
@@ -163,6 +167,7 @@ The test suite includes a deterministic end-to-end startup run against a local m
 - [Exported artifact format](docs/ARTIFACTS.md)
 - [Security model and open risks](docs/SECURITY.md)
 - [AI coding-agent instructions](AGENTS.md)
+- [Release process](docs/RELEASING.md)
 
 ## License
 

@@ -38,6 +38,9 @@ jobs:
           key: test-profile-v1
           cache-on-failure: true
 
+      - name: Test release tag policy
+        run: bash scripts/check-release-tag.sh --self-test
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
