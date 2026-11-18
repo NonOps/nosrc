@@ -32,6 +32,29 @@ The current implementation is a runnable single-process prototype, not a product
 
 Do not use this prototype to serve production traffic or execute untrusted generated code without additional security review.
 
+## Run as an MCP server
+
+nosrc also exposes a local Model Context Protocol server over stdio. This is a separate process mode from the HTTP listener; it does not open an HTTP port:
+
+```sh
+export LLM_API_KEY="your-api-key" # required only when using source: "spec"
+cargo run -- mcp --spec ./examples/minimal/SPEC.md
+```
+
+The MCP server provides five tools:
+
+- `prepare_app`: prepare a candidate from the operator SPEC (`source: "spec"`) or supplied JavaScript (`source: "direct_js"`). Preparation never activates code.
+- `activate_app`: activate a candidate only after the required verification suites pass.
+- `invoke_app`: invoke the active generation with an HTTP-style request.
+- `get_app_status`: inspect active, previous, and retained generations and their verification results.
+- `rollback_app`: reactivate the immediately previous retained generation.
+
+The operator-owned SPEC verification suite is always mandatory. SPEC-driven preparation also requires the model-generated assertion suite to pass, matching the CLI startup invariant. For direct JavaScript, optional assertions supplied by the MCP client are informational only and cannot weaken the SPEC policy. Model-generated and trusted suites use separate isolated instances; each suite runs sequentially so stateful request sequences are preserved. A fresh production instance is created only after mandatory checks pass.
+
+Preparation snapshots the immutable runtime policy and performs LLM requests, componentization, and Wasm verification without holding the lifecycle lock. Componentization and verification run on Tokio's blocking pool. Runtime fuel, memory, and response-size limits are enforced by the component runtime. MCP request headers are normalized to lowercase and repeated query keys use the same last-value-wins behavior as HTTP ingress.
+
+Generation state and rollback history are process-local. Restarting the MCP process discards prepared generations and the rollback target. The stdio process does not share live HTTP ingress state with a separately running HTTP process.
+
 ## SPEC verification format
 
 Every declared endpoint must have at least one matching case under `## Verification`. Cases use a concrete request target (including a sample value for each `:parameter` segment) and a response status documented by that endpoint. Query parameters may be included in the heading and are percent-decoded into the request envelope:

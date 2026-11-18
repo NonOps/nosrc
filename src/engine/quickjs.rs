@@ -25,10 +25,12 @@ type ComponentHandle = TypedFunc<(String,), (String,)>;
 type InstantiatedComponent = (Store<ComponentStoreState>, ComponentHandle);
 
 /// Wasmtime component-model engine for JavaScript handlers compiled with QuickJS.
+#[derive(Clone)]
 pub struct QuickJsEngine {
     engine: Engine,
 }
 
+#[derive(Clone)]
 pub struct CompiledHandler {
     component: Component,
     pub module_hash: String,
@@ -40,6 +42,8 @@ pub struct QuickJsHandler {
     store: Store<ComponentStoreState>,
     handle: ComponentHandle,
     fuel_budget: u64,
+    response_limit_bytes: usize,
+    memory_limit_bytes: usize,
 }
 
 impl QuickJsEngine {
@@ -115,8 +119,43 @@ impl QuickJsEngine {
         compiled: &CompiledHandler,
         fuel_budget: u64,
     ) -> Result<QuickJsHandler, EngineError> {
-        let (store, handle) =
-            instantiate_component(&self.engine, &compiled.component, fuel_budget)?;
+        self.instantiate_with_limits(
+            compiled,
+            fuel_budget,
+            DEFAULT_COMPONENT_MEMORY_BYTES,
+            MAX_HANDLER_RESPONSE_BYTES,
+        )
+    }
+
+    /// Instantiate with operator-selected limits that cannot exceed runtime ceilings.
+    pub fn instantiate_with_limits(
+        &self,
+        compiled: &CompiledHandler,
+        fuel_budget: u64,
+        memory_limit_bytes: usize,
+        response_limit_bytes: usize,
+    ) -> Result<QuickJsHandler, EngineError> {
+        if fuel_budget == 0 || fuel_budget > DEFAULT_COMPONENT_FUEL {
+            return Err(EngineError::Internal(
+                "Fuel limit exceeds the runtime ceiling".into(),
+            ));
+        }
+        if memory_limit_bytes == 0 || memory_limit_bytes > DEFAULT_COMPONENT_MEMORY_BYTES {
+            return Err(EngineError::Internal(
+                "Memory limit exceeds the runtime ceiling".into(),
+            ));
+        }
+        if response_limit_bytes == 0 || response_limit_bytes > MAX_HANDLER_RESPONSE_BYTES {
+            return Err(EngineError::Internal(
+                "Response limit exceeds the runtime ceiling".into(),
+            ));
+        }
+        let (store, handle) = instantiate_component(
+            &self.engine,
+            &compiled.component,
+            fuel_budget,
+            memory_limit_bytes,
+        )?;
 
         Ok(QuickJsHandler {
             engine: self.engine.clone(),
@@ -124,6 +163,8 @@ impl QuickJsEngine {
             store,
             handle,
             fuel_budget,
+            response_limit_bytes,
+            memory_limit_bytes,
         })
     }
 }
@@ -132,9 +173,10 @@ fn instantiate_component(
     engine: &Engine,
     component: &Component,
     fuel_budget: u64,
+    memory_limit_bytes: usize,
 ) -> Result<InstantiatedComponent, EngineError> {
     let limits = StoreLimitsBuilder::new()
-        .memory_size(DEFAULT_COMPONENT_MEMORY_BYTES)
+        .memory_size(memory_limit_bytes)
         .table_elements(10_000)
         .instances(16)
         .tables(4)
@@ -143,7 +185,7 @@ fn instantiate_component(
 
     let mut store = Store::new(engine, ComponentStoreState { limits });
     store
-        .set_fuel(DEFAULT_COMPONENT_FUEL)
+        .set_fuel(fuel_budget)
         .map_err(|error| EngineError::Internal(format!("Failed to set component fuel: {error}")))?;
     store.limiter(|state| &mut state.limits);
     store.set_max_component_handles(1_024);
@@ -186,7 +228,12 @@ impl QuickJsHandler {
                 // Wasmtime component instances cannot be re-entered after a guest trap.
                 // Recreate the instance from the already-compiled component so one bad
                 // request does not permanently take this generation's handler offline.
-                match instantiate_component(&self.engine, &self.component, self.fuel_budget) {
+                match instantiate_component(
+                    &self.engine,
+                    &self.component,
+                    self.fuel_budget,
+                    self.memory_limit_bytes,
+                ) {
                     Ok((store, handle)) => {
                         self.store = store;
                         self.handle = handle;
@@ -201,10 +248,10 @@ impl QuickJsHandler {
             }
         };
 
-        if response_json.len() > MAX_HANDLER_RESPONSE_BYTES {
+        if response_json.len() > self.response_limit_bytes {
             return Err(EngineError::Internal(format!(
                 "JavaScript handler response exceeds the {} byte limit",
-                MAX_HANDLER_RESPONSE_BYTES
+                self.response_limit_bytes
             )));
         }
 
@@ -251,6 +298,10 @@ pub(crate) mod test_support {
                 return JSON.stringify({ status: 500, headers: {}, body: "failed" });
             }
 
+            if (request.path === "/small-oversized") {
+                return JSON.stringify({ status: 200, headers: {}, body: "x".repeat(1024) });
+            }
+
             if (request.path === "/oversized") {
                 return JSON.stringify({ status: 200, headers: {}, body: "x".repeat(1024 * 1024 + 1) });
             }
@@ -260,6 +311,14 @@ pub(crate) mod test_support {
                     status: 200,
                     headers: { "Content-Type": "text/plain" },
                     body: "healthy"
+                });
+            }
+
+            if (request.path === "/echo") {
+                return JSON.stringify({
+                    status: 200,
+                    headers: {},
+                    body: JSON.stringify({ headers: request.headers, query: request.query })
                 });
             }
 
@@ -338,20 +397,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oversized_guest_response_is_rejected_before_deserialization() {
+    async fn configured_response_limit_is_enforced_before_deserialization() {
         let (engine, compiled) = test_support::compiled().await;
-        // Building a 1 MiB JavaScript string consumes more fuel than the default
-        // production budget. Raise only this test's budget so it reaches the
-        // host-side response-size guard instead of trapping during construction.
         let mut handler = engine
-            .instantiate(compiled, DEFAULT_COMPONENT_FUEL * 10)
+            .instantiate_with_limits(
+                compiled,
+                DEFAULT_COMPONENT_FUEL,
+                DEFAULT_COMPONENT_MEMORY_BYTES,
+                128,
+            )
             .unwrap();
-        let error = handler.invoke(&request("/oversized")).unwrap_err();
+        let error = handler.invoke(&request("/small-oversized")).unwrap_err();
         assert!(
             error
                 .to_string()
-                .contains("JavaScript handler response exceeds the 1048576 byte limit"),
-            "Unexpected oversized-response error: {error}"
+                .contains("JavaScript handler response exceeds the 128 byte limit"),
+            "Unexpected configured response-limit error: {error}"
         );
     }
 

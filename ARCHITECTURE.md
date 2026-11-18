@@ -56,6 +56,26 @@ The verifier checks response status, configured body substrings, and expected re
 
 The Axum router handles health and status endpoints itself. Other requests are converted to `RequestEnvelope`, serialized, and passed to the active QuickJS handler. The listener defaults to loopback rather than exposing the service on every network interface. HTTP error envelopes return stable sanitized messages; detailed engine and guest diagnostics are reserved for server-side logs. A mutex serializes calls to the single handler instance to preserve module state. This is a deliberate first-milestone throughput limitation. Incoming request bodies are capped at 1 MiB, and serialized guest response envelopes are capped at 1 MiB before deserialization. The LLM client limits serialized synthesis requests to 2 MiB, has a 10-second connect timeout and a 120-second total request timeout, and caps success responses at 4 MiB and error responses at 8 KiB.
 
+## MCP control interface (v0.2)
+
+The `nosrc mcp --spec ./SPEC.md` subcommand exposes a local stdio MCP server as a control interface. It is a separate process mode and does not start an HTTP listener. The normal CLI HTTP mode remains available independently. MCP does not add guest capabilities or replace the QuickJS/Wasmtime runtime.
+
+The MCP tools are:
+
+- `prepare_app`: prepares a candidate from either `source: "spec"` or `source: "direct_js"`; it never activates implicitly.
+- `activate_app`: activates a retained `ready` generation.
+- `invoke_app`: invokes the active handler using the same `QuickJsHandler::invoke` execution path as HTTP ingress.
+- `get_app_status`: reports active, previous, and retained generations with verification summaries and effective resource limits.
+- `rollback_app`: reactivates the immediately previous retained generation and makes the former active generation the new rollback target.
+
+The operator controls the SPEC loaded at process startup; the MCP client cannot replace its trusted assertions or relax the runtime ceilings. Both preparation modes must pass every human-authored SPEC assertion. SPEC-driven preparation must additionally pass the model-generated assertion suite, preserving the CLI's fail-closed invariant. In direct-JavaScript mode there is no model-generated suite; optional agent-supplied assertions are informational only and cannot override trusted SPEC results. Trusted and model-generated suites run on separate isolated instances. Each suite is evaluated sequentially on one instance so stateful request sequences are preserved. Agent-supplied assertions run on a separate disposable instance and remain informational.
+
+Preparation copies the immutable engine, SPEC, cache handle, and operator policy while briefly holding the lifecycle mutex. LLM requests, componentization, and candidate verification then run without that mutex; componentization and Wasm execution use Tokio's blocking pool. The lifecycle mutex is acquired again only to publish a fully prepared candidate. A timeout discards the result from the caller's perspective; an already-running blocking task may finish in the background, but it cannot publish a generation after cancellation.
+
+The policy's fuel, memory, and response-size values are passed into component instantiation and response validation, not merely reported. Request header names are normalized to lowercase. Repeated query keys use the same last-value-wins behavior as the HTTP request envelope.
+
+The MCP lifecycle is process-local. Because the stdio subcommand is a separate mode, it does not share a live `IngressState` with an independently running HTTP process; activation and rollback change the active generation within the MCP process only. Persistent generation storage, MCP authentication/authorization, multiple applications, HTTP MCP transport, and automatic file watching remain deferred.
+
 ## Implemented test coverage
 
 - JavaScript componentization and execution.

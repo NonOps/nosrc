@@ -25,7 +25,7 @@ impl ShadowVerifier {
         Self
     }
 
-    pub fn verify_handler(
+    pub fn evaluate_handler(
         &self,
         candidate: &mut QuickJsHandler,
         assertions: &[ContractAssertion],
@@ -68,7 +68,15 @@ impl ShadowVerifier {
                 "Contract assertion evaluated"
             );
         }
+        Ok(results)
+    }
 
+    pub fn verify_handler(
+        &self,
+        candidate: &mut QuickJsHandler,
+        assertions: &[ContractAssertion],
+    ) -> Result<Vec<AssertionResult>, EngineError> {
+        let results = self.evaluate_handler(candidate, assertions)?;
         let failed: Vec<String> = results
             .iter()
             .filter(|result| !result.passed)
@@ -90,7 +98,6 @@ impl ShadowVerifier {
                 failed.join("; ")
             )));
         }
-
         Ok(results)
     }
 }
