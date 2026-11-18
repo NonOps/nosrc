@@ -237,7 +237,7 @@ mod tests {
     async fn rejects_assertion_count_mismatch() {
         let directory = tempfile::tempdir().unwrap();
         write_valid_bundle(directory.path()).await;
-        let path = directory.path().join("assertions.json");
+        let path = directory.path().join("manifest.json");
         let mut manifest: ExportManifest =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         manifest.generated_assertions_count += 1;
