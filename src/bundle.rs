@@ -47,7 +47,11 @@ pub fn load_and_verify(bundle_dir: &Path) -> anyhow::Result<(ActiveGeneration, B
     let manifest: ExportManifest = serde_json::from_slice(&manifest_bytes)
         .context("Bundle manifest.json is not a valid export manifest")?;
     let spec_digest = validate_digest("spec_sha256", &manifest.spec_sha256)?;
-    if let Some(spec_bytes) = read_optional_bundle_file(bundle_dir, "SPEC.md", MAX_SPEC_BYTES)? {
+    let spec_bytes = read_optional_bundle_file(bundle_dir, "SPEC.md", MAX_SPEC_BYTES)?;
+    if manifest.policy_mode == "draft" && spec_bytes.is_none() {
+        bail!("Draft-policy bundle must contain SPEC.md");
+    }
+    if let Some(spec_bytes) = spec_bytes {
         let embedded_spec_digest = format!("{:x}", Sha256::digest(&spec_bytes));
         if embedded_spec_digest != spec_digest {
             bail!("Bundle SPEC.md SHA-256 does not match manifest spec_sha256");
@@ -358,6 +362,28 @@ mod tests {
         let (_, summary) = load_and_verify(directory.path()).unwrap();
         assert_eq!(summary.trusted_assertions, 0);
         assert_eq!(summary.generated_assertions, 1);
+    }
+
+    #[tokio::test]
+    async fn rejects_draft_bundle_without_embedded_spec() {
+        let directory = tempfile::tempdir().unwrap();
+        write_valid_bundle(directory.path()).await;
+
+        let manifest_path = directory.path().join("manifest.json");
+        let mut manifest: ExportManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest.policy_mode = "draft".into();
+        manifest.trusted_assertions_count = 0;
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+        let assertions_path = directory.path().join("assertions.json");
+        let mut assertions: ExportAssertions =
+            serde_json::from_slice(&fs::read(&assertions_path).unwrap()).unwrap();
+        assertions.trusted_assertions.clear();
+        fs::write(&assertions_path, serde_json::to_vec(&assertions).unwrap()).unwrap();
+
+        let error = load_and_verify(directory.path()).err().unwrap();
+        assert!(error.to_string().contains("Draft-policy bundle must contain SPEC.md"));
     }
 
     #[tokio::test]

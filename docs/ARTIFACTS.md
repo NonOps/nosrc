@@ -23,7 +23,7 @@ dist/
 
 ### `SPEC.md`
 
-The exact SPEC text used to synthesize the handler. Its SHA-256 is recorded in the manifest and verified when this file is present. Older bundles without `SPEC.md` remain loadable for backward compatibility.
+The exact SPEC text used to synthesize the handler. Its SHA-256 is recorded in the manifest and verified when this file is present. Draft-policy bundles must include `SPEC.md` so the draft contract remains available alongside its generated assertions. Older operator-policy bundles without `SPEC.md` remain loadable for backward compatibility.
 
 ### `handler.js`
 
@@ -95,7 +95,7 @@ cargo run -- serve --bundle ./dist
 
 Before opening the HTTP listener, the loader:
 
-1. Requires the bundle directory and four core artifacts to be real directories/regular files (not symlinks), and applies file-size limits. If `SPEC.md` is present, it is also opened without following symlinks and its digest is checked.
+1. Requires the bundle directory and four core artifacts to be real directories/regular files (not symlinks), and applies file-size limits. Draft-policy bundles must also include `SPEC.md`; when present, it is opened without following symlinks and its digest is checked.
 2. Parses the manifest and assertion document, validates SHA-256 field syntax, and checks assertion counts against the manifest.
 3. Recomputes the component SHA-256 and requires it to match both `component_sha256` and `module_hash`.
 4. Compiles the component with the current Wasmtime engine.
@@ -104,7 +104,7 @@ Before opening the HTTP listener, the loader:
 
 The loader does not execute `handler.js`; the prebuilt `component.wasm` is the serving artifact. `handler.js` is required as an audit/review artifact and is checked for presence, regular-file type, size, and non-empty content, but the current manifest has no handler-source digest.
 
-New exports include the exact SPEC text as `SPEC.md`, allowing the loader to recompute `spec_sha256`. Legacy bundles without that file remain supported; for those, the digest can only be syntax-checked. The trusted assertions are the exported assertion inputs, not a separately authenticated copy of the original SPEC policy.
+New exports include the exact SPEC text as `SPEC.md`, allowing the loader to recompute `spec_sha256`. Legacy operator-policy bundles without that file remain supported; for those, the digest can only be syntax-checked. Draft-policy bundles require `SPEC.md` because their embedded assertions are tied to that draft contract. The trusted assertions are the exported assertion inputs, not a separately authenticated copy of the original SPEC policy.
 
 The manifest and assertions are unsigned. Recomputing hashes and rerunning assertions detects accidental corruption and inconsistencies, but does not authenticate provenance or stop an attacker who can replace the component, assertions, and manifest together. Keep bundle directories operator-controlled and use a trusted external signing/attestation mechanism if authenticity is required. Offline serving still opens the configured HTTP listener; it only removes the LLM/provider dependency from startup.
 
