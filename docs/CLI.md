@@ -82,7 +82,7 @@ HTTP and export currently construct the LLM configuration before cache lookup, s
 
 - Invalid/unreadable SPEC files, unsupported requested capabilities, missing synthesis credentials, synthesis/schema failures, componentization failures, and failed mandatory verification prevent the selected workflow from proceeding.
 - HTTP ingress is not started until startup preparation and verification succeed.
-- Export files are written only after the preparation/verification pipeline succeeds. The individual file writes are not an atomic directory transaction; a filesystem error can leave a partial output directory.
+- Export files are staged in a temporary sibling directory and published together by directory rename. The destination must not already exist; an existing file, directory, or symlink is left untouched and causes export to fail. A staging or publication failure does not expose a partial bundle.
 - MCP preparation does not activate a candidate implicitly. Activation is a separate tool call.
 - Cache errors are treated as cache misses or best-effort store failures where appropriate; cache data never bypasses verification.
 
