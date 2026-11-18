@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "nosrc": {
+      "command": "nosrc",
+      "args": [
+        "mcp",
+        "--spec",
+        "/absolute/path/to/SPEC.md",
+        "--cache-dir",
+        "/absolute/path/to/.nosrc-cache"
+      ],
+      "env": {
+        "LLM_API_KEY": "your-api-key"
+      }
+    }
+  }
+}

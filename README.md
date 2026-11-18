@@ -8,6 +8,10 @@
 
 # nosrc
 
+[![CI](https://github.com/NonOps/nosrc/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/NonOps/nosrc/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Rust 1.97+](https://img.shields.io/badge/rust-1.97%2B-orange.svg)](Cargo.toml)
+
 **nosrc** is an experimental Rust runtime that turns a declarative `SPEC.md` into a JavaScript request handler, compiles it into a QuickJS-backed WebAssembly component, verifies its contract assertions, and serves requests through the verified handler.
 
 The current implementation is a single-process prototype, not a production-ready application runtime.
@@ -77,6 +81,34 @@ LLM_API_KEY="your-api-key" cargo run -- mcp --spec ./examples/minimal/SPEC.md --
 ```
 
 MCP activation and rollback update the handler used by HTTP ingress. This is one application lifecycle and one generation history, not two runtimes synchronized over a network. The HTTP listener defaults to loopback; use `--http-bind 0.0.0.0` only when external exposure is intended. The stdio transport itself remains local and has no MCP-level authentication.
+
+### Use with an MCP client
+
+MCP clients that read an `mcpServers` configuration (Claude Desktop and Cursor, for example) launch nosrc as a local stdio server. Install the binary so `nosrc` is on your `PATH` (`cargo install --path .`), then add this entry to your client's MCP configuration:
+
+```json
+{
+  "mcpServers": {
+    "nosrc": {
+      "command": "nosrc",
+      "args": [
+        "mcp",
+        "--spec",
+        "/absolute/path/to/SPEC.md",
+        "--cache-dir",
+        "/absolute/path/to/.nosrc-cache"
+      ],
+      "env": {
+        "LLM_API_KEY": "your-api-key"
+      }
+    }
+  }
+}
+```
+
+Replace the placeholder paths and key, and use absolute paths because the client chooses the working directory. The same entry is kept in [`examples/mcp/mcp.json`](examples/mcp/mcp.json); a unit test checks that it matches this README and that the CLI accepts its arguments. Where the file goes depends on the client, so see its MCP documentation.
+
+The `--spec` file is the operator-controlled trusted policy: a connected agent can prepare, activate, invoke, export, and roll back generations, but cannot replace that spec or weaken its verification cases. To start without one, drop `--spec` as described above, and note that agent-supplied draft contracts are then synthesis input only, not trusted policy. `LLM_API_KEY` is needed for SPEC-driven synthesis; direct-JavaScript preparation does not call the model. Rollback reaches only the immediately previous retained generation, and the MCP process has no authentication of its own, so anything that can launch it or write to its stdin has full access to these tools.
 
 ## Export verified artifacts
 

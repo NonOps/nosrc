@@ -66,6 +66,8 @@ Example:
 LLM_API_KEY="your-api-key" cargo run -- mcp --spec ./examples/minimal/SPEC.md
 ```
 
+To launch the server from an MCP client such as Claude Desktop or Cursor, use the `mcpServers` entry in [`examples/mcp/mcp.json`](../examples/mcp/mcp.json), which is also shown in the README. Use absolute paths for `--spec` and `--cache-dir`, because the client chooses the working directory. A unit test in `src/main.rs` checks that the CLI accepts that entry's arguments.
+
 By default MCP uses stdio and does not open an HTTP listener. Omit `--spec` to start in MCP-first mode with empty application state and baseline runtime limits. The agent can use `prepare_app` with `source: "direct_js"` or `source: "draft_spec"` plus a `draft_spec` Markdown string. Draft SPEC data controls synthesis input only; it never becomes operator-trusted policy. To share the same active generation with HTTP ingress, use:
 
 ```sh
