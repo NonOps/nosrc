@@ -339,6 +339,7 @@ mod tests {
 
     #[tokio::test]
     async fn handler_remains_usable_after_fuel_exhaustion() {
+        // Reuse one instance deliberately: a fresh handler would not detect a poisoned store.
         let (engine, compiled) = test_support::compiled().await;
         let mut handler = engine.instantiate(compiled, 100_000).unwrap();
 
