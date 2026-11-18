@@ -1,12 +1,14 @@
 use arc_swap::ArcSwap;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, OriginalUri, State};
-use axum::http::{HeaderMap, Method, StatusCode};
+use axum::http::{header::CONTENT_LENGTH, HeaderMap, Method, Request, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum::routing::{any, get};
 use axum::{Json, Router};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use crate::engine::http_envelope::{ErrorEnvelope, RequestEnvelope};
 use crate::engine::quickjs::QuickJsHandler;
@@ -78,12 +80,36 @@ async fn runtime_status(State(state): State<Arc<IngressState>>) -> Json<RuntimeS
     })
 }
 
+/// Logs safe request metadata without recording query strings, headers, or bodies.
+async fn log_http_request(request: Request<axum::body::Body>, next: Next) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let started = Instant::now();
+    let response = next.run(request).await;
+    let response_bytes = response
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+
+    tracing::debug!(
+        %method,
+        %path,
+        status = response.status().as_u16(),
+        elapsed_ms = started.elapsed().as_millis(),
+        response_bytes = ?response_bytes,
+        "HTTP request completed"
+    );
+    response
+}
+
 /// Creates the Axum router for health, status, and application ingress.
 pub fn build_ingress_router(state: Arc<IngressState>) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/_nosrc/status", get(runtime_status))
         .fallback(any(handle_http_request))
+        .layer(middleware::from_fn(log_http_request))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .with_state(state)
 }
