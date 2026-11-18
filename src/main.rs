@@ -304,11 +304,20 @@ mod tests {
             Some("rust wasm")
         );
         assert_eq!(
-            assertions[0].request.headers.get("accept").map(String::as_str),
+            assertions[0]
+                .request
+                .headers
+                .get("accept")
+                .map(String::as_str),
             Some("application/json")
         );
         assert_eq!(
-            assertions[0].header_matches.as_ref().unwrap().get("content-type").map(String::as_str),
+            assertions[0]
+                .header_matches
+                .as_ref()
+                .unwrap()
+                .get("content-type")
+                .map(String::as_str),
             Some("application/json")
         );
     }
