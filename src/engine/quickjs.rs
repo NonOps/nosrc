@@ -21,6 +21,9 @@ struct ComponentStoreState {
     limits: StoreLimits,
 }
 
+type ComponentHandle = TypedFunc<(String,), (String,)>;
+type InstantiatedComponent = (Store<ComponentStoreState>, ComponentHandle);
+
 /// Wasmtime component-model engine for JavaScript handlers compiled with QuickJS.
 pub struct QuickJsEngine {
     engine: Engine,
@@ -35,7 +38,7 @@ pub struct QuickJsHandler {
     engine: Engine,
     component: Component,
     store: Store<ComponentStoreState>,
-    handle: TypedFunc<(String,), (String,)>,
+    handle: ComponentHandle,
     fuel_budget: u64,
 }
 
@@ -114,7 +117,7 @@ fn instantiate_component(
     engine: &Engine,
     component: &Component,
     fuel_budget: u64,
-) -> Result<(Store<ComponentStoreState>, TypedFunc<(String,), (String,)>), EngineError> {
+) -> Result<InstantiatedComponent, EngineError> {
     let limits = StoreLimitsBuilder::new()
         .memory_size(DEFAULT_COMPONENT_MEMORY_BYTES)
         .table_elements(10_000)
