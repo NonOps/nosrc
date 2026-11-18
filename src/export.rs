@@ -30,6 +30,11 @@ fn default_policy_mode() -> String {
     "operator".to_string()
 }
 
+pub struct ExportPolicy<'a> {
+    pub trusted_assertions: &'a [ContractAssertion],
+    pub mode: &'a str,
+}
+
 /// Export verified artifacts as one directory publication.
 ///
 /// The destination must not already exist. All files are written to a temporary
@@ -50,8 +55,10 @@ pub fn export_artifacts(
         output,
         component_bytes,
         module_hash,
-        trusted_assertions,
-        "operator",
+        ExportPolicy {
+            trusted_assertions,
+            mode: "operator",
+        },
     )
 }
 
@@ -63,16 +70,15 @@ pub fn export_artifacts_with_policy(
     output: &SynthesisOutput,
     component_bytes: &[u8],
     module_hash: &str,
-    trusted_assertions: &[ContractAssertion],
-    policy_mode: &str,
+    policy: ExportPolicy<'_>,
 ) -> anyhow::Result<PathBuf> {
-    if !matches!(policy_mode, "operator" | "draft") {
-        anyhow::bail!("Unsupported export policy mode '{policy_mode}'");
+    if !matches!(policy.mode, "operator" | "draft") {
+        anyhow::bail!("Unsupported export policy mode '{}'", policy.mode);
     }
-    if policy_mode == "draft" && !trusted_assertions.is_empty() {
+    if policy.mode == "draft" && !policy.trusted_assertions.is_empty() {
         anyhow::bail!("Draft-policy exports cannot label assertions as operator-trusted");
     }
-    if policy_mode == "draft" && output.assertions.is_empty() {
+    if policy.mode == "draft" && output.assertions.is_empty() {
         anyhow::bail!("Draft-policy exports require generated assertions");
     }
 
@@ -117,7 +123,7 @@ pub fn export_artifacts_with_policy(
     write_artifact(staging_path, "handler.js", output.handler_code.as_bytes())?;
 
     let assertions_payload = ExportAssertions {
-        trusted_assertions: trusted_assertions.to_vec(),
+        trusted_assertions: policy.trusted_assertions.to_vec(),
         generated_assertions: output.assertions.clone(),
     };
     let assertions_json = serde_json::to_vec_pretty(&assertions_payload)?;
@@ -129,10 +135,10 @@ pub fn export_artifacts_with_policy(
         spec_sha256: format!("{:x}", Sha256::digest(spec_text.as_bytes())),
         module_hash: module_hash.to_string(),
         component_sha256: format!("{:x}", Sha256::digest(component_bytes)),
-        trusted_assertions_count: trusted_assertions.len(),
+        trusted_assertions_count: policy.trusted_assertions.len(),
         generated_assertions_count: output.assertions.len(),
         rationale: output.rationale.clone(),
-        policy_mode: policy_mode.to_string(),
+        policy_mode: policy.mode.to_string(),
     };
     let manifest_json = serde_json::to_vec_pretty(&manifest)?;
     write_artifact(staging_path, "manifest.json", &manifest_json)?;

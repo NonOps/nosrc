@@ -268,8 +268,10 @@ impl NosrcMcpServer {
                 &export.output,
                 &export.component_bytes,
                 &export.module_hash,
-                &export.trusted_assertions,
-                &export.policy_mode,
+                crate::export::ExportPolicy {
+                    trusted_assertions: &export.trusted_assertions,
+                    mode: &export.policy_mode,
+                },
             )
         })
         .await;
