@@ -7,7 +7,7 @@ pub mod verifier;
 
 use clap::Parser;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use engine::http_envelope::RequestEnvelope;
 use engine::quickjs::{QuickJsEngine, DEFAULT_COMPONENT_FUEL};
