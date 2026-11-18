@@ -78,3 +78,8 @@ Before introducing any guest-visible capability:
 7. Update README, ARCHITECTURE, AGENTS, and the relevant detailed documentation in the same PR.
 
 For future outbound HTTP, validate DNS answers and every redirect target, including IPv4 and IPv6 private, loopback, link-local, and metadata ranges. For future database access, use parameterized operations and bound query time, row counts, and result sizes.
+
+
+## MCP generation export
+
+MCP `export_app` delegates to the same atomic artifact writer as the CLI. Operator-mode bundles carry the immutable startup policy assertions. MCP-first draft-mode bundles explicitly record that no operator-trusted application assertions were configured; their generated draft assertions are rerun offline but are not represented as operator approval. New bundles embed the exact synthesis SPEC as `SPEC.md` and the loader verifies its digest. This does not sign or authenticate the bundle; the directory and manifest still require operator-controlled storage.

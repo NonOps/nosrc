@@ -152,7 +152,10 @@ fn read_optional_bundle_file(
         Ok(_) => read_bundle_file(directory, name, max_bytes).map(Some),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error).with_context(|| {
-            format!("Failed to inspect optional bundle artifact {}", path.display())
+            format!(
+                "Failed to inspect optional bundle artifact {}",
+                path.display()
+            )
         }),
     }
 }
@@ -316,6 +319,36 @@ mod tests {
         assert_eq!(summary.trusted_assertions, 1);
         assert_eq!(summary.generated_assertions, 1);
         assert_eq!(generation.generation_id, 1);
+    }
+
+    #[tokio::test]
+    async fn loads_draft_bundle_without_operator_trusted_assertions() {
+        let directory = tempfile::tempdir().unwrap();
+        write_valid_bundle(directory.path()).await;
+
+        let manifest_path = directory.path().join("manifest.json");
+        let mut manifest: ExportManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest.policy_mode = "draft".into();
+        manifest.trusted_assertions_count = 0;
+        let spec_text = "# Agent draft SPEC\n";
+        manifest.spec_sha256 = format!("{:x}", Sha256::digest(spec_text.as_bytes()));
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+        let assertions_path = directory.path().join("assertions.json");
+        let mut assertions: ExportAssertions =
+            serde_json::from_slice(&fs::read(&assertions_path).unwrap()).unwrap();
+        assertions.trusted_assertions.clear();
+        fs::write(
+            &assertions_path,
+            serde_json::to_vec(&assertions).unwrap(),
+        )
+        .unwrap();
+        fs::write(directory.path().join("SPEC.md"), spec_text).unwrap();
+
+        let (_, summary) = load_and_verify(directory.path()).unwrap();
+        assert_eq!(summary.trusted_assertions, 0);
+        assert_eq!(summary.generated_assertions, 1);
     }
 
     #[tokio::test]

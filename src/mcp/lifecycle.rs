@@ -291,13 +291,7 @@ impl PreparationContext {
             .spec
             .clone()
             .zip(self.spec_text.clone())
-            .map(|(spec, spec_text)| {
-                (
-                    spec,
-                    spec_text,
-                    self.policy.spec_assertions.clone(),
-                )
-            });
+            .map(|(spec, spec_text)| (spec, spec_text, self.policy.spec_assertions.clone()));
         let engine = self.engine.clone();
         let policy = self.policy.clone();
         let mut prepared = tokio::task::spawn_blocking(move || {

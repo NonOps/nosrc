@@ -243,13 +243,12 @@ impl NosrcMcpServer {
     #[tool(
         description = "Export a prepared generation using the same atomic artifact pipeline as the CLI. The resulting bundle can be served offline with 'nosrc serve --bundle' without provider credentials."
     )]
-    async fn export_app(
-        &self,
-        Parameters(params): Parameters<ExportAppParams>,
-    ) -> CallToolResult {
+    async fn export_app(&self, Parameters(params): Parameters<ExportAppParams>) -> CallToolResult {
         let export = {
             let lifecycle = self.lifecycle.lock().await;
-            match lifecycle.export_generation(&GenerationId::from_string(params.generation_id.clone())) {
+            match lifecycle
+                .export_generation(&GenerationId::from_string(params.generation_id.clone()))
+            {
                 Ok(export) => export,
                 Err(error) => {
                     return CallToolResult::structured_error(json!({

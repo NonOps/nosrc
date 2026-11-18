@@ -87,7 +87,7 @@ cargo run -- serve --bundle ./dist [OPTIONS]
 | `--bind IP` | `127.0.0.1` | Listen address; external binding must be explicit |
 | `--verbose`, `-v` | off | Enable nosrc DEBUG diagnostics |
 
-This mode does not read `SPEC.md`, require `LLM_API_KEY`, synthesize code, or contact a model provider. It validates the component digest and manifest fields, checks bounded regular bundle files, compiles the component, and reruns trusted and generated assertions in separate candidate instances. The listener starts only after all checks pass. The manifest is unsigned; these checks do not authenticate the bundle or protect against an attacker who can replace the component, assertions, and manifest together. Artifact symlinks/reparse points are rejected on Unix and Windows; other operating-system targets fail closed because safe no-follow file opening is unavailable.
+This mode does not read `SPEC.md`, require `LLM_API_KEY`, synthesize code, or contact a model provider. It validates the component digest and manifest fields, checks bounded regular bundle files, compiles the component, and reruns the assertion suites in separate candidate instances according to the manifest's `policy_mode`. The listener starts only after all checks pass. The manifest is unsigned; these checks do not authenticate the bundle or protect against an attacker who can replace the component, assertions, and manifest together. Artifact symlinks/reparse points are rejected on Unix and Windows; other operating-system targets fail closed because safe no-follow file opening is unavailable.
 
 Example:
 

@@ -103,7 +103,7 @@ After exporting a bundle, start the HTTP runtime without an API key or model-pro
 cargo run -- serve --bundle ./dist --bind 127.0.0.1 --port 8080
 ```
 
-Startup validates the bundle files and SHA-256 metadata, compiles the prebuilt component with the current Wasmtime engine, reruns the trusted and generated assertion suites on separate candidate instances, and creates a fresh serving instance only after both suites pass. The HTTP listener opens only after successful validation. This mode does not read a SPEC file, synthesize code, or access an LLM provider.
+Startup validates the bundle files and SHA-256 metadata, compiles the prebuilt component with the current Wasmtime engine, reruns the assertion suites on separate candidate instances according to the manifest policy mode, and creates a fresh serving instance only after verification passes. The HTTP listener opens only after successful validation. This mode does not read a SPEC file, synthesize code, or access an LLM provider.
 
 The manifest is unsigned, and the exported assertion suites are files in the same bundle. Hash validation detects accidental or inconsistent component changes, not malicious replacement of the component, assertions, and manifest together. Treat the bundle and its source directory as operator-controlled inputs. See [Artifact format](docs/ARTIFACTS.md).
 
