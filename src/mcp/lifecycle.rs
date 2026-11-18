@@ -374,8 +374,7 @@ impl PreparationContext {
                 "Invalid draft SPEC verification: {error}"
             )))
         })?;
-        let draft_policy =
-            AcceptancePolicy::from_spec(&draft).map_err(EngineError::Internal)?;
+        let draft_policy = AcceptancePolicy::from_spec(&draft).map_err(EngineError::Internal)?;
         // These cases are candidate checks, not operator-trusted acceptance policy.
         self.draft_assertions = draft_policy.spec_assertions;
         // The draft controls synthesis input only; the startup acceptance policy is unchanged.
