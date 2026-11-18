@@ -383,7 +383,9 @@ mod tests {
         fs::write(&assertions_path, serde_json::to_vec(&assertions).unwrap()).unwrap();
 
         let error = load_and_verify(directory.path()).err().unwrap();
-        assert!(error.to_string().contains("Draft-policy bundle must contain SPEC.md"));
+        assert!(error
+            .to_string()
+            .contains("Draft-policy bundle must contain SPEC.md"));
     }
 
     #[tokio::test]
