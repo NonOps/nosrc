@@ -84,6 +84,11 @@ async fn runtime_status(State(state): State<Arc<IngressState>>) -> Json<RuntimeS
 async fn log_http_request(request: Request<axum::body::Body>, next: Next) -> Response {
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
+    let request_bytes = request
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
     let started = Instant::now();
     let response = next.run(request).await;
     let response_bytes = response
@@ -95,6 +100,7 @@ async fn log_http_request(request: Request<axum::body::Body>, next: Next) -> Res
     tracing::debug!(
         %method,
         %path,
+        request_bytes = ?request_bytes,
         status = response.status().as_u16(),
         elapsed_ms = started.elapsed().as_millis(),
         response_bytes = ?response_bytes,
