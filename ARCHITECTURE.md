@@ -46,11 +46,11 @@ Each handler store has a fuel budget and a 64 MiB per-linear-memory growth limit
 
 ### Candidate verification
 
-`SPEC.md` contains a `## Verification` section with explicit request examples. These cases are parsed independently from endpoint descriptions, checked for complete endpoint coverage, and restricted to response statuses documented for the matched endpoint. Dynamic route segments (for example `/:id`) are matched against concrete paths in verification cases.
+`SPEC.md` contains a `## Verification` section with explicit request examples. These cases are parsed independently from endpoint descriptions, checked for complete endpoint coverage, and restricted to response statuses documented for the matched endpoint. Dynamic route segments (for example `/:id`) are matched against the path portion of concrete verification request targets; query parameters are parsed separately and passed to the handler. Trusted cases can assert request headers, request bodies, response status, body substrings, and exact response-header values.
 
 The runtime executes SPEC-authored cases against one disposable candidate instance, then runs model-generated assertions against a different disposable instance. The model cannot supply the only acceptance criteria, and supplemental tests cannot mutate trusted-suite state. A third, fresh instance is created for production only after both suites pass.
 
-The verifier checks response status, configured body substrings, and expected headers. These remain authored contract checks—not proof that generated code is correct or secure.
+The verifier checks response status, configured body substrings, and expected response headers. Trusted SPEC cases can also set request headers and decoded query parameters. In the current string-map request ABI, repeated query keys are rejected rather than collapsed. Duplicate scalar verification fields and duplicate normalized header names are rejected during parsing. These remain authored contract checks—not proof that generated code is correct or secure.
 
 ### HTTP ingress
 

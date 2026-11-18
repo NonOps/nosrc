@@ -105,31 +105,7 @@ async fn prepare_generation(
 
     // SPEC-authored cases are independent of the model that generated the handler.
     // Separate candidate instances prevent the supplemental suite from mutating trusted-test state.
-    let trusted_assertions: Vec<ContractAssertion> = spec
-        .verification
-        .iter()
-        .map(|case| {
-            Ok(ContractAssertion {
-                name: format!("SPEC {} {}", case.method, case.path),
-                request: RequestEnvelope {
-                    method: case.method.clone(),
-                    path: case.path.clone(),
-                    query: std::collections::HashMap::new(),
-                    headers: case.headers.clone(),
-                    body: case.body.clone(),
-                },
-                expected_status: case.expected_status.ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "verification case {} {} has no response status",
-                        case.method,
-                        case.path
-                    )
-                })?,
-                body_contains: case.body_contains.clone(),
-                header_matches: None,
-            })
-        })
-        .collect::<anyhow::Result<_>>()?;
+    let trusted_assertions = trusted_assertions_from_spec(spec)?;
 
     let trusted_started = Instant::now();
     tracing::debug!(
@@ -195,6 +171,37 @@ async fn prepare_generation(
         generated_results.len(),
         output.rationale,
     ))
+}
+
+fn trusted_assertions_from_spec(spec: &ServiceSpec) -> anyhow::Result<Vec<ContractAssertion>> {
+    spec.verification
+        .iter()
+        .map(|case| {
+            Ok(ContractAssertion {
+                name: format!("SPEC {} {}", case.method, case.path),
+                request: RequestEnvelope {
+                    method: case.method.clone(),
+                    path: case.path.clone(),
+                    query: case.query.clone(),
+                    headers: case.headers.clone(),
+                    body: case.body.clone(),
+                },
+                expected_status: case.expected_status.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "verification case {} {} has no response status",
+                        case.method,
+                        case.path
+                    )
+                })?,
+                body_contains: case.body_contains.clone(),
+                header_matches: if case.response_headers.is_empty() {
+                    None
+                } else {
+                    Some(case.response_headers.clone())
+                },
+            })
+        })
+        .collect()
 }
 
 fn default_log_filter(verbose: bool) -> &'static str {
@@ -272,6 +279,38 @@ mod tests {
     fn debug_diagnostics_are_disabled_by_default() {
         let cli = Cli::try_parse_from(["nosrc"]).unwrap();
         assert!(!cli.verbose);
+    }
+
+    #[test]
+    fn trusted_spec_cases_preserve_query_and_expected_response_headers() {
+        let markdown = r#"
+# Service: Search
+## Endpoints
+### `GET /search`
+- Response `200`: results
+## Verification
+### `GET /search?q=rust%20wasm`
+- Header: accept=application/json
+- Response header: content-type=application/json
+- Response `200`
+"#;
+        let spec = ServiceSpec::parse(markdown).unwrap();
+        spec.validate_verification().unwrap();
+        let assertions = trusted_assertions_from_spec(&spec).unwrap();
+        assert_eq!(assertions.len(), 1);
+        assert_eq!(assertions[0].request.path, "/search");
+        assert_eq!(
+            assertions[0].request.query.get("q").map(String::as_str),
+            Some("rust wasm")
+        );
+        assert_eq!(
+            assertions[0].request.headers.get("accept").map(String::as_str),
+            Some("application/json")
+        );
+        assert_eq!(
+            assertions[0].header_matches.as_ref().unwrap().get("content-type").map(String::as_str),
+            Some("application/json")
+        );
     }
 
     #[test]

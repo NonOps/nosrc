@@ -213,6 +213,14 @@ pub(crate) mod test_support {
                 });
             }
 
+            if (request.path === "/query") {
+                return JSON.stringify({
+                    status: 200,
+                    headers: { "content-type": "text/plain" },
+                    body: request.query.q || "missing"
+                });
+            }
+
             if (request.path === "/counter") {
                 count += 1;
                 return JSON.stringify({ status: 200, headers: {}, body: String(count) });
