@@ -28,7 +28,7 @@ The runtime requires Rust 1.97 or later. JavaScript module-level state is retain
 - **Capabilities:** the initial WIT world exposes only the handler entrypoint. No WASI, filesystem, process, network, SQL, or KV capability is granted.
 - **Activation:** compile and verify an isolated candidate, then instantiate a separate production handler and atomically publish it.
 - **State:** module-level JavaScript state survives across requests within a generation. It is volatile and resets on restart or handler replacement.
-- **Operations:** `GET /healthz` and `GET /_nosrc/status` are available.
+- **Operations:** `GET /healthz` and `GET /_nosrc/status` are available. The HTTP listener binds to `127.0.0.1` by default; external exposure requires an explicit `--bind` address.
 
 ## Components
 
@@ -54,7 +54,7 @@ The verifier checks response status, configured body substrings, and expected re
 
 ### HTTP ingress
 
-The Axum router handles health and status endpoints itself. Other requests are converted to `RequestEnvelope`, serialized, and passed to the active QuickJS handler. A mutex serializes calls to the single handler instance to preserve module state. This is a deliberate first-milestone throughput limitation. Incoming request bodies are capped at 1 MiB, and serialized guest response envelopes are capped at 1 MiB before deserialization. The LLM client limits serialized synthesis requests to 2 MiB, has a 10-second connect timeout and a 120-second total request timeout, and caps success responses at 4 MiB and error responses at 8 KiB.
+The Axum router handles health and status endpoints itself. Other requests are converted to `RequestEnvelope`, serialized, and passed to the active QuickJS handler. The listener defaults to loopback rather than exposing the service on every network interface. HTTP error envelopes return stable sanitized messages; detailed engine and guest diagnostics are reserved for server-side logs. A mutex serializes calls to the single handler instance to preserve module state. This is a deliberate first-milestone throughput limitation. Incoming request bodies are capped at 1 MiB, and serialized guest response envelopes are capped at 1 MiB before deserialization. The LLM client limits serialized synthesis requests to 2 MiB, has a 10-second connect timeout and a 120-second total request timeout, and caps success responses at 4 MiB and error responses at 8 KiB.
 
 ## Implemented test coverage
 
