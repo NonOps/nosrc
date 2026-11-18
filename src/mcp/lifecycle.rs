@@ -494,7 +494,14 @@ impl PreparationContext {
         })??;
 
         let mut prepared = prepared;
-        if let Some(spec_text) = spec_text {
+        // A draft SPEC may be used as synthesis input while an operator SPEC
+        // remains the immutable acceptance policy. The current bundle format has
+        // one SPEC.md, so exporting that combination would misattribute the
+        // operator-trusted assertions to the draft. Keep the generation usable,
+        // but do not make it exportable until the bundle can preserve both sources.
+        if let Some(spec_text) = spec_text.filter(|_| {
+            !(self.draft_spec && !self.policy.spec_assertions.is_empty())
+        }) {
             prepared.export_data = Some(GenerationExport {
                 spec,
                 spec_text,
@@ -728,7 +735,7 @@ impl AppLifecycle {
             .ok_or_else(|| EngineError::Internal("Unknown generation ID".into()))?;
         generation.export_data.clone().ok_or_else(|| {
             EngineError::Internal(
-                "Generation has no exportable SPEC contract; prepare it with draft_spec first"
+                "Generation has no exportable SPEC provenance; exports require either an operator SPEC or a draft SPEC without a separately loaded operator acceptance policy"
                     .into(),
             )
         })
