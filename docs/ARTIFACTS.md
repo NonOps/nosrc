@@ -76,6 +76,13 @@ Export occurs only after:
 
 Operator-policy exports require the trusted operator suite to pass; a generated suite may be empty for direct-JavaScript MCP generations. Draft-policy exports have no operator-trusted suite and require the draft SPEC verification cases plus model-generated assertions to pass. The manifest records this distinction; draft assertions are never relabeled as operator trust.
 
+When an operator SPEC is loaded at startup and an agent supplies a different
+`draft_spec` for synthesis, the generation can still be prepared and used by the
+runtime, but `export_app` rejects that generation. The current bundle format has
+one `SPEC.md`; exporting only the draft would fail to preserve the provenance of
+the operator-trusted assertions. Export becomes available once the bundle format
+can represent both SPEC sources explicitly.
+
 A successful export means the artifact passed these configured checks in the current build/runtime environment. It is not a cryptographic attestation, formal proof, security certification, or guarantee that the handler is correct for all inputs.
 
 ## Offline bundle serving
