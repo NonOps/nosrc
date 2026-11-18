@@ -41,6 +41,14 @@ if [[ "${1:-}" == "--self-test" ]]; then
     echo "Self-test failed: accepted a tag for a different package version" >&2
     exit 1
   fi
+  if validate_tag "v$((package_major + 1)).${package_minor}" >/dev/null 2>&1; then
+    echo "Self-test failed: accepted a tag for a different major version" >&2
+    exit 1
+  fi
+  if validate_tag "v0${package_major}.${package_minor}" >/dev/null 2>&1; then
+    echo "Self-test failed: accepted a leading-zero version component" >&2
+    exit 1
+  fi
   if validate_tag "${expected_tag}-rc.1" >/dev/null 2>&1; then
     echo "Self-test failed: accepted a prerelease tag" >&2
     exit 1
