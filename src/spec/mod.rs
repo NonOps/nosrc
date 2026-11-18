@@ -274,12 +274,16 @@ impl ServiceSpec {
                             } else if let Some(header) = item.strip_prefix("Header:") {
                                 let (name, value) = parse_verification_header(header)?;
                                 if case.headers.insert(name.clone(), value).is_some() {
-                                    return Err(duplicate_verification_field(&format!("request header '{name}'")));
+                                    return Err(duplicate_verification_field(&format!(
+                                        "request header '{name}'"
+                                    )));
                                 }
                             } else if let Some(header) = item.strip_prefix("Response header:") {
                                 let (name, value) = parse_verification_header(header)?;
                                 if case.response_headers.insert(name.clone(), value).is_some() {
-                                    return Err(duplicate_verification_field(&format!("response header '{name}'")));
+                                    return Err(duplicate_verification_field(&format!(
+                                        "response header '{name}'"
+                                    )));
                                 }
                             } else if let Some(status) = item.strip_prefix("Response ") {
                                 if case.expected_status.is_some() {
@@ -376,7 +380,9 @@ fn parse_verification_header(header: &str) -> Result<(String, String), HostAbiEr
 
 /// Parse a concrete request target from a trusted verification heading.
 /// The current request ABI stores one value per query key, so duplicate keys are rejected.
-fn parse_verification_target(target: &str) -> Result<(String, HashMap<String, String>), HostAbiError> {
+fn parse_verification_target(
+    target: &str,
+) -> Result<(String, HashMap<String, String>), HostAbiError> {
     if target.contains('#') {
         return Err(HostAbiError::MalformedJson(
             "verification request targets must not contain URL fragments".into(),
@@ -598,7 +604,10 @@ A resilient spec-driven URL shortener.
         let spec = ServiceSpec::parse(markdown).unwrap();
         let case = &spec.verification[0];
         assert_eq!(case.headers.get("accept").map(String::as_str), Some("application/json"));
-        assert_eq!(case.response_headers.get("content-type").map(String::as_str), Some("application/json"));
+        assert_eq!(
+            case.response_headers.get("content-type").map(String::as_str),
+            Some("application/json")
+        );
 
         let duplicate = markdown.replace(
             "- Response header: content-type=application/json",
