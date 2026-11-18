@@ -462,7 +462,7 @@ mod tests {
     #[tokio::test]
     async fn rollback_tool_restores_previous_generation() {
         use crate::engine::quickjs::test_support;
-        use crate::mcp::lifecycle::prepare_compiled;
+        use crate::mcp::lifecycle::{prepare_compiled, SourceType};
         use crate::mcp::policy::AcceptancePolicy;
         use crate::spec::ServiceSpec;
 
@@ -553,6 +553,8 @@ mod tests {
         .unwrap();
         let lifecycle = Arc::new(Mutex::new(AppLifecycle::new(&spec, None).unwrap()));
         let (engine, compiled) = test_support::compiled().await;
+        let engine = engine.clone();
+        let compiled = compiled.clone();
         let policy = AcceptancePolicy::from_spec(&spec).unwrap();
         let candidate = tokio::task::spawn_blocking(move || {
             prepare_compiled(
