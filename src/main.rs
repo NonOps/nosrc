@@ -363,6 +363,16 @@ mod tests {
     }
 
     #[test]
+    fn artifact_cache_is_enabled_by_default_and_can_be_bypassed() {
+        let cli = Cli::try_parse_from(["nosrc"]).unwrap();
+        assert!(!cli.no_cache);
+        assert_eq!(cli.cache_dir, std::path::PathBuf::from("./.nosrc-cache"));
+
+        let cli = Cli::try_parse_from(["nosrc", "--no-cache"]).unwrap();
+        assert!(cli.no_cache);
+    }
+
+    #[test]
     fn listener_defaults_to_loopback_and_allows_explicit_external_bind() {
         let cli = Cli::try_parse_from(["nosrc"]).unwrap();
         assert_eq!(cli.bind, "127.0.0.1".parse::<IpAddr>().unwrap());
