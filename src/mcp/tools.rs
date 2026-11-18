@@ -12,7 +12,7 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 use crate::engine::http_envelope::RequestEnvelope;
-use crate::mcp::lifecycle::{AppLifecycle, GenerationId, PreparedGeneration, PreparationError};
+use crate::mcp::lifecycle::{AppLifecycle, GenerationId, PreparationError, PreparedGeneration};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -109,12 +109,10 @@ where
                 "failed_assertions": failed_assertions
             }))
         }
-        Ok(Err(PreparationError::Runtime(error))) => {
-            CallToolResult::structured_error(json!({
-                "error": "preparation_failed",
-                "message": error.to_string()
-            }))
-        }
+        Ok(Err(PreparationError::Runtime(error))) => CallToolResult::structured_error(json!({
+            "error": "preparation_failed",
+            "message": error.to_string()
+        })),
         Err(_) => CallToolResult::structured_error(json!({
             "error": "preparation_timeout",
             "message": format!(
@@ -626,7 +624,10 @@ mod tests {
 
         let client = ().serve(client_stream).await.unwrap();
         let tools = client.list_all_tools().await.unwrap();
-        let mut names: Vec<String> = tools.into_iter().map(|tool| tool.name.to_string()).collect();
+        let mut names: Vec<String> = tools
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
         names.sort();
         assert_eq!(
             names,
