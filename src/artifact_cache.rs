@@ -157,7 +157,6 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn synthesis() -> SynthesisOutput {
         SynthesisOutput {
