@@ -12,7 +12,7 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 use crate::engine::http_envelope::RequestEnvelope;
-use crate::mcp::lifecycle::{AppLifecycle, GenerationId, PreparationError, PreparedGeneration};
+use crate::mcp::lifecycle::{AppLifecycle, GenerationId, PreparedGeneration, PreparationError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -545,7 +545,7 @@ mod tests {
     #[tokio::test]
     async fn timed_out_blocking_preparation_cannot_publish_after_worker_finishes() {
         use crate::engine::quickjs::test_support;
-        use crate::mcp::lifecycle::{prepare_compiled, SourceType};
+        use crate::mcp::lifecycle::prepare_compiled;
         use crate::mcp::policy::AcceptancePolicy;
         use crate::spec::ServiceSpec;
 
