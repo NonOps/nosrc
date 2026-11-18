@@ -48,4 +48,6 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Run tests
-        run: cargo test --all-targets
+        # Componentization tests are CPU-heavy; bound parallelism so they do not
+        # starve lifecycle tests with their own runtime deadlines.
+        run: cargo test --all-targets -- --test-threads=2
