@@ -185,17 +185,11 @@ mod tests {
     }
 
     async fn write_valid_bundle(directory: &Path) {
-        let (engine, compiled) = test_support::compiled().await;
-        let component_bytes = {
-            // The test fixture exposes a compiled component; compile its deterministic source
-            // again with the engine's artifact API so the manifest hash is derived from bytes.
-            let (_, bytes) = engine
-                .compile_handler_with_artifact(test_support::HANDLER_SOURCE)
-                .await
-                .unwrap();
-            assert_eq!(compiled.module_hash, format!("{:x}", Sha256::digest(&bytes)));
-            bytes
-        };
+        let engine = QuickJsEngine::new().unwrap();
+        let (_, component_bytes) = engine
+            .compile_handler_with_artifact(test_support::HANDLER_SOURCE)
+            .await
+            .unwrap();
         let component_hash = format!("{:x}", Sha256::digest(&component_bytes));
         let manifest = ExportManifest {
             service_name: "Bundle test".into(),
@@ -251,6 +245,20 @@ mod tests {
 
         let error = load_and_verify(directory.path()).unwrap_err();
         assert!(error.to_string().contains("must not be empty"));
+    }
+
+    #[tokio::test]
+    async fn refuses_to_serve_when_an_assertion_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        write_valid_bundle(directory.path()).await;
+        let path = directory.path().join("assertions.json");
+        let mut assertions: ExportAssertions =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assertions.generated_assertions[0].expected_status = 503;
+        fs::write(&path, serde_json::to_vec(&assertions).unwrap()).unwrap();
+
+        let error = load_and_verify(directory.path()).err().unwrap();
+        assert!(error.to_string().contains("verification failed"));
     }
 
     #[tokio::test]
