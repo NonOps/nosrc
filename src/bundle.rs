@@ -1,6 +1,6 @@
 use anyhow::{bail, Context};
 use sha2::{Digest, Sha256};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -323,7 +323,7 @@ mod tests {
                 .unwrap();
 
             let error = load_and_verify(directory.path()).err().unwrap();
-            assert!(error.to_string().contains("regular file"));
+            assert!(format!("{error:#}").contains("Failed to open bundle artifact"));
         }
     }
 }
