@@ -369,7 +369,7 @@ impl PreparationContext {
     }
 
     /// Testable synthesis seam shared by MCP-first draft preparation and integration tests.
-    pub async fn prepare_from_draft_spec_with_synthesizer(
+    pub(crate) async fn prepare_from_draft_spec_with_synthesizer(
         mut self,
         spec_text: String,
         supplemental_assertions: Vec<ContractAssertion>,
