@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 260" width="420" height="260" role="img" aria-label="nosrc logo">
+  <defs>
+    <!-- Cutout mask for the wordmark band across the gear -->
+    <mask id="wordmark-cutout">
+      <rect x="0" y="0" width="420" height="260" fill="white" />
+      <rect x="52" y="92" width="316" height="76" rx="6" fill="black" />
+    </mask>
+
+    <!-- Single gear tooth -->
+    <path id="gear-tooth" d="M 197 10 L 223 10 L 227 32 L 193 32 Z" />
+  </defs>
+
+  <!-- 12-tooth blue gear with center cutout -->
+  <g mask="url(#wordmark-cutout)" fill="#2F81F7">
+    <!-- Outer and inner ring (even-odd cutout) -->
+    <path fill-rule="evenodd" d="
+      M 210 28
+      A 102 102 0 1 0 210 232
+      A 102 102 0 1 0 210 28 Z
+      M 210 56
+      A 74 74 0 1 1 210 204
+      A 74 74 0 1 1 210 56 Z" />
+
+    <!-- 12 radially rotated gear teeth -->
+    <use href="#gear-tooth" transform="rotate(0 210 130)" />
+    <use href="#gear-tooth" transform="rotate(30 210 130)" />
+    <use href="#gear-tooth" transform="rotate(60 210 130)" />
+    <use href="#gear-tooth" transform="rotate(90 210 130)" />
+    <use href="#gear-tooth" transform="rotate(120 210 130)" />
+    <use href="#gear-tooth" transform="rotate(150 210 130)" />
+    <use href="#gear-tooth" transform="rotate(180 210 130)" />
+    <use href="#gear-tooth" transform="rotate(210 210 130)" />
+    <use href="#gear-tooth" transform="rotate(240 210 130)" />
+    <use href="#gear-tooth" transform="rotate(270 210 130)" />
+    <use href="#gear-tooth" transform="rotate(300 210 130)" />
+    <use href="#gear-tooth" transform="rotate(330 210 130)" />
+  </g>
+
+  <!-- Bold geometric wordmark -->
+  <text
+    x="210"
+    y="151"
+    text-anchor="middle"
+    fill="#F0F6FC"
+    font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
+    font-size="82"
+    font-weight="800"
+    letter-spacing="-2.5">nosrc</text>
+</svg>
