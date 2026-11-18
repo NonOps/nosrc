@@ -510,15 +510,21 @@ pub(super) fn prepare_compiled(
         )
     };
 
-    // Trusted SPEC cases run sequentially on one isolated candidate.
-    let mut trusted_candidate = instantiate(&engine)?;
-    let trusted_results =
-        ShadowVerifier::new().evaluate_handler(&mut trusted_candidate, &policy.spec_assertions)?;
-    drop(trusted_candidate);
-    let failed_trusted = failed_results(&trusted_results);
-    if !failed_trusted.is_empty() {
-        return Err(PreparationError::Verification(failed_trusted));
-    }
+    // Operator-controlled policy is mandatory when configured. MCP-first mode has
+    // no trusted application suite yet, but retains the same hard runtime ceilings.
+    let trusted_results = if policy.spec_assertions.is_empty() {
+        Vec::new()
+    } else {
+        let mut trusted_candidate = instantiate(&engine)?;
+        let results = ShadowVerifier::new()
+            .evaluate_handler(&mut trusted_candidate, &policy.spec_assertions)?;
+        drop(trusted_candidate);
+        let failed_trusted = failed_results(&results);
+        if !failed_trusted.is_empty() {
+            return Err(PreparationError::Verification(failed_trusted));
+        }
+        results
+    };
 
     // The CLI invariant also applies to SPEC-driven MCP synthesis: generated
     // regression assertions must all pass, in sequence, on their own instance.

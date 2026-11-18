@@ -53,7 +53,7 @@ cargo run -- mcp [OPTIONS]
 
 | Option | Default | Description |
 |---|---|---|
-| `--spec PATH`, `-s PATH` | `./SPEC.md` | Operator-controlled service specification |
+| `--spec PATH`, `-s PATH` | none | Optional operator-controlled service specification; omit for MCP-first startup |
 | `--http-port PORT` | disabled | Also expose HTTP ingress in this process; MCP activation and rollback share the active handler |
 | `--http-bind IP` | `127.0.0.1` | HTTP bind address when `--http-port` is enabled |
 | `--cache-dir PATH` | `./.nosrc-cache` | Local content-addressed artifact cache |
@@ -66,13 +66,13 @@ Example:
 LLM_API_KEY="your-api-key" cargo run -- mcp --spec ./examples/minimal/SPEC.md
 ```
 
-By default MCP uses stdio and does not open an HTTP listener. To share the same active generation with HTTP ingress, use:
+By default MCP uses stdio and does not open an HTTP listener. Omit `--spec` to start in MCP-first mode with empty application state and baseline runtime limits. The agent can use `prepare_app` with `source: "direct_js"` or `source: "draft_spec"` plus a `draft_spec` Markdown string. Draft SPEC data controls synthesis input only; it never becomes operator-trusted policy. To share the same active generation with HTTP ingress, use:
 
 ```sh
 LLM_API_KEY="your-api-key" cargo run -- mcp --spec ./examples/minimal/SPEC.md --http-port 8080
 ```
 
-The HTTP listener defaults to loopback. Set `--http-bind 0.0.0.0` only when external exposure is intended. MCP activation and rollback publish to the same generation state used by HTTP; preparing a generation does not activate it. The API key is needed when using SPEC-driven synthesis; direct-JavaScript preparation does not itself require an LLM call. The MCP process has no MCP-level authentication or authorization. Generation state and rollback history are process-local.
+The HTTP listener defaults to loopback. Set `--http-bind 0.0.0.0` only when external exposure is intended. MCP activation and rollback publish to the same generation state used by HTTP; preparing a generation does not activate it. The API key is needed for `source: "spec"` or `source: "draft_spec"` synthesis; direct-JavaScript preparation does not itself require an LLM call. The MCP process has no MCP-level authentication or authorization. Generation state and rollback history are process-local.
 
 ## Offline bundle serving
 

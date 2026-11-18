@@ -58,13 +58,13 @@ The HTTP and export CLI paths:
 
 The export command then writes the exported files and exits without starting HTTP ingress. The HTTP command starts its listener only after successful preparation. The `serve --bundle` command instead loads the exported component and assertion suites, verifies integrity metadata, reruns both suites on isolated candidates, and opens HTTP ingress only after successful verification. It does not load a SPEC, instantiate the synthesizer, or read LLM credentials.
 
-MCP `source: "spec"` uses the same mandatory trusted and generated suites. MCP `source: "direct_js"` skips LLM synthesis and has no model-generated suite, but must still pass every trusted SPEC assertion. Optional client-supplied assertions in direct-JavaScript mode are informational and cannot relax the trusted policy. In shared HTTP mode, only an explicit `activate_app` or `rollback_app` changes the handler visible to HTTP; preparing a candidate never publishes it.
+MCP `source: "spec"` uses the same mandatory trusted and generated suites. MCP `source: "draft_spec"` synthesizes from an agent-supplied contract while retaining the startup acceptance policy; in MCP-first mode this means generated assertion verification plus baseline runtime limits, not operator-authored trusted assertions. MCP `source: "direct_js"` skips LLM synthesis and has no model-generated suite, but must still pass every trusted SPEC assertion. Optional client-supplied assertions in direct-JavaScript mode are informational and cannot relax the trusted policy. In shared HTTP mode, only an explicit `activate_app` or `rollback_app` changes the handler visible to HTTP; preparing a candidate never publishes it.
 
 ## Core contracts and components
 
 ### SPEC and acceptance policy
 
-The operator controls the SPEC loaded at process startup. The SPEC declares endpoints, supported capability requirements, and human-authored verification cases. Every declared endpoint must be covered by at least one trusted case. Verification cases use concrete request targets, documented response statuses, and optional request/response assertions.
+The operator controls the optional SPEC loaded at process startup. In operator-controlled mode, it declares endpoints, supported capability requirements, and human-authored verification cases; every declared endpoint must be covered by at least one trusted case. In MCP-first mode no application-specific trusted policy exists initially, but baseline fuel, memory, response, and input limits remain enforced. An agent-provided draft SPEC is used only as synthesis input and does not modify the startup acceptance policy. Verification cases in a draft must be structurally valid and cover its declared endpoints, but they are not promoted to operator trust.
 
 The current runtime accepts only `state: volatile`, no outbound egress declarations, and no database schema declarations. Other state/capability declarations are rejected rather than silently ignored.
 
