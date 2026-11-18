@@ -1,65 +1,78 @@
 ![nosrc logo](images/banner.png)
 # nosrc
 
-**nosrc** is an experimental Rust service that turns a declarative `SPEC.md` into a JavaScript handler, compiles it into a QuickJS-backed WebAssembly component, verifies its contract assertions, and serves HTTP requests through the verified generation.
+**nosrc** is an experimental Rust runtime that turns a declarative `SPEC.md` into a JavaScript request handler, compiles it into a QuickJS-backed WebAssembly component, verifies its contract assertions, and serves requests through the verified handler.
 
-The current implementation is a runnable single-process prototype, not a production-ready application runtime.
+The current implementation is a single-process prototype, not a production-ready application runtime.
 
-## Current implementation
+## What is implemented
 
-- Loads and parses the configured `SPEC.md`.
-- Calls an OpenAI-compatible chat-completions endpoint to synthesize a self-contained JavaScript ES module and contract assertions when no matching artifact is cached.
-- Caches component artifacts by a SHA-256 identity covering the raw SPEC, provider URL and configured model, synthesis prompt, WIT contract, resource budgets, componentizer/runtime versions, and `Cargo.lock`.
+nosrc currently provides three workflows over the same synthesis, componentization, and verification pipeline:
+
+- **HTTP runtime:** prepare and verify a handler at startup, activate a fresh generation, and serve HTTP requests.
+- **MCP control plane:** expose local stdio tools to prepare, inspect, invoke, activate, and roll back in-process generations.
+- **Artifact export:** run the verification pipeline and export the JavaScript handler, Wasm component, assertion suites, and a provenance manifest for review and version control.
+
+These are operating modes of one executable, not separate guest runtimes. MCP is a separate process mode and does not share live state with an independently running HTTP process.
+
+## Runtime and verification
+
+- Loads and parses the operator-provided `SPEC.md`.
+- Calls an OpenAI-compatible chat-completions endpoint to synthesize a self-contained JavaScript ES module and supplemental assertions when no matching artifact is cached.
+- Uses a content-addressed local cache keyed by the raw SPEC, provider/model configuration, synthesis prompt, WIT contract, resource budgets, componentizer/runtime versions, and `Cargo.lock`.
 - Componentizes JavaScript in-process with `componentize-qjs` and executes it with Wasmtime's component model.
 - Applies Wasm fuel and linear-memory limits to the component store.
-- Runs human-authored verification cases from `SPEC.md` and a separate model-generated supplemental assertion suite against isolated candidate instances before activation.
-- Keeps the production handler instance separate from the verifier so test requests cannot mutate its initial state.
-- Routes HTTP requests to the active generation and exposes health/status endpoints.
-- Binds to loopback by default; external interfaces require an explicit `--bind` address.
+- Runs human-authored SPEC verification cases and a separate model-generated assertion suite against isolated candidate instances before activation in HTTP and SPEC-driven MCP workflows.
+- Keeps the production handler instance separate from verifier instances so verification requests cannot mutate its initial state.
 - Preserves JavaScript module-level state between requests handled by the same active generation.
 
-## Deliberate limitations
+The model-generated assertion suite is supplemental. It does not replace the operator-authored SPEC verification suite, and passing tests do not prove correctness or security.
 
-- State is currently in-memory JavaScript module state. It survives requests within one active generation, but not process restarts or handler replacement.
-- Trusted verification cases must be authored in `SPEC.md` and cover every declared endpoint. Model-generated assertions are supplemental and cannot replace the SPEC-authored suite. Neither suite proves correctness or security.
-- The first WIT world exposes only the handler entrypoint. Guest code has no filesystem, process, network, database, or key-value host capability.
-- Requests to one active handler instance are serialized to preserve its JavaScript state.
-- HTTP request bodies and serialized guest response envelopes are limited to 1 MiB. Non-UTF-8 request bodies remain unsupported by the current text-based handler ABI.
-- The LLM client limits serialized synthesis requests to 2 MiB, uses a 10-second connect timeout and 120-second total timeout, and caps success responses at 4 MiB and error responses at 8 KiB.
-- The local artifact cache is an optimization, not a verification bypass: cached components are recompiled by the current Wasmtime engine and both verification suites run on every startup. Cache entries are stored under `.nosrc-cache/` by default; pass `--cache-dir` to change the location or `--no-cache` to force fresh synthesis. The cache is local and should be writable only by the service operator.
-- There is no automatic rebuild, file watching, self-healing, automatic rollback, external persistence, or Kubernetes orchestration.
-- Outbound HTTP, SQL, and durable KV capabilities are not exposed to generated code.
+## Quick start: HTTP
 
-Do not use this prototype to serve production traffic or execute untrusted generated code without additional security review.
+Requirements: Rust 1.97 or later, Cargo, and an OpenAI-compatible API key.
+
+```sh
+export LLM_API_KEY="your-api-key"
+cargo run -- --spec ./examples/minimal/SPEC.md --port 8080
+```
+
+The listener binds to `127.0.0.1` by default. Use `--bind 0.0.0.0` only when external access is intended. Check the runtime and example endpoint:
+
+```sh
+curl -i http://localhost:8080/healthz
+curl -sS http://localhost:8080/_nosrc/status
+curl -i http://localhost:8080/hello
+```
 
 ## Run as an MCP server
 
-nosrc also exposes a local Model Context Protocol server over stdio. This is a separate process mode from the HTTP listener; it does not open an HTTP port:
-
-The stdio transport does not implement MCP authentication or authorization. Its trust boundary is the local process that launches nosrc and owns the stdin/stdout pipes: only launch it from a trusted MCP host and do not expose or proxy those pipes to untrusted processes. Remote MCP transport and protocol-level access control are out of scope.
-
 ```sh
-export LLM_API_KEY="your-api-key" # required only when using source: "spec"
+export LLM_API_KEY="your-api-key" # required for source: "spec"
 cargo run -- mcp --spec ./examples/minimal/SPEC.md
 ```
 
-The MCP server provides five tools:
+The MCP server uses stdio and does not open an HTTP listener. It exposes five tools: `prepare_app`, `activate_app`, `invoke_app`, `get_app_status`, and `rollback_app`. Rollback is limited to the immediately previous retained generation. Generation state and rollback history are process-local and disappear when the MCP process exits.
 
-- `prepare_app`: prepare a candidate from the operator SPEC (`source: "spec"`) or supplied JavaScript (`source: "direct_js"`). Preparation never activates code.
-- `activate_app`: activate a candidate only after the required verification suites pass.
-- `invoke_app`: invoke the active generation with an HTTP-style request.
-- `get_app_status`: inspect active, previous, and retained generations and their verification results.
-- `rollback_app`: reactivate the immediately previous retained generation.
+## Export verified artifacts
 
-The operator-owned SPEC verification suite is always mandatory. SPEC-driven preparation also requires the model-generated assertion suite to pass, matching the CLI startup invariant. For direct JavaScript, optional assertions supplied by the MCP client are informational only and cannot weaken the SPEC policy. Model-generated and trusted suites use separate isolated instances; each suite runs sequentially so stateful request sequences are preserved. A fresh production instance is created only after mandatory checks pass.
+```sh
+export LLM_API_KEY="your-api-key"
+cargo run -- export --spec ./examples/minimal/SPEC.md --out-dir ./dist
+```
 
-Preparation snapshots the immutable runtime policy and performs LLM requests, componentization, and Wasm verification without holding the lifecycle lock. Componentization and verification run on Tokio's blocking pool. Runtime fuel, memory, and response-size limits are enforced by the component runtime. MCP request headers are normalized to lowercase and repeated query keys use the same last-value-wins behavior as HTTP ingress.
+The export command runs synthesis (or loads a cache entry), componentization/compilation, trusted and generated verification, and fresh production-instance creation before writing:
 
-Generation state and rollback history are process-local. Restarting the MCP process discards prepared generations and the rollback target. The stdio process does not share live HTTP ingress state with a separately running HTTP process.
+- `handler.js` — synthesized JavaScript handler source.
+- `component.wasm` — compiled WebAssembly component.
+- `assertions.json` — trusted SPEC assertions and generated assertions.
+- `manifest.json` — service name, SPEC SHA-256, module/component hashes, assertion counts, and synthesis rationale.
+
+The export directory is for inspection, audit support, and version control. The manifest is provenance metadata, not a signed attestation or independent proof of correctness. Export files are written individually; the directory is not published as an atomic transaction. See [Artifact format](docs/ARTIFACTS.md).
 
 ## SPEC verification format
 
-Every declared endpoint must have at least one matching case under `## Verification`. Cases use a concrete request target (including a sample value for each `:parameter` segment) and a response status documented by that endpoint. Query parameters may be included in the heading and are percent-decoded into the request envelope:
+Every declared endpoint must have at least one matching case under `## Verification`. Cases use a concrete request target (including a sample value for each `:parameter` segment):
 
 ```markdown
 ## Verification
@@ -70,32 +83,31 @@ Every declared endpoint must have at least one matching case under `## Verificat
 - Body contains: `hello`
 ```
 
-`Header:` sets a request header; `Response header:` asserts an exact response-header value. `Body:`, `Body contains:`, and `Response` are scalar fields and may appear at most once per case. Header names are case-insensitive. Repeated query keys in trusted verification headings are rejected because the current handler ABI represents each query key with one string value; it cannot express multi-valued query parameters. Verification cases are human-authored acceptance criteria; generated assertions are checked separately and are never their substitute.
+`Header:` sets a request header; `Response header:` asserts an exact response-header value. `Body:`, `Body contains:`, and `Response` are scalar fields and may appear at most once per case. Header names are case-insensitive. Repeated query keys in trusted verification headings are rejected because the current handler ABI represents each query key with one string value.
 
-## Requirements
+## Configuration and diagnostics
 
-- Rust 1.97 or later
-- Cargo
-- An OpenAI-compatible API key
-
-## Configuration
-
-`LLM_API_KEY` is required. The HTTP listener defaults to `127.0.0.1`. Set `--bind 0.0.0.0` (or another explicit IP address) only when the service should accept connections from outside the local host.
-
-Optional variables:
+`LLM_API_KEY` is required for synthesis. Optional variables:
 
 - `LLM_BASE_URL` (default: `https://api.openai.com/v1`)
 - `LLM_MODEL` (default: `gpt-4o-mini`)
 
-## Diagnostics
+Pass `--verbose` (or `-v`) for nosrc DEBUG diagnostics covering generation stages, provider request timing and sizes, assertion results, component compilation, and HTTP request metadata. Diagnostics are written to stderr and omit API keys, authorization headers, prompts, generated source, request/response bodies, and query strings. `RUST_LOG` overrides the scoped default and can enable noisy dependency logs. Review logs before sharing them; bounded provider errors and assertion mismatch details may still contain sensitive context.
 
-Normal startup shows nosrc `INFO` events and warnings/errors from dependencies. Pass `--verbose` (or `-v`) to add nosrc `DEBUG` diagnostics for the generation pipeline, provider request timing and sizes, individual contract assertion results, component compilation timing, and HTTP request metadata. Dependency logs remain at `WARN` and above, so enabling verbose mode does not flood the terminal with internal Wasmtime/componentizer details:
+See [CLI reference](docs/CLI.md) for all commands, options, and environment variables.
 
-```sh
-cargo run -- --verbose --spec ./examples/minimal/SPEC.md --port 8080
-```
+## Current limitations and roadmap
 
-`RUST_LOG` overrides this scoped default. For example, `RUST_LOG=trace` intentionally enables very noisy diagnostics across dependencies as well. Verbose diagnostic events omit API keys, authorization headers, prompts, generated source, request/response bodies, and query strings. Failure messages may still include bounded provider error details or assertion-mismatch details; review stderr before sharing logs. HTTP error responses use stable, sanitized messages; detailed runtime errors remain in server logs. Request paths can also contain application-specific identifiers.
+- JavaScript module state is volatile and scoped to one active generation. It does not survive handler replacement or process restart.
+- The current WIT world exposes only the handler entrypoint. Guest code has no filesystem, process, network, database, or key-value host capability.
+- Requests to one active handler instance are serialized.
+- HTTP request bodies and serialized guest response envelopes are limited to 1 MiB. Non-UTF-8 request bodies are unsupported by the current text-based handler ABI.
+- LLM synthesis requests are limited to 2 MiB; connect and total timeouts are 10 and 120 seconds; successful and error response bodies are capped at 4 MiB and 8 KiB.
+- The local artifact cache is an optimization, not a verification bypass. Cached components are recompiled and both verification suites run again.
+- There is no automatic rebuild, file watching, automatic rollback, remote MCP transport, authentication/authorization for MCP, or Kubernetes orchestration.
+- Durable application-state persistence and durable generation/rollback metadata are not implemented yet. They remain planned backlog work; current state is volatile and generation-scoped.
+
+The security model remains incomplete. Do not use this prototype to serve production traffic or execute untrusted generated code without additional security review. See [Architecture](ARCHITECTURE.md) and [Security model](docs/SECURITY.md).
 
 ## Build and test
 
@@ -105,53 +117,16 @@ cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
 ```
 
-The test suite includes a deterministic end-to-end startup run against a local mock OpenAI-compatible endpoint. It exercises synthesis, QuickJS componentization, both verification suites, production activation, and HTTP dispatch without an external API key.
+The test suite includes a deterministic end-to-end startup run against a local mock OpenAI-compatible endpoint. It exercises synthesis, QuickJS componentization, verification, production activation, and HTTP dispatch without an external API key.
 
-## Run the minimal example
+## Project documentation
 
-From the repository root, set a key for your OpenAI-compatible provider and start the service:
-
-```sh
-export LLM_API_KEY="your-api-key"
-cargo run -- --spec ./examples/minimal/SPEC.md --port 8080
-```
-
-Add `--verbose` to inspect the generation and request lifecycle while testing:
-
-```sh
-cargo run -- --verbose --spec ./examples/minimal/SPEC.md --port 8080
-```
-
-For a compatible provider other than OpenAI, also set its API base URL and model before starting:
-
-```sh
-export LLM_BASE_URL="https://your-provider.example/v1"
-export LLM_MODEL="your-model-name"
-```
-
-The service validates the SPEC-authored verification suite, synthesizes and componentizes a handler, then runs the trusted cases and a separate model-generated assertion suite before binding the HTTP listener. The listener binds to `127.0.0.1` by default; pass `--bind 0.0.0.0` to expose it on all IPv4 interfaces. The local artifact cache is enabled by default at `.nosrc-cache/`; use `--cache-dir PATH` to choose another directory or `--no-cache` to bypass it. Startup fails closed if either suite fails. Keep this terminal running.
-
-In a second terminal, check health and the active generation:
-
-```sh
-curl -i http://localhost:8080/healthz
-curl -sS http://localhost:8080/_nosrc/status
-```
-
-Then call the example application route:
-
-```sh
-curl -i http://localhost:8080/hello
-```
-
-The example contract is `GET /hello`, returning HTTP 200 with a JSON greeting containing `"message": "hello"`. Stop the service with Ctrl-C in the first terminal.
-
-## Architecture and security
-
-Read [ARCHITECTURE.md](ARCHITECTURE.md) for the implemented lifecycle and next milestones, and [AGENTS.md](AGENTS.md) for repository-specific engineering constraints.
-
-The security model remains incomplete. In particular, host capabilities are not exposed yet; when they are added, each must have a narrow WIT contract and explicit capability checks. Outbound HTTP must validate DNS answers and every redirect target before it can be treated as a robust SSRF boundary. Resource limits, candidate assertions, artifact provenance, and state lifecycle need additional testing before production use.
+- [Architecture and implemented design](ARCHITECTURE.md)
+- [CLI reference](docs/CLI.md)
+- [Exported artifact format](docs/ARTIFACTS.md)
+- [Security model and open risks](docs/SECURITY.md)
+- [AI coding-agent instructions](AGENTS.md)
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE) if present.
+Apache-2.0. See [LICENSE](LICENSE).
