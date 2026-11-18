@@ -2,7 +2,7 @@
 
 ## 1. Project identity
 
-nosrc is an experimental Rust runtime that transforms an operator-authored `SPEC.md` into a JavaScript request handler, compiles it into a QuickJS-backed WebAssembly component, verifies it, and exposes it through HTTP, MCP stdio, or verified artifact export.
+nosrc is an experimental Rust runtime that transforms an operator-authored `SPEC.md` into a JavaScript request handler, compiles it into a QuickJS-backed WebAssembly component, verifies it, and exposes it through HTTP, MCP stdio, verified artifact export, or offline bundle serving.
 
 Read `ARCHITECTURE.md` before changing module boundaries, execution contracts, security assumptions, or lifecycle behavior. Read the relevant documents under `docs/` when changing CLI behavior, export formats, or security boundaries.
 
@@ -33,6 +33,7 @@ Do not add a persistence backend or claim persistence is wired into the request 
 
 - No subcommand: HTTP runtime. Default SPEC `./SPEC.md`, port `8080`, bind `127.0.0.1`, cache directory `./.nosrc-cache`.
 - `nosrc export`: verifies and exports `handler.js`, `component.wasm`, `assertions.json`, and `manifest.json`; does not start HTTP ingress. It stages the complete bundle in a temporary sibling directory and publishes it by rename; the destination must not already exist.
+- `nosrc serve --bundle PATH`: validates an exported bundle, recompiles its component, reruns both assertion suites, and starts HTTP ingress without LLM credentials or provider access. It does not load a SPEC; the bundle and its unsigned assertion/manifest files are operator-controlled inputs.
 - `nosrc mcp`: local stdio MCP process; does not start HTTP ingress.
 
 See `docs/CLI.md` for exact flags and environment variables, and `docs/ARTIFACTS.md` before changing exported files or manifest fields.

@@ -7,11 +7,12 @@ The current implementation is a single-process prototype, not a production-ready
 
 ## What is implemented
 
-nosrc currently provides three workflows over the same synthesis, componentization, and verification pipeline:
+nosrc currently provides four operating modes, including an offline path for previously exported artifacts:
 
 - **HTTP runtime:** prepare and verify a handler at startup, activate a fresh generation, and serve HTTP requests.
 - **MCP control plane:** expose local stdio tools to prepare, inspect, invoke, activate, and roll back in-process generations.
 - **Artifact export:** run the verification pipeline and export the JavaScript handler, Wasm component, assertion suites, and a provenance manifest for review and version control.
+- **Offline bundle serving:** load an exported bundle, validate its component digest and manifest metadata, rerun both assertion suites, and serve it without LLM credentials or provider access.
 
 These are operating modes of one executable, not separate guest runtimes. MCP is a separate process mode and does not share live state with an independently running HTTP process.
 
@@ -69,6 +70,18 @@ The export command runs synthesis (or loads a cache entry), componentization/com
 - `manifest.json` — service name, SPEC SHA-256, module/component hashes, assertion counts, and synthesis rationale.
 
 The export directory is for inspection, audit support, and version control. The manifest is provenance metadata, not a signed attestation or independent proof of correctness. Export is staged in a temporary sibling directory and published with a single directory rename. The destination must not already exist; remove or move an earlier export before rerunning. See [Artifact format](docs/ARTIFACTS.md).
+
+## Serve an exported bundle offline
+
+After exporting a bundle, start the HTTP runtime without an API key or model-provider request:
+
+```sh
+cargo run -- serve --bundle ./dist --bind 127.0.0.1 --port 8080
+```
+
+Startup validates the bundle files and SHA-256 metadata, compiles the prebuilt component with the current Wasmtime engine, reruns the trusted and generated assertion suites on separate candidate instances, and creates a fresh serving instance only after both suites pass. The HTTP listener opens only after successful validation. This mode does not read a SPEC file, synthesize code, or access an LLM provider.
+
+The manifest is unsigned, and the exported assertion suites are files in the same bundle. Hash validation detects accidental or inconsistent component changes, not malicious replacement of the component, assertions, and manifest together. Treat the bundle and its source directory as operator-controlled inputs. See [Artifact format](docs/ARTIFACTS.md).
 
 ## SPEC verification format
 

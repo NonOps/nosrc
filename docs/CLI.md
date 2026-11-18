@@ -1,6 +1,6 @@
 # CLI reference
 
-The executable has three operating modes. Run `cargo run -- --help` or `cargo run -- <subcommand> --help` for the Clap-generated command help from the exact build.
+The executable has four operating modes. Run `cargo run -- --help` or `cargo run -- <subcommand> --help` for the Clap-generated command help from the exact build.
 
 ## HTTP runtime (default mode)
 
@@ -66,6 +66,29 @@ LLM_API_KEY="your-api-key" cargo run -- mcp --spec ./examples/minimal/SPEC.md
 
 MCP uses stdio and does not open an HTTP listener. The API key is needed when using SPEC-driven synthesis; direct-JavaScript preparation does not itself require an LLM call. The MCP process has no MCP-level authentication or authorization. Generation state and rollback history are process-local.
 
+## Offline bundle serving
+
+```sh
+cargo run -- serve --bundle ./dist [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--bundle PATH` | required | Export directory containing all four artifacts |
+| `--port PORT`, `-p PORT` | `8080` | HTTP listen port |
+| `--bind IP` | `127.0.0.1` | Listen address; external binding must be explicit |
+| `--verbose`, `-v` | off | Enable nosrc DEBUG diagnostics |
+
+This mode does not read `SPEC.md`, require `LLM_API_KEY`, synthesize code, or contact a model provider. It validates the component digest and manifest fields, checks bounded regular bundle files, compiles the component, and reruns trusted and generated assertions in separate candidate instances. The listener starts only after all checks pass. The manifest is unsigned; these checks do not authenticate the bundle or protect against an attacker who can replace the component, assertions, and manifest together. Artifact symlinks/reparse points are rejected on Unix and Windows; other operating-system targets fail closed because safe no-follow file opening is unavailable.
+
+Example:
+
+```sh
+cargo run -- serve --bundle ./dist --bind 127.0.0.1 --port 8080
+```
+
+`serve` still opens an HTTP listener for application traffic; “offline” means the startup path has no LLM/provider dependency or outbound provider request.
+
 ## Environment variables
 
 | Variable | Default | Description |
@@ -74,13 +97,13 @@ MCP uses stdio and does not open an HTTP listener. The API key is needed when us
 | `LLM_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API base URL |
 | `LLM_MODEL` | `gpt-4o-mini` | Model identifier |
 
-HTTP and export currently construct the LLM configuration before cache lookup, so `LLM_API_KEY` must be set even when a valid cache entry exists. MCP direct-JavaScript preparation can run without it.
+HTTP and export currently construct the LLM configuration before cache lookup, so `LLM_API_KEY` must be set even when a valid cache entry exists. MCP direct-JavaScript preparation and `serve --bundle` can run without it; offline bundle serving does not construct an LLM client or contact a provider.
 
 `RUST_LOG` overrides the default scoped tracing filter. Without it, normal mode uses `warn,nosrc=info`; verbose mode uses `warn,nosrc=debug`. Diagnostics are emitted to stderr. Broad filters such as `RUST_LOG=trace` can enable verbose dependency logging.
 
 ## Exit and failure behavior
 
-- Invalid/unreadable SPEC files, unsupported requested capabilities, missing synthesis credentials, synthesis/schema failures, componentization failures, and failed mandatory verification prevent the selected workflow from proceeding.
+- Invalid/unreadable SPEC files, unsupported requested capabilities, missing synthesis credentials, synthesis/schema failures, componentization failures, malformed bundles, digest mismatches, and failed mandatory verification prevent the selected workflow from proceeding.
 - HTTP ingress is not started until startup preparation and verification succeed.
 - Export files are staged in a temporary sibling directory and published together by directory rename. The destination must not already exist; an existing file, directory, or symlink is left untouched and causes export to fail. A staging or publication failure does not expose a partial bundle.
 - MCP preparation does not activate a candidate implicitly. Activation is a separate tool call.

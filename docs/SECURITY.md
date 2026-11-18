@@ -56,6 +56,8 @@ Normal diagnostics are scoped to nosrc events. Verbose mode enables nosrc DEBUG 
 - The current string-based request ABI does not support arbitrary non-UTF-8 request bodies.
 - Assertions are examples, not proof of correctness or security.
 - The export manifest is not signed and does not contain complete build provenance or assertion execution records.
+- Offline bundle serving validates component hashes and reruns exported assertions, but the manifest and assertions are unsigned and are stored alongside the component. It does not authenticate a bundle against an independently trusted SPEC or signer.
+- Offline bundle artifact opens reject symbolic links and other reparse points on Unix and Windows using no-follow open flags, then inspect the opened handle and enforce bounded reads. Other operating-system targets fail closed because an equivalent no-follow primitive is not implemented there.
 - Export files are staged together and published by a same-filesystem directory rename. Existing destinations are rejected rather than replaced; this prevents a failed export from leaving a partially updated bundle, but does not provide authenticity or tamper evidence.
 - The prototype has no remote MCP transport or MCP authentication/authorization.
 - There is no automatic rebuild, file watching, autonomous self-healing, or automatic rollback.
