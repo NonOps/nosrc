@@ -153,8 +153,19 @@ impl ErrorEnvelope {
             _ => (500, "InternalEngineError"),
         };
 
+        // Engine errors can contain guest-controlled strings, filesystem paths, provider
+        // details, or other internal diagnostics. Keep those in server logs only.
+        let error = match err_type {
+            "FuelExhausted" => "Handler execution exceeded its resource budget",
+            "MemoryExhausted" => "Handler exceeded its memory limit",
+            "SandboxTrap" => "Handler execution failed",
+            "CapabilityDisabled" => "Requested capability is unavailable",
+            "EgressForbidden" | "SsrfBlocked" => "Requested network access is forbidden",
+            _ => "Internal runtime error",
+        };
+
         Self {
-            error: err.to_string(),
+            error: error.to_string(),
             error_type: err_type.to_string(),
             status,
         }
@@ -198,6 +209,31 @@ mod tests {
             Some("hello world")
         );
         assert_eq!(request.query.get("plus").map(String::as_str), Some("a+b"));
+    }
+
+    #[test]
+    fn internal_error_details_are_not_exposed_to_http_clients() {
+        let error = EngineError::Internal("secret filesystem path: /srv/private/token".into());
+        let envelope = ErrorEnvelope::from_engine_error(&error);
+
+        assert_eq!(envelope.error, "Internal runtime error");
+        assert_eq!(envelope.error_type, "InternalEngineError");
+        let serialized = serde_json::to_string(&envelope).unwrap();
+        assert!(!serialized.contains("secret"));
+        assert!(!serialized.contains("/srv/private/token"));
+    }
+
+    #[test]
+    fn guest_panic_details_are_not_exposed_to_http_clients() {
+        let error = EngineError::Trap(crate::error::SandboxTrap::GuestPanic(
+            "sensitive guest detail".into(),
+        ));
+        let envelope = ErrorEnvelope::from_engine_error(&error);
+
+        assert_eq!(envelope.error, "Handler execution failed");
+        assert!(!serde_json::to_string(&envelope)
+            .unwrap()
+            .contains("sensitive guest detail"));
     }
 
     #[test]
