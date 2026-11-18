@@ -134,7 +134,7 @@ async fn prepare_generation(
     let trusted_results = match ShadowVerifier::new().verify_handler(&mut trusted_candidate, &trusted_assertions) {
         Ok(results) => results,
         Err(error) => {
-            tracing::error!(suite = "trusted", error = %error, "Contract verification failed");
+            tracing::error!(suite = "trusted", "Contract verification failed; detailed error returned to caller");
             return Err(error.into());
         }
     };
@@ -152,7 +152,7 @@ async fn prepare_generation(
     let generated_results = match ShadowVerifier::new().verify_handler(&mut generated_candidate, &output.assertions) {
         Ok(results) => results,
         Err(error) => {
-            tracing::error!(suite = "generated", error = %error, "Contract verification failed");
+            tracing::error!(suite = "generated", "Contract verification failed; detailed error returned to caller");
             return Err(error.into());
         }
     };
