@@ -339,11 +339,7 @@ mod tests {
         let mut assertions: ExportAssertions =
             serde_json::from_slice(&fs::read(&assertions_path).unwrap()).unwrap();
         assertions.trusted_assertions.clear();
-        fs::write(
-            &assertions_path,
-            serde_json::to_vec(&assertions).unwrap(),
-        )
-        .unwrap();
+        fs::write(&assertions_path, serde_json::to_vec(&assertions).unwrap()).unwrap();
         fs::write(directory.path().join("SPEC.md"), spec_text).unwrap();
 
         let (_, summary) = load_and_verify(directory.path()).unwrap();
