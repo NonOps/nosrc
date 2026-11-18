@@ -74,7 +74,7 @@ Export occurs only after:
 3. Generated supplemental verification.
 4. Creation of a fresh production handler instance.
 
-Operator-policy exports require the trusted operator suite to pass; a generated suite may be empty for direct-JavaScript MCP generations. Draft-policy exports have no operator-trusted suite and require the generated assertions derived from the agent's draft SPEC to pass. The manifest records this distinction; draft assertions are never relabeled as operator trust.
+Operator-policy exports require the trusted operator suite to pass; a generated suite may be empty for direct-JavaScript MCP generations. Draft-policy exports have no operator-trusted suite and require the draft SPEC verification cases plus model-generated assertions to pass. The manifest records this distinction; draft assertions are never relabeled as operator trust.
 
 A successful export means the artifact passed these configured checks in the current build/runtime environment. It is not a cryptographic attestation, formal proof, security certification, or guarantee that the handler is correct for all inputs.
 

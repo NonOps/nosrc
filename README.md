@@ -68,7 +68,7 @@ MCP can also start without an operator SPEC:
 cargo run -- mcp
 ```
 
-This starts with empty application state and baseline runtime resource limits. The agent can prepare direct JavaScript with `source: "direct_js"`, or provide a draft contract with `source: "draft_spec"` and a `draft_spec` Markdown string. Draft SPEC data is synthesis input, not trusted operator policy; generated assertions are candidate checks, and the baseline sandbox limits remain in force. Use `export_app` with the prepared generation ID to write the same offline bundle format as the CLI exporter. The bundle includes `SPEC.md`, handler source, component, assertions, and manifest, and can be served without an API key. To establish an operator-controlled acceptance policy, review the exported draft and restart with `--spec PATH`.
+This starts with empty application state and baseline runtime resource limits. The agent can prepare direct JavaScript with `source: "direct_js"`, or provide a draft contract with `source: "draft_spec"` and a `draft_spec` Markdown string. Draft SPEC data is synthesis input, not trusted operator policy. Its verification cases are included with model-generated assertions as candidate checks, and the baseline sandbox limits remain in force. Use `export_app` with the prepared generation ID to write the same offline bundle format as the CLI exporter. The bundle includes `SPEC.md`, handler source, component, assertions, and manifest, and can be served without an API key. To establish an operator-controlled acceptance policy, review the exported draft and restart with `--spec PATH`.
 
 To expose HTTP from the same process and share the active generation with MCP, add `--http-port` (and optionally `--http-bind`):
 

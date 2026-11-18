@@ -254,6 +254,7 @@ pub struct PreparationContext {
     spec: Option<ServiceSpec>,
     spec_text: Option<String>,
     draft_spec: bool,
+    draft_assertions: Vec<ContractAssertion>,
     cache: Option<ArtifactCache>,
     policy: AcceptancePolicy,
 }
@@ -373,6 +374,10 @@ impl PreparationContext {
                 "Invalid draft SPEC verification: {error}"
             )))
         })?;
+        let draft_policy =
+            AcceptancePolicy::from_spec(&draft).map_err(EngineError::Internal)?;
+        // These cases are candidate checks, not operator-trusted acceptance policy.
+        self.draft_assertions = draft_policy.spec_assertions;
         // The draft controls synthesis input only; the startup acceptance policy is unchanged.
         self.spec = Some(draft);
         self.spec_text = Some(spec_text);
@@ -459,6 +464,8 @@ impl PreparationContext {
             }
         };
 
+        let mut output = output;
+        output.assertions.extend(self.draft_assertions.clone());
         validate_mcp_synthesis(&output)?;
         let engine = self.engine.clone();
         let policy = self.policy.clone();
@@ -707,6 +714,7 @@ impl AppLifecycle {
             spec: self.spec.clone(),
             spec_text: self.spec_text.clone(),
             draft_spec: false,
+            draft_assertions: Vec::new(),
             cache: self.cache.clone(),
             policy: self.policy.clone(),
         }
