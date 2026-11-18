@@ -1,73 +1,92 @@
-# `AGENTS.md` — AI Coding Agent Instructions for `nosrc`
+# AI coding-agent instructions for nosrc
 
-## 1. Project Identity & Core Objective
-You are building **`nosrc`**, an experimental Rust service intended to turn a declarative `SPEC.md` into verified JavaScript request handlers executed in a WebAssembly sandbox.
+## 1. Project identity
 
-**Current implementation:** the CLI reads and parses `SPEC.md`, synthesizes JavaScript and contract assertions through the configured OpenAI-compatible endpoint, componentizes the handler with `componentize-qjs`, verifies it in an isolated candidate instance, and activates a fresh production instance before starting HTTP ingress. The runtime uses Wasmtime 50 and requires Rust 1.97 or later.
+nosrc is an experimental Rust runtime that transforms an operator-authored `SPEC.md` into a JavaScript request handler, compiles it into a QuickJS-backed WebAssembly component, verifies it, and exposes it through HTTP, MCP stdio, or verified artifact export.
 
-**Runtime limitations:** module-level JavaScript state persists across requests within one active generation only. Requests to a generation are serialized. No guest filesystem, process, network, SQL, KV, or WASI capabilities are exposed. Durable state, host capabilities, and hot-reload are not implemented.
+Read `ARCHITECTURE.md` before changing module boundaries, execution contracts, security assumptions, or lifecycle behavior. Read the relevant documents under `docs/` when changing CLI behavior, export formats, or security boundaries.
 
-**Explicitly out of scope:** autonomous self-healing, automatic regeneration from production failures, and automatic rollback.
+Current toolchain: Rust 1.97+, Wasmtime 50 component model, and `componentize-qjs` 0.6.
 
----
+## 2. Hard invariants
 
-## 2. Hard Architectural Invariants (Never Violate)
-1. **Zero External Runtime Dependencies:** Never shell out to `node`, `npm`, `cargo`, `rustc`, `gcc`, `python`, or external CLI tools at runtime. Everything must compile, snapshot, and execute in-process inside one static Rust binary (`musl`-compatible).
-2. **Strict Capability Isolation:** QuickJS guest code must have zero direct OS, filesystem, process, or socket access. The current component world exposes only the handler entrypoint; do not add capabilities without a narrow WIT interface and tests.
-3. **Honest State Semantics:** JavaScript module-level state is in-memory and generation-scoped. It is not durable across restarts or handler replacement. Do not claim SQLite, redb, PostgreSQL, or Redis persistence is wired into the QuickJS request path.
-4. **Never Route Unverified Code:** CLI startup and MCP `source: "spec"` preparation must pass 100% of the human-authored SPEC verification cases and the separate model-generated assertion suite. MCP `source: "direct_js"` must pass every trusted SPEC case; optional agent-supplied assertions are informational and cannot replace or weaken the SPEC policy. Run trusted and model-generated suites on separate isolated candidate instances, then instantiate a separate production instance. Never activate a failed candidate.
-5. **Deterministic Sandboxing:** Every QuickJS component store must enforce CPU fuel limits and a bounded linear-memory budget. Keep tests against the component runtime, not only the legacy core-module engine.
+1. **No unverified activation.** HTTP startup and MCP SPEC-driven preparation must pass every operator-authored SPEC verification case and the separate model-generated assertion suite. MCP direct-JavaScript preparation must pass every trusted SPEC case. Supplemental client assertions in direct-JavaScript mode are informational only. Never activate a failed candidate.
+2. **Trusted policy belongs to the operator.** An MCP client cannot replace the startup SPEC, weaken trusted assertions, or raise runtime ceilings.
+3. **Strict guest isolation.** The current QuickJS component world exports only the handler entrypoint. Do not grant filesystem, process, network, SQL, KV, or WASI capabilities without an explicit WIT contract, host implementation, policy gate, bounds, and component-level tests.
+4. **Enforce resource limits.** Fuel, linear memory, component handles/tables/instances/memories, request size, and response size must be enforced by the actual runtime path, not merely reported.
+5. **Honest state semantics.** JavaScript module-level state is in-memory and generation-scoped. It is lost on handler replacement or process restart. Do not claim that SQLite/redb prototypes or dependencies provide persistence to the active QuickJS guest.
+6. **Keep verification isolated.** Trusted and model-generated suites use separate disposable instances. Agent-supplied informational assertions use their own disposable instance. Production instances are created only after mandatory checks pass.
+7. **Preserve process-mode boundaries.** HTTP mode and MCP stdio mode are separate process modes. MCP does not start HTTP ingress or share state with another process.
+8. **Do not invent implemented capabilities.** A crate dependency, legacy module, test fixture, or backlog item is not proof that the active QuickJS guest can use that capability.
 
----
+## 3. Current state and persistence roadmap
 
-## 3. Technology Stack & Approved Crates
-Keep the dependency tree lean, fast to compile, and static-link friendly:
-* **Async Runtime & HTTP:** `tokio` (full features), `axum`, `tower-http`, `reqwest` (with `rustls-tls`, never OpenSSL).
-* **Wasm Engine & Componentization:** `wasmtime = 50` and `componentize-qjs = 0.6`. Keep one Wasmtime major version in the executable; the dependency requires Rust 1.97 or later.
-* **Lock-Free Hot-Swapping & Concurrency:** `arc-swap`, `dashmap`.
-* **State:** JavaScript module state is currently in-memory only. SQLite and redb are legacy prototypes, not exposed to the QuickJS component.
-* **External State:** deferred; do not add PostgreSQL/Redis until the embedded state contract and isolation model are designed.
-* **CLI, File Watching & Serialization:** `clap` (derive), `notify`, `serde`, `serde_json`, `anyhow`, `thiserror`, `tracing`, `tracing-subscriber`.
+The active guest currently supports volatile JavaScript module state only. Durable application-state persistence is deferred backlog work, not permanently out of scope. Durable generation metadata and rollback recovery are also not implemented.
 
----
+When implementing persistence, treat these as distinct designs:
+- guest application state, likely introduced through a narrowly scoped WIT-backed storage interface with bounded operations and candidate isolation;
+- control-plane state, including prepared/active generation metadata and restart/rollback recovery.
 
-## 4. Coding Standards & Rust Conventions
-* **Error Handling:**
-  * Use `thiserror` for structured domain and Host ABI errors (`EngineError`, `SandboxTrap`, `CapabilityDisabled`).
-  * Use `anyhow::Result` in `main.rs`, CLI setup, and top-level background workers.
-  * Never call `.unwrap()` or `.expect()` on network inputs, LLM responses, or Wasm guest outputs in production paths.
-* **Concurrency & Locking:**
-  * Never hold a `std::sync::Mutex` or `rusqlite::Connection` across an `.await` point. Offload blocking SQLite/Wasm execution to `tokio::task::spawn_blocking` or dedicated worker channels.
-  * Do not hold the async MCP lifecycle mutex during LLM requests, componentization, candidate verification, or guest execution. Snapshot immutable preparation inputs, do expensive work outside the lock, and lock only to publish the completed candidate. Componentization and Wasm verification must run on the blocking pool.
-  * Use the existing `ArcSwap<Option<ActiveGeneration>>` pattern for reading the active generation on the HTTP request path so reads remain wait-free.
-* **Security Rules in `host_abi.rs`:**
-  * Block private/loopback/link-local IP ranges (`127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`) inside `host_http_fetch`.
-  * Enforce parameterized queries only in `host_db_query`; reject raw multi-statement strings from guest handlers.
+Do not add a persistence backend or claim persistence is wired into the request path until the contract, isolation model, failure semantics, resource bounds, and tests are implemented and documented.
 
----
+## 4. Current operating modes and CLI
 
-## 5. Standard Build & Verification Commands
-Before concluding any task, run and verify:
+- No subcommand: HTTP runtime. Default SPEC `./SPEC.md`, port `8080`, bind `127.0.0.1`, cache directory `./.nosrc-cache`.
+- `nosrc export`: verifies and exports `handler.js`, `component.wasm`, `assertions.json`, and `manifest.json`; does not start HTTP ingress.
+- `nosrc mcp`: local stdio MCP process; does not start HTTP ingress.
 
-    cargo fmt --check
-    cargo clippy --all-targets -- -D warnings
-    cargo test
+See `docs/CLI.md` for exact flags and environment variables, and `docs/ARTIFACTS.md` before changing exported files or manifest fields.
 
-Run the service with an explicit SPEC path and port (requires `LLM_API_KEY`):
+## 5. Security and execution rules
 
-    cargo run -- --spec ./SPEC.md --port 8080
+- The handler ABI is `handle(requestJson: string) -> responseJson: string`.
+- The current WIT world exposes no guest imports or host capabilities beyond the handler export.
+- Do not add ambient host access or rely on WASI stubs as a security boundary.
+- Any future outbound HTTP feature must defend against DNS rebinding and redirect-based SSRF, including IPv4/IPv6 private, loopback, link-local, and metadata ranges.
+- Any future database feature must use parameterized operations and enforce query, result, row-count, and execution-time bounds.
+- Never log API keys, authorization headers, prompts, generated source, request/response bodies, or query strings.
+- Treat LLM responses, cache contents, exported artifacts, MCP inputs, and guest outputs as untrusted data.
+- MCP stdio has no MCP-level authentication/authorization; trust derives from the local launcher and pipe ownership.
 
----
+See `docs/SECURITY.md` for the current threat model and known gaps.
 
-## 6. Agent Workflow When Implementing Features
-1. **Check `ARCHITECTURE.md` First:** Align module placement, CLI flags, and ABI signatures with `ARCHITECTURE.md`.
-2. **Design the WIT Contract Before Guest JS:** Whenever adding a capability (KV, SQL, HTTP, Crypto), define its WIT interface, Rust host implementation, capability gate, resource bounds, and tests first, then update the LLM system prompt in `src/synthesizer/`.
-3. **Write Component Sandbox Tests:** Every new capability or runtime behavior must include an integration test proving that invalid or resource-exhausting guest code is contained without crashing the host process.
-4. **Keep Milestones Incremental:** Complete the single-process JavaScript-to-Wasm request lifecycle, including persistence and candidate verification, before adding file watching, autonomous behavior, external persistence, dashboards, or Kubernetes operators.
+## 6. Concurrency and lifecycle
 
+- Do not hold the MCP lifecycle mutex during provider requests, componentization, candidate verification, or guest execution. Snapshot immutable inputs, perform expensive work outside the lock, and lock only to publish a completed candidate.
+- Componentization and Wasm verification belong on Tokio's blocking pool.
+- A preparation timeout must prevent a late worker from publishing a generation. It does not necessarily terminate the already-running blocking task.
+- Rollback is limited to the immediately previous retained generation.
+- Requests to one QuickJS handler instance are serialized to preserve module state.
+- Do not add hot reload or generation draining without an explicit concurrency/lifecycle design and regression tests.
 
-## 7. MCP control plane conventions
-- The `nosrc mcp` command is a separate stdio process mode; it does not start the HTTP listener. Do not retain unused HTTP hot-swap state in the MCP lifecycle manager.
-- Expose explicit `prepare_app`, `activate_app`, `invoke_app`, `get_app_status`, and `rollback_app` tools. Rollback may only restore the immediately previous retained generation.
-- MCP request header names must be normalized to lowercase and query parameters must follow the HTTP request-envelope semantics (last value wins for repeated query keys).
-- Runtime resource policies must be enforced by the actual component store and response validation, not only reported in status.
+## 7. Rust and dependency conventions
+
+- Keep the dependency tree lean and compatible with static/musl-oriented builds.
+- Use `thiserror` for structured domain errors and `anyhow::Result` at CLI/top-level orchestration boundaries.
+- Never unwrap network input, provider responses, or guest-controlled output in production paths.
+- Never hold a blocking mutex or SQLite connection across an `.await`.
+- Keep one Wasmtime major version in the executable.
+- Do not add dependencies or modules to the approved stack by copying stale examples from old docs; inspect current `Cargo.toml` and implementation first.
+
+## 8. Required validation
+
+Before concluding implementation work, run:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+cargo test --all-targets
+```
+
+Add component-runtime tests for new guest-visible behavior, including disabled-capability, malformed-input, resource-exhaustion, and failure-recovery cases as applicable. Update docs whenever CLI flags, public interfaces, artifact formats, security guarantees, limits, or lifecycle semantics change.
+
+## 9. Documentation synchronization rule
+
+For every new externally observable capability or changed contract, update all relevant documentation in the same PR:
+
+- `README.md`: user-visible capability and quick-start usage.
+- `ARCHITECTURE.md`: implementation, data flow, guarantees, and limitations.
+- `docs/CLI.md`, `docs/ARTIFACTS.md`, or `docs/SECURITY.md`: detailed contract where relevant.
+- `AGENTS.md`: contributor/reviewer invariants that future agents must preserve.
+
+Do not document planned work as implemented. Mark backlog items as planned/deferred and describe current behavior separately.

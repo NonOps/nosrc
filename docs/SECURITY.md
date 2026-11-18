@@ -1,0 +1,75 @@
+# Security model and known limitations
+
+## Security posture
+
+nosrc is an experimental prototype, not a production security boundary. Generated JavaScript is untrusted input. The current design reduces guest authority by executing a self-contained QuickJS handler inside a WebAssembly component with a deliberately small WIT world and bounded runtime resources. This does not eliminate vulnerabilities in the host, componentizer, runtime, dependencies, or application logic.
+
+Do not expose this prototype to untrusted users or production traffic without a separate security review and deployment-specific controls.
+
+## Trust boundaries
+
+### Operator-controlled SPEC
+
+The SPEC and its verification cases are supplied by the operator. They define the acceptance criteria used before activation. The MCP client cannot replace the loaded SPEC or relax the runtime policy.
+
+### LLM output
+
+The model is not trusted. Its response is parsed into the expected structure, handler source is componentized, and required assertion suites run before activation. The generated suite is supplemental; it is not an independent security review and cannot replace the trusted SPEC suite.
+
+### Guest component
+
+The current WIT world exposes only the `handle` function. WASI imports are stubbed and the guest has no host-provided filesystem, process, network, SQL, or KV capability. Do not infer guest capability from Rust dependencies, legacy host ABI code, or unused prototypes elsewhere in the repository.
+
+### Cache and exported artifacts
+
+The local artifact cache is operator-managed and is not a trust boundary. Cache entries have integrity metadata, but a party able to modify the cache directory may be able to replace its contents; current engine compilation and verification still run on cache hits.
+
+Exported manifest hashes are unsigned metadata. They do not provide authenticity or non-repudiation. Protect cache and export directories with filesystem permissions and use a trusted external mechanism if artifact signing or attestations are required.
+
+### MCP stdio
+
+The MCP server listens on stdio, not a network socket. It does not implement MCP-level authentication or authorization. Trust is inherited from the local process launcher and ownership of stdin/stdout pipes. Do not expose stdio through an untrusted bridge without adding and reviewing an appropriate security layer.
+
+## Enforced limits and behavior
+
+- Component fuel budget: 50,000,000 units by default, with operator policy unable to exceed the runtime ceiling.
+- Per-linear-memory growth: 64 MiB default ceiling.
+- Component handles, table elements, instances, tables, and memories are bounded.
+- HTTP request body limit: 1 MiB.
+- Serialized guest response envelope limit: 1 MiB.
+- LLM serialized request limit: 2 MiB.
+- LLM connect timeout: 10 seconds; total request timeout: 120 seconds.
+- LLM success response limit: 4 MiB; error response limit: 8 KiB.
+- One active handler instance serializes invocations to preserve module state.
+- MCP preparation timeout prevents late publication, but an already-running blocking task may continue in the background.
+
+These limits mitigate resource exhaustion but require ongoing adversarial testing against the actual component runtime and host process.
+
+## Logging
+
+Normal diagnostics are scoped to nosrc events. Verbose mode enables nosrc DEBUG events. Diagnostics omit API keys, authorization headers, prompts, generated source, request/response bodies, and query strings. However, bounded provider error details and assertion mismatch details may still contain sensitive context. Request paths can contain application-specific identifiers. Review logs before sharing them.
+
+## Known gaps and future capability requirements
+
+- No guest-visible durable state, SQL, KV, or outbound network capability is implemented.
+- Durable application-state persistence and durable generation/control-plane metadata are backlog items. Any storage capability must have a narrow WIT contract, explicit policy gates, bounded operations, candidate isolation, defined consistency/recovery behavior, and component-level tests.
+- The current string-based request ABI does not support arbitrary non-UTF-8 request bodies.
+- Assertions are examples, not proof of correctness or security.
+- The export manifest is not signed and does not contain complete build provenance or assertion execution records.
+- Export files are written individually, not as an atomic directory transaction.
+- The prototype has no remote MCP transport or MCP authentication/authorization.
+- There is no automatic rebuild, file watching, autonomous self-healing, or automatic rollback.
+
+## Requirements for future host capabilities
+
+Before introducing any guest-visible capability:
+
+1. Define the WIT interface and keep it narrow.
+2. Implement an explicit host-side capability gate, disabled by default unless operator policy permits it.
+3. Enforce per-call and aggregate resource bounds.
+4. Define candidate-verification isolation and side-effect behavior.
+5. Add tests for denied access, malformed input, resource exhaustion, and host failure.
+6. Update the synthesizer contract so generated code understands only supported operations.
+7. Update README, ARCHITECTURE, AGENTS, and the relevant detailed documentation in the same PR.
+
+For future outbound HTTP, validate DNS answers and every redirect target, including IPv4 and IPv6 private, loopback, link-local, and metadata ranges. For future database access, use parameterized operations and bound query time, row counts, and result sizes.
