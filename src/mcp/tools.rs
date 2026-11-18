@@ -426,10 +426,19 @@ mod tests {
             .await;
         assert_eq!(activated.structured_content.unwrap()["state"], "active");
 
-        // MCP activation publishes the selected generation to the shared HTTP ingress state.
+        // MCP activation publishes the selected generation to the HTTP request path.
         let ingress_state = server.lifecycle.lock().await.ingress_state();
-        let published = ingress_state.active_generation.load();
-        assert!(published.is_some());
+        let app = crate::ingress::build_ingress_router(ingress_state);
+        let http_response = tower::ServiceExt::oneshot(
+            app,
+            axum::http::Request::builder()
+                .uri("/health")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(http_response.status(), axum::http::StatusCode::OK);
 
         let invoked = server
             .invoke_app(Parameters(InvokeAppParams {

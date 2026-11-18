@@ -21,7 +21,7 @@ nosrc currently provides four operating modes, including an offline path for pre
 - **Artifact export:** run the verification pipeline and export the JavaScript handler, Wasm component, assertion suites, and a provenance manifest for review and version control.
 - **Offline bundle serving:** load an exported bundle, validate its component digest and manifest metadata, rerun both assertion suites, and serve it without LLM credentials or provider access.
 
-These are operating modes of one executable, not separate guest runtimes. MCP is a separate process mode and does not share live state with an independently running HTTP process.
+These are operating modes of one executable, not separate guest runtimes. MCP can run as standalone stdio control plane or with an optional HTTP listener in the same process. In shared mode, MCP activation and rollback immediately change the generation served by HTTP.
 
 ## Runtime and verification
 
@@ -60,7 +60,15 @@ export LLM_API_KEY="your-api-key" # required for source: "spec"
 cargo run -- mcp --spec ./examples/minimal/SPEC.md
 ```
 
-The MCP server uses stdio and does not open an HTTP listener. It exposes five tools: `prepare_app`, `activate_app`, `invoke_app`, `get_app_status`, and `rollback_app`. Rollback is limited to the immediately previous retained generation. Generation state and rollback history are process-local and disappear when the MCP process exits.
+The default MCP mode uses stdio and does not open an HTTP listener. It exposes five tools: `prepare_app`, `activate_app`, `invoke_app`, `get_app_status`, and `rollback_app`. Rollback is limited to the immediately previous retained generation. Generation state and rollback history are process-local and disappear when the MCP process exits.
+
+To expose HTTP from the same process and share the active generation with MCP, add `--http-port` (and optionally `--http-bind`):
+
+```sh
+LLM_API_KEY="your-api-key" cargo run -- mcp --spec ./examples/minimal/SPEC.md --http-port 8080
+```
+
+MCP activation and rollback update the handler used by HTTP ingress. This is one application lifecycle and one generation history, not two runtimes synchronized over a network. The HTTP listener defaults to loopback; use `--http-bind 0.0.0.0` only when external exposure is intended. The stdio transport itself remains local and has no MCP-level authentication.
 
 ## Export verified artifacts
 

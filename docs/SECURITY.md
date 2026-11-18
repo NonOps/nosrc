@@ -26,9 +26,11 @@ The local artifact cache is operator-managed and is not a trust boundary. Cache 
 
 Exported manifest hashes are unsigned metadata. They do not provide authenticity or non-repudiation. Protect cache and export directories with filesystem permissions and use a trusted external mechanism if artifact signing or attestations are required.
 
-### MCP stdio
+### MCP stdio and shared HTTP
 
-The MCP server listens on stdio, not a network socket. It does not implement MCP-level authentication or authorization. Trust is inherited from the local process launcher and ownership of stdin/stdout pipes. Do not expose stdio through an untrusted bridge without adding and reviewing an appropriate security layer.
+The MCP control plane listens on stdio and does not implement MCP-level authentication or authorization. Trust is inherited from the local process launcher and ownership of stdin/stdout pipes. Do not expose stdio through an untrusted bridge without adding and reviewing an appropriate security layer.
+
+The optional `mcp --http-port` mode also opens an HTTP application listener in the same process. MCP and HTTP share one lifecycle and active handler; activating or rolling back through MCP changes HTTP traffic. The HTTP listener defaults to loopback, but an explicit external bind exposes the application to network clients. The MCP transport remains unauthenticated, so access to its stdio pipes is a privileged control-plane capability. Protect the launcher and any bridge that owns those pipes.
 
 ## Enforced limits and behavior
 
