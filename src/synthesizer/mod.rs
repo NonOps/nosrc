@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::engine::http_envelope::RequestEnvelope;
 use crate::error::EngineError;
@@ -243,6 +243,13 @@ Assertions must cover every endpoint's documented success response and at least 
             )));
         }
         let request_bytes = request_writer.bytes;
+        let request_size = request_bytes.len();
+        let request_started = Instant::now();
+        tracing::debug!(
+            model = %self.config.model,
+            request_bytes = request_size,
+            "Sending synthesis request to LLM provider"
+        );
 
         let resp = self
             .client
@@ -254,6 +261,12 @@ Assertions must cover every endpoint's documented success response and at least 
             .await
             .map_err(|e| EngineError::Internal(format!("LLM request failed: {e}")))?;
 
+        tracing::debug!(
+            status = %resp.status(),
+            elapsed_ms = request_started.elapsed().as_millis(),
+            "LLM provider response headers received"
+        );
+
         if !resp.status().is_success() {
             let status = resp.status();
             let error_bytes = read_limited_body(resp, MAX_LLM_ERROR_BYTES).await?;
@@ -264,6 +277,11 @@ Assertions must cover every endpoint's documented success response and at least 
         }
 
         let response_bytes = read_limited_body(resp, MAX_LLM_RESPONSE_BYTES).await?;
+        tracing::debug!(
+            response_bytes = response_bytes.len(),
+            elapsed_ms = request_started.elapsed().as_millis(),
+            "LLM provider response body received"
+        );
         let resp_json: serde_json::Value =
             serde_json::from_slice(&response_bytes).map_err(|e| {
                 EngineError::Internal(format!("Failed to parse LLM response JSON: {e}"))
@@ -277,6 +295,12 @@ Assertions must cover every endpoint's documented success response and at least 
 
         let output: SynthesisOutput = serde_json::from_str(content_str)
             .map_err(|e| EngineError::Internal(format!("Malformed synthesis JSON payload: {e}")))?;
+        tracing::debug!(
+            code_format = %output.code_format,
+            handler_bytes = output.handler_code.len(),
+            assertions = output.assertions.len(),
+            "Structured synthesis output parsed"
+        );
 
         Ok(output)
     }

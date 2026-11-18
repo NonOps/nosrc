@@ -7,6 +7,7 @@ pub mod verifier;
 
 use clap::Parser;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use engine::http_envelope::RequestEnvelope;
 use engine::quickjs::{QuickJsEngine, DEFAULT_COMPONENT_FUEL};
@@ -26,6 +27,10 @@ pub struct Cli {
 
     #[arg(short, long, default_value = "8080")]
     pub port: u16,
+
+    /// Enable detailed generation-pipeline and HTTP request diagnostics.
+    #[arg(short, long, action = clap::ArgAction::SetTrue)]
+    pub verbose: bool,
 }
 
 fn validate_runtime_spec(spec: &ServiceSpec) -> anyhow::Result<()> {
@@ -61,9 +66,23 @@ async fn prepare_generation(
     spec: &ServiceSpec,
     synthesizer: &Synthesizer,
 ) -> anyhow::Result<(ActiveGeneration, usize, usize, Option<String>)> {
+    let validation_started = Instant::now();
+    tracing::debug!("Validating runtime capabilities and trusted SPEC verification suite");
     validate_runtime_spec(spec)?;
+    tracing::debug!(
+        elapsed_ms = validation_started.elapsed().as_millis(),
+        "SPEC validation completed"
+    );
 
+    let synthesis_started = Instant::now();
     let output = synthesizer.synthesize(spec, &[]).await?;
+    tracing::debug!(
+        elapsed_ms = synthesis_started.elapsed().as_millis(),
+        code_format = %output.code_format,
+        handler_bytes = output.handler_code.len(),
+        generated_assertions = output.assertions.len(),
+        "Handler synthesis completed"
+    );
     if output.code_format != "javascript" {
         anyhow::bail!(
             "Synthesizer returned unsupported code format '{}'; expected 'javascript'",
@@ -74,8 +93,15 @@ async fn prepare_generation(
         anyhow::bail!("Synthesizer returned an empty JavaScript handler");
     }
 
+    let compilation_started = Instant::now();
+    tracing::debug!("Initializing QuickJS/Wasm engine and compiling generated JavaScript");
     let engine = QuickJsEngine::new()?;
     let compiled = engine.compile_handler(&output.handler_code).await?;
+    tracing::debug!(
+        elapsed_ms = compilation_started.elapsed().as_millis(),
+        module_hash = %compiled.module_hash,
+        "Wasm component compilation completed"
+    );
 
     // SPEC-authored cases are independent of the model that generated the handler.
     // Separate candidate instances prevent the supplemental suite from mutating trusted-test state.
@@ -105,16 +131,57 @@ async fn prepare_generation(
         })
         .collect::<anyhow::Result<_>>()?;
 
+    let trusted_started = Instant::now();
+    tracing::debug!(
+        assertions = trusted_assertions.len(),
+        "Running SPEC-authored trusted verification suite"
+    );
     let mut trusted_candidate = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
     let trusted_results =
-        ShadowVerifier::new().verify_handler(&mut trusted_candidate, &trusted_assertions)?;
+        match ShadowVerifier::new().verify_handler(&mut trusted_candidate, &trusted_assertions) {
+            Ok(results) => results,
+            Err(error) => {
+                tracing::error!(
+                    suite = "trusted",
+                    "Contract verification failed; detailed error returned to caller"
+                );
+                return Err(error.into());
+            }
+        };
+    tracing::debug!(
+        passed = trusted_results.len(),
+        total = trusted_assertions.len(),
+        elapsed_ms = trusted_started.elapsed().as_millis(),
+        "Trusted verification suite passed"
+    );
     drop(trusted_candidate);
 
+    let generated_started = Instant::now();
+    tracing::debug!(
+        assertions = output.assertions.len(),
+        "Running model-generated supplemental verification suite"
+    );
     let mut generated_candidate = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
     let generated_results =
-        ShadowVerifier::new().verify_handler(&mut generated_candidate, &output.assertions)?;
+        match ShadowVerifier::new().verify_handler(&mut generated_candidate, &output.assertions) {
+            Ok(results) => results,
+            Err(error) => {
+                tracing::error!(
+                    suite = "generated",
+                    "Contract verification failed; detailed error returned to caller"
+                );
+                return Err(error.into());
+            }
+        };
+    tracing::debug!(
+        passed = generated_results.len(),
+        total = output.assertions.len(),
+        elapsed_ms = generated_started.elapsed().as_millis(),
+        "Generated verification suite passed"
+    );
     drop(generated_candidate);
 
+    tracing::debug!("Creating a fresh production handler instance after verification");
     let active_handler = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
     let generation = ActiveGeneration {
         generation_id: 1,
@@ -132,8 +199,14 @@ async fn prepare_generation(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
     let cli = Cli::parse();
+    let default_filter = if cli.verbose { "debug" } else { "info" };
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .init();
 
     let spec_text = tokio::fs::read_to_string(&cli.spec)
         .await
@@ -152,14 +225,13 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let synthesizer = Synthesizer::new(LlmConfig::from_env()?);
-    let (generation, trusted_assertions, generated_assertions, rationale) =
+    let (generation, trusted_assertions, generated_assertions, _rationale) =
         prepare_generation(&spec, &synthesizer).await?;
 
     tracing::info!(
         trusted_assertions,
         generated_assertions,
         module_hash = %generation.module_hash,
-        rationale = rationale.as_deref().unwrap_or(""),
         "Candidate compiled and passed contract verification"
     );
 
@@ -182,6 +254,18 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use axum::extract::State;
+
+    #[test]
+    fn verbose_flag_enables_debug_diagnostics() {
+        let cli = Cli::try_parse_from(["nosrc", "--verbose"]).unwrap();
+        assert!(cli.verbose);
+    }
+
+    #[test]
+    fn debug_diagnostics_are_disabled_by_default() {
+        let cli = Cli::try_parse_from(["nosrc"]).unwrap();
+        assert!(!cli.verbose);
+    }
     use axum::http::{Request, StatusCode};
     use axum::routing::post;
     use axum::{Json, Router};

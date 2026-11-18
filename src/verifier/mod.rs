@@ -59,6 +59,16 @@ impl ShadowVerifier {
             }
         }
 
+        for result in &results {
+            tracing::debug!(
+                assertion = %result.name,
+                passed = result.passed,
+                expected_status = result.expected_status,
+                actual_status = ?result.actual_status,
+                "Contract assertion evaluated"
+            );
+        }
+
         let failed: Vec<String> = results
             .iter()
             .filter(|result| !result.passed)
