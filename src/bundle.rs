@@ -141,15 +141,21 @@ fn read_bundle_file(directory: &Path, name: &str, max_bytes: u64) -> anyhow::Res
         options.custom_flags(libc::O_NOFOLLOW);
     }
 
-    let file = options
-        .open(&path)
-        .with_context(|| format!("Failed to open bundle artifact {} without following symlinks", path.display()))?;
+    let file = options.open(&path).with_context(|| {
+        format!(
+            "Failed to open bundle artifact {} without following symlinks",
+            path.display()
+        )
+    })?;
 
     // Validate the opened object, not metadata obtained from a path lookup
     // that could refer to a different file by the time it is opened.
-    let metadata = file
-        .metadata()
-        .with_context(|| format!("Failed to inspect opened bundle artifact {}", path.display()))?;
+    let metadata = file.metadata().with_context(|| {
+        format!(
+            "Failed to inspect opened bundle artifact {}",
+            path.display()
+        )
+    })?;
     if !metadata.file_type().is_file() {
         bail!(
             "Bundle artifact {} must be a regular file, not a symlink",
