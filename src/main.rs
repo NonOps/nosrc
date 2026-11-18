@@ -197,12 +197,19 @@ async fn prepare_generation(
     ))
 }
 
+fn default_log_filter(verbose: bool) -> &'static str {
+    if verbose {
+        "warn,nosrc=debug"
+    } else {
+        "warn,nosrc=info"
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let default_filter = if cli.verbose { "debug" } else { "info" };
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_log_filter(cli.verbose)));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
@@ -265,6 +272,14 @@ mod tests {
     fn debug_diagnostics_are_disabled_by_default() {
         let cli = Cli::try_parse_from(["nosrc"]).unwrap();
         assert!(!cli.verbose);
+    }
+
+    #[test]
+    fn default_log_filters_scope_application_verbosity() {
+        assert_eq!(default_log_filter(false), "warn,nosrc=info");
+        assert_eq!(default_log_filter(true), "warn,nosrc=debug");
+        tracing_subscriber::EnvFilter::try_new(default_log_filter(false)).unwrap();
+        tracing_subscriber::EnvFilter::try_new(default_log_filter(true)).unwrap();
     }
     use axum::http::{Request, StatusCode};
     use axum::routing::post;
