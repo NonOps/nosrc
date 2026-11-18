@@ -72,6 +72,29 @@ Both required suites must pass for this export path. Generated assertions supple
 
 A successful export means the artifact passed these configured checks in the current build/runtime environment. It is not a cryptographic attestation, formal proof, security certification, or guarantee that the handler is correct for all inputs.
 
+## Offline bundle serving
+
+Run a previously exported bundle without a SPEC file or model-provider credentials:
+
+```sh
+cargo run -- serve --bundle ./dist
+```
+
+Before opening the HTTP listener, the loader:
+
+1. Requires the bundle directory and all four named artifacts to be real directories/regular files (not symlinks), and applies file-size limits.
+2. Parses the manifest and assertion document, validates SHA-256 field syntax, and checks assertion counts against the manifest.
+3. Recomputes the component SHA-256 and requires it to match both `component_sha256` and `module_hash`.
+4. Compiles the component with the current Wasmtime engine.
+5. Runs the trusted and generated assertion suites on separate disposable component instances.
+6. Creates a fresh serving instance only after every check succeeds.
+
+The loader does not execute `handler.js`; the prebuilt `component.wasm` is the serving artifact. `handler.js` is required as an audit/review artifact and is checked for presence, regular-file type, size, and non-empty content, but the current manifest has no handler-source digest.
+
+The original SPEC text is not included in the export bundle. Consequently, `spec_sha256` is checked for valid SHA-256 formatting but cannot be recomputed during offline startup. The trusted assertions are the exported assertion inputs, not a separately authenticated copy of the original SPEC policy.
+
+The manifest and assertions are unsigned. Recomputing hashes and rerunning assertions detects accidental corruption and inconsistencies, but does not authenticate provenance or stop an attacker who can replace the component, assertions, and manifest together. Keep bundle directories operator-controlled and use a trusted external signing/attestation mechanism if authenticity is required. Offline serving still opens the configured HTTP listener; it only removes the LLM/provider dependency from startup.
+
 ## Cache and reproducibility
 
 The artifact cache is separate from the export directory. It is content-addressed using inputs and toolchain settings that affect generated artifacts. A cache hit does not skip component compilation or verification.
