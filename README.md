@@ -57,13 +57,13 @@ Optional request data uses `- Header: name=value` and `- Body: ...`. Verificatio
 
 ## Diagnostics
 
-Normal startup uses concise `INFO` logs. Pass `--verbose` (or `-v`) to see the generation pipeline, provider request timing and sizes, individual contract assertion results, component compilation timing, and HTTP request metadata:
+Normal startup shows nosrc `INFO` events and warnings/errors from dependencies. Pass `--verbose` (or `-v`) to add nosrc `DEBUG` diagnostics for the generation pipeline, provider request timing and sizes, individual contract assertion results, component compilation timing, and HTTP request metadata. Dependency logs remain at `WARN` and above, so enabling verbose mode does not flood the terminal with internal Wasmtime/componentizer details:
 
 ```sh
 cargo run -- --verbose --spec ./examples/minimal/SPEC.md --port 8080
 ```
 
-`RUST_LOG` can override the default filter, for example `RUST_LOG=trace`. Verbose diagnostic events omit API keys, authorization headers, prompts, generated source, request/response bodies, and query strings. Failure messages may still include bounded provider error details or assertion-mismatch details; review stderr before sharing logs. Request paths can also contain application-specific identifiers.
+`RUST_LOG` overrides this scoped default. For example, `RUST_LOG=trace` intentionally enables very noisy diagnostics across dependencies as well. Verbose diagnostic events omit API keys, authorization headers, prompts, generated source, request/response bodies, and query strings. Failure messages may still include bounded provider error details or assertion-mismatch details; review stderr before sharing logs. Request paths can also contain application-specific identifiers.
 
 ## Build and test
 
