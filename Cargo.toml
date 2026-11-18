@@ -50,3 +50,6 @@ lto = "thin"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[dev-dependencies]
+rmcp = { version = "3.8", features = ["client", "transport-async-rw"] }

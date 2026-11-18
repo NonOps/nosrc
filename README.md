@@ -36,6 +36,8 @@ Do not use this prototype to serve production traffic or execute untrusted gener
 
 nosrc also exposes a local Model Context Protocol server over stdio. This is a separate process mode from the HTTP listener; it does not open an HTTP port:
 
+The stdio transport does not implement MCP authentication or authorization. Its trust boundary is the local process that launches nosrc and owns the stdin/stdout pipes: only launch it from a trusted MCP host and do not expose or proxy those pipes to untrusted processes. Remote MCP transport and protocol-level access control are out of scope.
+
 ```sh
 export LLM_API_KEY="your-api-key" # required only when using source: "spec"
 cargo run -- mcp --spec ./examples/minimal/SPEC.md
