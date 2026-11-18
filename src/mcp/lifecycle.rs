@@ -58,6 +58,10 @@ pub enum SourceType {
 }
 
 #[derive(Clone)]
+fn has_unambiguous_export_provenance(draft_spec: bool, trusted_assertions: &[ContractAssertion]) -> bool {
+    !(draft_spec && !trusted_assertions.is_empty())
+}
+
 pub struct GenerationExport {
     pub spec: ServiceSpec,
     pub spec_text: String,
@@ -500,7 +504,7 @@ impl PreparationContext {
         // operator-trusted assertions to the draft. Keep the generation usable,
         // but do not make it exportable until the bundle can preserve both sources.
         if let Some(spec_text) = spec_text.filter(|_| {
-            !(self.draft_spec && !self.policy.spec_assertions.is_empty())
+            has_unambiguous_export_provenance(self.draft_spec, &self.policy.spec_assertions)
         }) {
             prepared.export_data = Some(GenerationExport {
                 spec,
@@ -1012,6 +1016,22 @@ mod tests {
             )))
         })??;
         Ok(lifecycle.insert_prepared(prepared))
+    }
+
+    #[test]
+    fn draft_export_is_blocked_when_operator_assertions_have_separate_provenance() {
+        let trusted = vec![ContractAssertion {
+            name: "operator assertion".into(),
+            request: request("/health"),
+            expected_status: 200,
+            body_contains: None,
+            header_matches: None,
+        }];
+
+        assert!(has_unambiguous_export_provenance(false, &trusted));
+        assert!(has_unambiguous_export_provenance(false, &[]));
+        assert!(has_unambiguous_export_provenance(true, &[]));
+        assert!(!has_unambiguous_export_provenance(true, &trusted));
     }
 
     #[test]
