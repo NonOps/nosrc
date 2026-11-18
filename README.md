@@ -16,6 +16,8 @@
 
 The current implementation is a single-process prototype, not a production-ready application runtime.
 
+![nosrc spec to live endpoint demo](./assets/nosrc-demo.gif)
+
 ## What is implemented
 
 nosrc currently provides four operating modes, including an offline path for previously exported artifacts:
