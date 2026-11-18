@@ -238,13 +238,13 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         write_valid_bundle(directory.path()).await;
         let path = directory.path().join("assertions.json");
-        let mut assertions: ExportAssertions =
+        let mut manifest: ExportManifest =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assertions.generated_assertions.clear();
-        fs::write(&path, serde_json::to_vec(&assertions).unwrap()).unwrap();
+        manifest.generated_assertions_count += 1;
+        fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
 
-        let error = load_and_verify(directory.path()).unwrap_err();
-        assert!(error.to_string().contains("must not be empty"));
+        let error = load_and_verify(directory.path()).err().unwrap();
+        assert!(error.to_string().contains("count does not match"));
     }
 
     #[tokio::test]
@@ -271,7 +271,7 @@ mod tests {
             fs::remove_file(directory.path().join("handler.js")).unwrap();
             std::os::unix::fs::symlink(outside.path(), directory.path().join("handler.js")).unwrap();
 
-            let error = load_and_verify(directory.path()).unwrap_err();
+            let error = load_and_verify(directory.path()).err().unwrap();
             assert!(error.to_string().contains("regular file"));
         }
     }
