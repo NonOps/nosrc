@@ -527,7 +527,9 @@ mod tests {
         // A second startup must load the cached component, rerun both suites,
         // and avoid a second request to the model provider.
         let (cached_generation, cached_trusted, cached_generated, cached_rationale) =
-            prepare_generation(&spec, &synthesizer, Some(&cache)).await.unwrap();
+            prepare_generation(&spec, &synthesizer, Some(&cache))
+                .await
+                .unwrap();
         assert_eq!(cached_trusted, trusted_count);
         assert_eq!(cached_generated, generated_count);
         assert_eq!(cached_rationale, rationale);
