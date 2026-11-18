@@ -47,11 +47,17 @@ pub fn export_artifacts(
     std::fs::create_dir_all(parent)
         .with_context(|| format!("Failed to create export parent directory at {}", parent.display()))?;
 
-    if std::fs::symlink_metadata(out_dir).is_ok() {
-        anyhow::bail!(
+    match std::fs::symlink_metadata(out_dir) {
+        Ok(_) => anyhow::bail!(
             "Export destination {} already exists; remove or move it before exporting",
             out_dir.display()
-        );
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("Failed to inspect export destination {}", out_dir.display())
+            });
+        }
     }
 
     let staging = Builder::new()
@@ -134,7 +140,7 @@ mod tests {
                 assertions: vec![],
                 rationale: Some("test export".to_string()),
             },
-            b"\\0asm\\x01\\0\\0\\0".to_vec(),
+            b"component fixture".to_vec(),
         )
     }
 
