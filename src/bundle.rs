@@ -102,18 +102,31 @@ pub fn load_and_verify(bundle_dir: &Path) -> anyhow::Result<(ActiveGeneration, B
         bail!("Compiled component hash does not match manifest module_hash");
     }
 
-    // Keep the two suites isolated, matching source-driven startup semantics.
-    let mut trusted_candidate = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
-    let trusted_results = ShadowVerifier::new()
-        .verify_handler(&mut trusted_candidate, &assertions.trusted_assertions)
-        .context("Bundle trusted assertion verification failed")?;
-    drop(trusted_candidate);
+    // Keep non-empty suites isolated, matching source-driven startup semantics.
+    // Empty suites are valid only where the manifest policy permits them: operator
+    // direct-JS exports have no generated suite, while draft exports have no trusted
+    // suite. Policy validation above rejects empty required suites.
+    let trusted_results = if assertions.trusted_assertions.is_empty() {
+        Vec::new()
+    } else {
+        let mut trusted_candidate = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
+        let results = ShadowVerifier::new()
+            .verify_handler(&mut trusted_candidate, &assertions.trusted_assertions)
+            .context("Bundle trusted assertion verification failed")?;
+        drop(trusted_candidate);
+        results
+    };
 
-    let mut generated_candidate = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
-    let generated_results = ShadowVerifier::new()
-        .verify_handler(&mut generated_candidate, &assertions.generated_assertions)
-        .context("Bundle generated assertion verification failed")?;
-    drop(generated_candidate);
+    let generated_results = if assertions.generated_assertions.is_empty() {
+        Vec::new()
+    } else {
+        let mut generated_candidate = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
+        let results = ShadowVerifier::new()
+            .verify_handler(&mut generated_candidate, &assertions.generated_assertions)
+            .context("Bundle generated assertion verification failed")?;
+        drop(generated_candidate);
+        results
+    };
 
     // Only construct the serving instance after all integrity and verification checks pass.
     let handler = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
