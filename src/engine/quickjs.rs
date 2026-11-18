@@ -143,7 +143,7 @@ fn instantiate_component(
 
     let mut store = Store::new(engine, ComponentStoreState { limits });
     store
-        .set_fuel(fuel_budget)
+        .set_fuel(DEFAULT_COMPONENT_FUEL)
         .map_err(|error| EngineError::Internal(format!("Failed to set component fuel: {error}")))?;
     store.limiter(|state| &mut state.limits);
     store.set_max_component_handles(1_024);
@@ -159,6 +159,10 @@ fn instantiate_component(
                 "Handler component must export handle(request: string) -> string: {error}"
             ))
         })?;
+
+    store
+        .set_fuel(fuel_budget)
+        .map_err(|error| EngineError::Internal(format!("Failed to set component fuel: {error}")))?;
 
     Ok((store, handle))
 }
