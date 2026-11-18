@@ -237,6 +237,18 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use axum::extract::State;
+
+    #[test]
+    fn verbose_flag_enables_debug_diagnostics() {
+        let cli = Cli::try_parse_from(["nosrc", "--verbose"]).unwrap();
+        assert!(cli.verbose);
+    }
+
+    #[test]
+    fn debug_diagnostics_are_disabled_by_default() {
+        let cli = Cli::try_parse_from(["nosrc"]).unwrap();
+        assert!(!cli.verbose);
+    }
     use axum::http::{Request, StatusCode};
     use axum::routing::post;
     use axum::{Json, Router};
