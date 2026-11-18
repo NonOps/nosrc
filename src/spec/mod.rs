@@ -605,6 +605,12 @@ A resilient spec-driven URL shortener.
             "- Response header: content-type=application/json\n- Response header: content-type=text/plain",
         );
         assert!(ServiceSpec::parse(&duplicate).is_err());
+
+        let duplicate_request = markdown.replace(
+            "- Header: accept=application/json",
+            "- Header: accept=application/json\n- Header: Accept=text/plain",
+        );
+        assert!(ServiceSpec::parse(&duplicate_request).is_err());
     }
 
     #[test]
