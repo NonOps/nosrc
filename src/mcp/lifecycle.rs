@@ -398,9 +398,7 @@ impl PreparationContext {
             .ok_or_else(|| EngineError::Internal("No SPEC is available for synthesis".into()))?
             .clone();
 
-        let spec_text = self.spec_text.clone().ok_or_else(|| {
-            EngineError::Internal("Original SPEC text is unavailable for artifact export".into())
-        })?;
+        let spec_text = self.spec_text.clone();
         let cache_key = synthesizer.artifact_cache_key(&spec);
         let cached = match self.cache.clone() {
             Some(cache) => {
@@ -495,19 +493,21 @@ impl PreparationContext {
         })??;
 
         let mut prepared = prepared;
-        prepared.export_data = Some(GenerationExport {
-            spec,
-            spec_text,
-            module_hash: prepared.module_hash.clone(),
-            output: output.clone(),
-            component_bytes: component_bytes.clone(),
-            trusted_assertions: self.policy.spec_assertions.clone(),
-            policy_mode: if self.policy.spec_assertions.is_empty() {
-                "draft".to_string()
-            } else {
-                "operator".to_string()
-            },
-        });
+        if let Some(spec_text) = spec_text {
+            prepared.export_data = Some(GenerationExport {
+                spec,
+                spec_text,
+                module_hash: prepared.module_hash.clone(),
+                output: output.clone(),
+                component_bytes: component_bytes.clone(),
+                trusted_assertions: self.policy.spec_assertions.clone(),
+                policy_mode: if self.policy.spec_assertions.is_empty() {
+                    "draft".to_string()
+                } else {
+                    "operator".to_string()
+                },
+            });
+        }
 
         if !cache_hit {
             if let Some(cache) = self.cache.clone() {
