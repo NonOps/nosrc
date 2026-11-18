@@ -60,6 +60,8 @@ The Axum router handles health and status endpoints itself. Other requests are c
 
 The `nosrc mcp --spec ./SPEC.md` subcommand exposes a local stdio MCP server as a control interface. It is a separate process mode and does not start an HTTP listener. The normal CLI HTTP mode remains available independently. MCP does not add guest capabilities or replace the QuickJS/Wasmtime runtime.
 
+The stdio transport does not implement MCP authentication or authorization. Its trust boundary is the local process that launches nosrc and owns the stdin/stdout pipes; the launcher must be trusted, and those pipes must not be exposed or proxied to untrusted processes. There is no remote MCP transport in this milestone.
+
 The MCP tools are:
 
 - `prepare_app`: prepares a candidate from either `source: "spec"` or `source: "direct_js"`; it never activates implicitly.
