@@ -1017,9 +1017,7 @@ mod tests {
         let mock_provider = Router::new()
             .route("/v1/chat/completions", post(mock_draft_synthesis))
             .with_state(request_count.clone());
-        let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let provider_address = provider_listener.local_addr().unwrap();
         let (provider_shutdown_tx, provider_shutdown_rx) = tokio::sync::oneshot::channel();
         let provider_task = tokio::spawn(serve_http(
@@ -1038,32 +1036,27 @@ mod tests {
 
         // Start the same HTTP ingress state that MCP activation will publish into.
         let ingress_state = server.lifecycle.lock().await.ingress_state();
-        let shared_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let shared_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let shared_address = shared_listener.local_addr().unwrap();
         let shared_app = crate::ingress::build_ingress_router(ingress_state);
         let (shared_shutdown_tx, shared_shutdown_rx) = tokio::sync::oneshot::channel();
-        let shared_task = tokio::spawn(serve_http(
-            shared_listener,
-            shared_app,
-            shared_shutdown_rx,
-        ));
+        let shared_task = tokio::spawn(serve_http(shared_listener, shared_app, shared_shutdown_rx));
 
         let unavailable = reqwest::get(format!("http://{shared_address}/hello"))
             .await
             .unwrap();
-        assert_eq!(unavailable.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            unavailable.status(),
+            reqwest::StatusCode::SERVICE_UNAVAILABLE
+        );
 
         let draft_spec = "# Service: mcp-first-e2e\n\n## Capabilities\n- state: volatile\n- egress: []\n\n## Endpoints\n### `GET /hello`\n- Response `200`: hello from nosrc\n\n## Verification\n### `GET /hello`\n- Response `200`\n- Body contains: `hello from nosrc`\n";
-        let synthesizer = crate::synthesizer::Synthesizer::new(
-            crate::synthesizer::LlmConfig {
-                api_key: "test-only-key".into(),
-                base_url: format!("http://{provider_address}/v1"),
-                model: "nosrc-mcp-first-e2e".into(),
-                temperature: 0.0,
-            },
-        );
+        let synthesizer = crate::synthesizer::Synthesizer::new(crate::synthesizer::LlmConfig {
+            api_key: "test-only-key".into(),
+            base_url: format!("http://{provider_address}/v1"),
+            model: "nosrc-mcp-first-e2e".into(),
+            temperature: 0.0,
+        });
         // Exercise the same validation, preparation, and publication path as the MCP tool,
         // injecting only the local mock provider instead of reading process credentials.
         let prepared = server
@@ -1094,10 +1087,7 @@ mod tests {
                 generation_id: generation_id.clone(),
             }))
             .await;
-        assert_eq!(
-            activated.structured_content.unwrap()["state"],
-            "active"
-        );
+        assert_eq!(activated.structured_content.unwrap()["state"], "active");
 
         // Activation must immediately change the already-running shared listener.
         let live_response = reqwest::get(format!("http://{shared_address}/hello"))
@@ -1129,31 +1119,23 @@ mod tests {
         assert!(bundle_path.join("component.wasm").is_file());
         assert!(bundle_path.join("assertions.json").is_file());
         assert!(bundle_path.join("manifest.json").is_file());
-        let manifest: Value = serde_json::from_slice(
-            &std::fs::read(bundle_path.join("manifest.json")).unwrap(),
-        )
-        .unwrap();
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(bundle_path.join("manifest.json")).unwrap())
+                .unwrap();
         assert_eq!(manifest["policy_mode"], "draft");
 
         // A fresh offline runtime validates the exported component and both suites.
-        let (offline_generation, summary) =
-            crate::bundle::load_and_verify(&bundle_path).unwrap();
+        let (offline_generation, summary) = crate::bundle::load_and_verify(&bundle_path).unwrap();
         assert_eq!(summary.service_name, "mcp-first-e2e");
         assert_eq!(summary.trusted_assertions, 0);
         assert_eq!(summary.generated_assertions, 2);
         let offline_state = Arc::new(crate::ingress::IngressState::new());
         offline_state.hot_swap(offline_generation);
-        let offline_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let offline_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let offline_address = offline_listener.local_addr().unwrap();
         let offline_app = crate::ingress::build_ingress_router(offline_state);
         let (offline_shutdown_tx, offline_shutdown_rx) = tokio::sync::oneshot::channel();
-        let offline_task = tokio::spawn(serve_http(
-            offline_listener,
-            offline_app,
-            offline_shutdown_rx,
-        ));
+        let offline_task = tokio::spawn(serve_http(offline_listener, offline_app, offline_shutdown_rx));
         let offline_response = reqwest::get(format!("http://{offline_address}/hello"))
             .await
             .unwrap();
@@ -1175,5 +1157,4 @@ mod tests {
         shared_task.await.unwrap();
         provider_task.await.unwrap();
     }
-
 }
