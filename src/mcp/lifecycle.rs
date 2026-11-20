@@ -387,7 +387,7 @@ impl PreparationContext {
         self.prepare_from_draft_spec_with_synthesizer(
             spec_text,
             supplemental_assertions,
-            &synthesizer,
+            synthesizer,
         )
         .await
     }
