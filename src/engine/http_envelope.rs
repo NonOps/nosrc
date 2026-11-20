@@ -137,10 +137,12 @@ impl ResponseEnvelope {
             }
         }
 
-        // 204 and 304 responses never carry a message body. In particular, do not
+        // 204, 205, and 304 responses never carry a message body. In particular, do not
         // let guest-supplied content sneak through on a bodyless status.
-        let body_content = if status == StatusCode::NO_CONTENT || status == StatusCode::NOT_MODIFIED
-        {
+        let body_content = if matches!(
+            status,
+            StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT | StatusCode::NOT_MODIFIED
+        ) {
             String::new()
         } else {
             self.body.unwrap_or_default()
@@ -339,15 +341,15 @@ mod tests {
                 "status {status} should be rejected"
             );
         }
-        for status in [200, 204, 304, 400, 599] {
+        for status in [200, 204, 205, 304, 400, 599] {
             let response = ResponseEnvelope::new(status, None).into_axum_response();
             assert_eq!(response.status().as_u16(), status);
         }
     }
 
     #[tokio::test]
-    async fn no_content_and_not_modified_responses_have_no_body() {
-        for status in [204, 304] {
+    async fn no_content_reset_content_and_not_modified_responses_have_no_body() {
+        for status in [204, 205, 304] {
             let response =
                 ResponseEnvelope::new(status, Some("must not be sent".into())).into_axum_response();
             let body = axum::body::to_bytes(response.into_body(), 1024)
