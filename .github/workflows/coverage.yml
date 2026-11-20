@@ -50,7 +50,7 @@ jobs:
             echo "## Test coverage"
             echo
             echo '```'
-            cargo llvm-cov report --summary-only
+            cargo llvm-cov report --summary-only | tee /dev/stderr
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
