@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -52,7 +52,7 @@ struct ActivateAppParams {
 struct ExportAppParams {
     /// Opaque generation ID returned by prepare_app.
     generation_id: String,
-    /// New or absent destination directory for the complete offline bundle.
+    /// Single directory name for the bundle, created under the operator-configured export root.
     out_dir: PathBuf,
 }
 
@@ -73,6 +73,18 @@ struct InvokeAppParams {
 #[derive(Clone)]
 pub struct NosrcMcpServer {
     pub lifecycle: Arc<Mutex<AppLifecycle>>,
+    pub export_root: PathBuf,
+}
+
+fn resolve_export_destination(root: &Path, name: &Path) -> anyhow::Result<PathBuf> {
+    let mut components = name.components();
+    let valid_name = matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
+    if !valid_name {
+        anyhow::bail!("out_dir must be a single directory name beneath the configured export root");
+    }
+    std::fs::create_dir_all(root)?;
+    let canonical_root = std::fs::canonicalize(root)?;
+    Ok(canonical_root.join(name))
 }
 
 async fn prepare_and_publish<F>(
@@ -260,7 +272,7 @@ impl NosrcMcpServer {
     }
 
     #[tool(
-        description = "Export a prepared generation using the same atomic artifact pipeline as the CLI. The resulting bundle can be served offline with 'nosrc serve --bundle' without provider credentials."
+        description = "Export a prepared generation beneath the operator-configured export root. out_dir must be one directory name, not an absolute path or path containing parent or subdirectory components. The resulting bundle can be served offline with 'nosrc serve --bundle' without provider credentials."
     )]
     async fn export_app(&self, Parameters(params): Parameters<ExportAppParams>) -> CallToolResult {
         let export = {
@@ -277,7 +289,13 @@ impl NosrcMcpServer {
                 }
             }
         };
-        let out_dir = params.out_dir;
+        let out_dir = match resolve_export_destination(&self.export_root, &params.out_dir) {
+            Ok(path) => path,
+            Err(error) => return CallToolResult::structured_error(json!({
+                "error": "invalid_export_destination",
+                "message": error.to_string()
+            })),
+        };
         let policy_mode = export.policy_mode.clone();
         let result = tokio::task::spawn_blocking(move || {
             crate::export::export_artifacts_with_policy(
@@ -501,6 +519,7 @@ mod tests {
         ).unwrap();
         let lifecycle = AppLifecycle::new(&spec, None).unwrap();
         let server = NosrcMcpServer {
+            export_root: std::env::temp_dir().join("nosrc-mcp-test-exports"),
             lifecycle: Arc::new(Mutex::new(lifecycle)),
         };
 
@@ -593,6 +612,7 @@ mod tests {
         let lifecycle =
             AppLifecycle::new_with_spec_text(&spec, spec_text.to_string(), None).unwrap();
         let server = NosrcMcpServer {
+            export_root: std::env::temp_dir().join("nosrc-mcp-test-exports"),
             lifecycle: Arc::new(Mutex::new(lifecycle)),
         };
         let prepared = server
@@ -635,6 +655,7 @@ mod tests {
 
         let lifecycle = AppLifecycle::new_mcp_first(None).unwrap();
         let server = NosrcMcpServer {
+            export_root: temp.path().join("exports"),
             lifecycle: Arc::new(Mutex::new(lifecycle)),
         };
         let prepared = server
@@ -1161,4 +1182,14 @@ mod tests {
         shared_task.await.unwrap();
         provider_task.await.unwrap();
     }
+    #[test]
+    fn export_destination_rejects_paths_outside_the_configured_root() {
+        let temp = tempfile::tempdir().unwrap();
+        for invalid in [Path::new("../outside"), Path::new("nested/bundle"), Path::new("/tmp/outside"), Path::new("."), Path::new("")] {
+            assert!(resolve_export_destination(temp.path(), invalid).is_err(), "accepted {invalid:?}");
+        }
+        let resolved = resolve_export_destination(temp.path(), Path::new("bundle")).unwrap();
+        assert_eq!(resolved, temp.path().canonicalize().unwrap().join("bundle"));
+    }
+
 }
