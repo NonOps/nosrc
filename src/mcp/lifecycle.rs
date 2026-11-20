@@ -1139,7 +1139,9 @@ mod tests {
         // Invalid component bytes ensure the size check runs before the
         // compile-failure fallback attempts synthesis (which has no API key).
         let cache_key = synthesizer.artifact_cache_key(&spec);
-        cache.store(&cache_key, &output, b"not a valid component").unwrap();
+        cache
+            .store(&cache_key, &output, b"not a valid component")
+            .unwrap();
 
         let context = PreparationContext {
             engine,
