@@ -272,7 +272,7 @@ pub(crate) async fn prepare_spec_generation(
     spec: ServiceSpec,
     spec_text: String,
     cache: Option<ArtifactCache>,
-    synthesizer: Synthesizer,
+    synthesizer: &Synthesizer,
 ) -> Result<PreparedGeneration, PreparationError> {
     let policy = AcceptancePolicy::from_spec(&spec).map_err(EngineError::Internal)?;
     policy.validate().map_err(EngineError::Internal)?;
@@ -373,7 +373,7 @@ impl PreparationContext {
             )));
         }
         let synthesizer = Synthesizer::new(LlmConfig::from_env()?);
-        self.prepare_from_spec_with_synthesizer(supplemental_assertions, synthesizer)
+        self.prepare_from_spec_with_synthesizer(supplemental_assertions, &synthesizer)
             .await
     }
 
@@ -387,7 +387,7 @@ impl PreparationContext {
         self.prepare_from_draft_spec_with_synthesizer(
             spec_text,
             supplemental_assertions,
-            synthesizer,
+            &synthesizer,
         )
         .await
     }
@@ -429,14 +429,14 @@ impl PreparationContext {
         self.spec = Some(draft);
         self.spec_text = Some(spec_text);
         self.draft_spec = true;
-        self.prepare_from_spec_with_synthesizer(supplemental_assertions, synthesizer)
+        self.prepare_from_spec_with_synthesizer(supplemental_assertions, &synthesizer)
             .await
     }
 
     async fn prepare_from_spec_with_synthesizer(
         self,
         supplemental_assertions: Vec<ContractAssertion>,
-        synthesizer: Synthesizer,
+        synthesizer: &Synthesizer,
     ) -> Result<PreparedGeneration, PreparationError> {
         validate_assertions(&supplemental_assertions, "supplemental")?;
         self.policy.validate().map_err(EngineError::Internal)?;

@@ -171,7 +171,7 @@ async fn main() -> anyhow::Result<()> {
                 spec,
                 spec_text,
                 cache,
-                synthesizer,
+                &synthesizer,
             )
             .await
             .map_err(|error| anyhow::anyhow!("Generation preparation failed: {error:?}"))?;
@@ -309,7 +309,7 @@ async fn main() -> anyhow::Result<()> {
                 spec,
                 spec_text,
                 cache,
-                synthesizer,
+                &synthesizer,
             )
             .await
             .map_err(|error| anyhow::anyhow!("Generation preparation failed: {error:?}"))?;
@@ -728,7 +728,7 @@ mod tests {
             spec.clone(),
             include_str!("../examples/minimal/SPEC.md").to_string(),
             Some(cache.clone()),
-            synthesizer.clone(),
+            &synthesizer,
         )
         .await
         .unwrap();
@@ -754,7 +754,7 @@ mod tests {
             spec.clone(),
             include_str!("../examples/minimal/SPEC.md").to_string(),
             Some(cache.clone()),
-            synthesizer.clone(),
+            &synthesizer,
         )
         .await
         .unwrap();
@@ -775,7 +775,7 @@ mod tests {
             spec.clone(),
             include_str!("../examples/minimal/SPEC.md").to_string(),
             Some(cache.clone()),
-            keyless.clone(),
+            &keyless,
         )
         .await
         .unwrap();
