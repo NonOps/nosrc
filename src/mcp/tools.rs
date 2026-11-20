@@ -611,8 +611,9 @@ mod tests {
         let spec = ServiceSpec::parse(spec_text).unwrap();
         let lifecycle =
             AppLifecycle::new_with_spec_text(&spec, spec_text.to_string(), None).unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let server = NosrcMcpServer {
-            export_root: std::env::temp_dir().join("nosrc-mcp-test-exports"),
+            export_root: temp.path().join("exports"),
             lifecycle: Arc::new(Mutex::new(lifecycle)),
         };
         let prepared = server
@@ -629,12 +630,12 @@ mod tests {
             .unwrap()
             .to_string();
 
-        let temp = tempfile::tempdir().unwrap();
-        let bundle_path = temp.path().join("offline-bundle");
+        let bundle_name = PathBuf::from("offline-bundle");
+        let bundle_path = server.export_root.join(&bundle_name);
         let exported = server
             .export_app(Parameters(ExportAppParams {
                 generation_id,
-                out_dir: bundle_path.clone(),
+                out_dir: bundle_name,
             }))
             .await;
         assert_eq!(exported.is_error, Some(false));
@@ -654,6 +655,7 @@ mod tests {
         use crate::engine::quickjs::test_support::HANDLER_SOURCE;
 
         let lifecycle = AppLifecycle::new_mcp_first(None).unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let server = NosrcMcpServer {
             export_root: temp.path().join("exports"),
             lifecycle: Arc::new(Mutex::new(lifecycle)),
@@ -727,6 +729,7 @@ mod tests {
         let first_id = lifecycle.insert_prepared(first);
         let second_id = lifecycle.insert_prepared(second);
         let server = NosrcMcpServer {
+            export_root: std::env::temp_dir().join("nosrc-mcp-test-exports"),
             lifecycle: Arc::new(Mutex::new(lifecycle)),
         };
 
@@ -830,6 +833,7 @@ mod tests {
         )
         .unwrap();
         let server = NosrcMcpServer {
+            export_root: std::env::temp_dir().join("nosrc-mcp-test-exports"),
             lifecycle: Arc::new(Mutex::new(AppLifecycle::new(&spec, None).unwrap())),
         };
         let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
