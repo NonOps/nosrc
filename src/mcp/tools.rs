@@ -109,6 +109,7 @@ where
             "state": "ready",
             "module_hash": generation.map(|item| item.module_hash.as_str()),
             "trusted_assertions_passed": generation.map(|item| item.trusted_assertions_passed).unwrap_or(0),
+            "activation_eligible": generation.map(|item| item.trusted_assertions_passed > 0).unwrap_or(false),
             "model_assertions_passed": generation.map(|item| item.model_assertions_passed).unwrap_or(0),
             "model_assertions_failed": generation.map(|item| item.model_assertions_failed).unwrap_or(0),
             "supplemental_assertions_passed": generation.map(|item| item.supplemental_assertions_passed).unwrap_or(0),
