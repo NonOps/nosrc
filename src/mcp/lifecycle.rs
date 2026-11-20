@@ -1150,10 +1150,13 @@ mod tests {
             cache: Some(cache),
             policy: AcceptancePolicy::from_spec(&spec).unwrap(),
         };
-        let error = context
+        let error = match context
             .prepare_from_spec_with_synthesizer(Vec::new(), &synthesizer)
             .await
-            .unwrap_err();
+        {
+            Err(error) => error,
+            Ok(_) => panic!("oversized cached synthesis metadata must be rejected"),
+        };
 
         assert!(format!("{error:?}").contains("2 MiB source limit"));
     }
