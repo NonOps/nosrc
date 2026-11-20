@@ -75,6 +75,13 @@ pub struct GenerationExport {
     pub policy_mode: String,
 }
 
+/// A SPEC generation prepared for export. The separate type guarantees that
+/// export callers always have the provenance and artifacts required by the bundle writer.
+pub struct ExportablePreparedGeneration {
+    pub generation: PreparedGeneration,
+    pub export: GenerationExport,
+}
+
 pub struct PreparedGeneration {
     pub id: GenerationId,
     pub sequence: u64,
@@ -290,6 +297,22 @@ pub(crate) async fn prepare_spec_generation(
         .await
 }
 
+/// Prepare a production SPEC and require its export payload before returning.
+/// HTTP startup uses prepare_spec_generation; the CLI export command uses this
+/// stronger result type so it cannot accidentally handle an absent export payload.
+pub(crate) async fn prepare_spec_export(
+    spec: ServiceSpec,
+    spec_text: String,
+    cache: Option<ArtifactCache>,
+    synthesizer: &Synthesizer,
+) -> Result<ExportablePreparedGeneration, PreparationError> {
+    let mut generation = prepare_spec_generation(spec, spec_text, cache, synthesizer).await?;
+    let export = generation.export_data.take().ok_or_else(|| {
+        EngineError::Internal("SPEC preparation did not produce export provenance".into())
+    })?;
+    Ok(ExportablePreparedGeneration { generation, export })
+}
+
 impl PreparationContext {
     pub async fn prepare_from_js(
         self,
@@ -462,6 +485,9 @@ impl PreparationContext {
 
         let (output, compiled, component_bytes, cache_hit) = match cached {
             Some(cached) => {
+                // Cache metadata is untrusted input just like a live model response.
+                // Enforce source and assertion limits before compiling cached bytes.
+                validate_synthesis_output(&cached.synthesis)?;
                 let engine = self.engine.clone();
                 let component_bytes = cached.component_bytes;
                 let compile_bytes = component_bytes.clone();
@@ -1084,6 +1110,52 @@ mod tests {
 
         let error = validate_synthesis_output(&output).unwrap_err();
         assert!(error.to_string().contains("2 MiB source limit"));
+    }
+
+    #[tokio::test]
+    async fn oversized_cached_synthesis_is_rejected_before_component_compilation() {
+        let spec = test_spec();
+        let engine = QuickJsEngine::new().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache = ArtifactCache::new(cache_dir.path());
+        let synthesizer = Synthesizer::new(LlmConfig {
+            api_key: String::new(),
+            base_url: "http://127.0.0.1:1/v1".into(),
+            model: "oversized-cache-test".into(),
+            temperature: 0.0,
+        });
+        let output = SynthesisOutput {
+            handler_code: "x".repeat(MAX_JS_SOURCE_BYTES + 1),
+            code_format: "javascript".into(),
+            assertions: vec![ContractAssertion {
+                name: "cached assertion".into(),
+                request: request("/health"),
+                expected_status: 200,
+                body_contains: None,
+                header_matches: None,
+            }],
+            rationale: Some("legacy oversized cache entry".into()),
+        };
+        // Invalid component bytes ensure the size check runs before the
+        // compile-failure fallback attempts synthesis (which has no API key).
+        let cache_key = synthesizer.artifact_cache_key(&spec);
+        cache.store(&cache_key, &output, b"not a valid component").unwrap();
+
+        let context = PreparationContext {
+            engine,
+            spec: Some(spec.clone()),
+            spec_text: Some("# Service: lifecycle-test".into()),
+            draft_spec: false,
+            draft_assertions: Vec::new(),
+            cache: Some(cache),
+            policy: AcceptancePolicy::from_spec(&spec).unwrap(),
+        };
+        let error = context
+            .prepare_from_spec_with_synthesizer(Vec::new(), &synthesizer)
+            .await
+            .unwrap_err();
+
+        assert!(format!("{error:?}").contains("2 MiB source limit"));
     }
 
     #[test]
