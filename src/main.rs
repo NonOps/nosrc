@@ -6,6 +6,7 @@ pub mod export;
 pub mod ingress;
 pub mod mcp;
 pub mod spec;
+pub mod server;
 pub mod synthesizer;
 pub mod verifier;
 
@@ -483,7 +484,7 @@ async fn main() -> anyhow::Result<()> {
                 "nosrc is serving a verified offline bundle"
             );
 
-            axum::serve(listener, app).await?;
+            crate::server::serve(listener, app).await?;
             Ok(())
         }
         Some(Commands::Mcp {
@@ -591,7 +592,7 @@ async fn main() -> anyhow::Result<()> {
                 "nosrc is listening with a verified JavaScript handler"
             );
 
-            axum::serve(listener, app).await?;
+            crate::server::serve(listener, app).await?;
             Ok(())
         }
     }

@@ -39,7 +39,7 @@ pub async fn serve(
         let app = crate::ingress::build_ingress_router(ingress_state);
         tracing::info!(%address, "nosrc MCP and HTTP interfaces share one application lifecycle");
         tokio::spawn(async move {
-            if let Err(error) = axum::serve(listener, app).await {
+            if let Err(error) = crate::server::serve(listener, app).await {
                 tracing::error!(%error, "Shared HTTP ingress stopped");
             }
         });

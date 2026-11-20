@@ -1692,6 +1692,8 @@ dependencies = [
  "componentize-qjs",
  "dashmap",
  "form_urlencoded",
+ "hyper",
+ "hyper-util",
  "libc",
  "redb",
  "reqwest",
