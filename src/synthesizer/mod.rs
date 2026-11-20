@@ -209,28 +209,70 @@ impl Write for LimitedBodyWriter {
     }
 }
 
+/// Why reading a provider response body failed.
+enum BodyReadError {
+    /// The body exceeded the configured byte limit.
+    TooLarge(String),
+    /// The transport failed while streaming the body (timeout, reset, ...).
+    Transport {
+        retryable: bool,
+        class: &'static str,
+    },
+}
+
+impl BodyReadError {
+    fn into_engine_error(self) -> EngineError {
+        match self {
+            Self::TooLarge(message) => EngineError::Internal(message),
+            Self::Transport { class, .. } => {
+                EngineError::Internal(format!("Failed to read LLM response: {class}"))
+            }
+        }
+    }
+}
+
+/// Failure class for a reqwest error. Raw reqwest errors can embed the request URL, so only
+/// this class is ever reported.
+fn transport_error_class(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "timed out"
+    } else if error.is_connect() {
+        "could not connect"
+    } else {
+        "failed"
+    }
+}
+
+fn is_retryable_transport_error(error: &reqwest::Error) -> bool {
+    error.is_connect() || error.is_timeout()
+}
+
 /// Read a provider response without allowing an unbounded body allocation.
-async fn read_limited_body(
+async fn read_body_limited(
     mut response: reqwest::Response,
     max_bytes: usize,
-) -> Result<Vec<u8>, EngineError> {
+) -> Result<Vec<u8>, BodyReadError> {
     if response
         .content_length()
         .is_some_and(|length| length > max_bytes as u64)
     {
-        return Err(EngineError::Internal(format!(
+        return Err(BodyReadError::TooLarge(format!(
             "provider response exceeds the {max_bytes} byte limit"
         )));
     }
 
     let mut body = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| EngineError::Internal(format!("Failed to read LLM response: {error}")))?
-    {
+    loop {
+        let chunk = response
+            .chunk()
+            .await
+            .map_err(|error| BodyReadError::Transport {
+                retryable: is_retryable_transport_error(&error),
+                class: transport_error_class(&error),
+            })?;
+        let Some(chunk) = chunk else { break };
         if body.len().saturating_add(chunk.len()) > max_bytes {
-            return Err(EngineError::Internal(format!(
+            return Err(BodyReadError::TooLarge(format!(
                 "LLM response exceeds the {max_bytes} byte limit"
             )));
         }
@@ -238,6 +280,16 @@ async fn read_limited_body(
     }
 
     Ok(body)
+}
+
+#[cfg(test)]
+async fn read_limited_body(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, EngineError> {
+    read_body_limited(response, max_bytes)
+        .await
+        .map_err(BodyReadError::into_engine_error)
 }
 
 /// Synthesizer service managing LLM prompt construction and schema enforcement
@@ -397,7 +449,7 @@ Assertions must cover every endpoint's documented success response and at least 
         );
 
         let mut attempt = 1;
-        let resp = loop {
+        let response_bytes = loop {
             let result = self
                 .client
                 .post(&endpoint)
@@ -410,23 +462,16 @@ Assertions must cover every endpoint's documented success response and at least 
             let resp = match result {
                 Ok(resp) => resp,
                 Err(error) => {
-                    let retryable = error.is_connect() || error.is_timeout();
-                    if retryable && attempt < MAX_LLM_ATTEMPTS {
+                    if is_retryable_transport_error(&error) && attempt < MAX_LLM_ATTEMPTS {
                         tracing::warn!(attempt, "LLM request failed; retrying");
                         tokio::time::sleep(retry_delay(attempt)).await;
                         attempt += 1;
                         continue;
                     }
                     // reqwest errors can embed the request URL, so report the failure class only.
-                    let class = if error.is_timeout() {
-                        "timed out"
-                    } else if error.is_connect() {
-                        "could not connect"
-                    } else {
-                        "failed"
-                    };
                     return Err(EngineError::Internal(format!(
-                        "LLM request {class} after {attempt} attempt(s)"
+                        "LLM request {} after {attempt} attempt(s)",
+                        transport_error_class(&error)
                     )));
                 }
             };
@@ -439,7 +484,18 @@ Assertions must cover every endpoint's documented success response and at least 
 
             let status = resp.status();
             if status.is_success() {
-                break resp;
+                match read_body_limited(resp, MAX_LLM_RESPONSE_BYTES).await {
+                    Ok(bytes) => break bytes,
+                    Err(BodyReadError::Transport {
+                        retryable: true, ..
+                    }) if attempt < MAX_LLM_ATTEMPTS => {
+                        tracing::warn!(attempt, "Reading LLM response failed; retrying");
+                        tokio::time::sleep(retry_delay(attempt)).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    Err(error) => return Err(error.into_engine_error()),
+                }
             }
 
             if is_retryable_status(status) && attempt < MAX_LLM_ATTEMPTS {
@@ -449,15 +505,18 @@ Assertions must cover every endpoint's documented success response and at least 
                 continue;
             }
 
-            let error_bytes = read_limited_body(resp, MAX_LLM_ERROR_BYTES).await?;
-            let err_text =
-                scrub_provider_error(&String::from_utf8_lossy(&error_bytes), &self.config.api_key);
+            // A failure while reading the error body must not mask the HTTP status.
+            let err_text = match read_body_limited(resp, MAX_LLM_ERROR_BYTES).await {
+                Ok(bytes) => {
+                    scrub_provider_error(&String::from_utf8_lossy(&bytes), &self.config.api_key)
+                }
+                Err(_) => "<error body unavailable>".to_string(),
+            };
             return Err(EngineError::Internal(format!(
                 "LLM returned HTTP {status}: {err_text}"
             )));
         };
 
-        let response_bytes = read_limited_body(resp, MAX_LLM_RESPONSE_BYTES).await?;
         tracing::debug!(
             response_bytes = response_bytes.len(),
             elapsed_ms = request_started.elapsed().as_millis(),
@@ -685,5 +744,37 @@ mod tests {
         let spec = ServiceSpec::parse(include_str!("../../examples/minimal/SPEC.md")).unwrap();
         let error = synthesizer.synthesize(&spec, &[]).await.unwrap_err();
         assert!(error.to_string().contains("LLM_API_KEY"));
+    }
+
+    #[tokio::test]
+    async fn truncated_response_body_error_omits_request_url() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await.unwrap();
+            // Promise 100 bytes, send 3, then close: the body read fails mid-stream.
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nabc",
+                )
+                .await
+                .unwrap();
+        });
+
+        let response = reqwest::get(format!("http://{address}/secret-path?token=abc"))
+            .await
+            .unwrap();
+        let error = read_limited_body(response, 1024).await.unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("Failed to read LLM response"));
+        assert!(!message.contains("secret-path"));
+        assert!(!message.contains("token=abc"));
+        assert!(!message.contains(&address.to_string()));
+
+        server.await.unwrap();
     }
 }
