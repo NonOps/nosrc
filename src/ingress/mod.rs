@@ -427,4 +427,138 @@ mod tests {
             .unwrap();
         assert!(body.is_empty());
     }
+
+    async fn app_with_active_handler() -> Router {
+        let (engine, compiled) = test_support::compiled().await;
+        let handler = engine
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .unwrap();
+        let state = Arc::new(IngressState::new());
+        state.hot_swap(ActiveGeneration {
+            generation_id: 7,
+            module_hash: "test-component".to_string(),
+            handler: Arc::new(Mutex::new(handler)),
+        });
+        build_ingress_router(state)
+    }
+
+    async fn body_text(response: Response) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn reserved_routes_are_not_shadowed_by_the_application_handler() {
+        let app = app_with_active_handler().await;
+
+        // The handler would answer every path, but the runtime owns these two routes.
+        let health = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz?probe=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
+        assert!(body_text(health).await.is_empty());
+
+        let status = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/_nosrc/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+        let status: serde_json::Value = serde_json::from_str(&body_text(status).await).unwrap();
+        assert_eq!(status["status"], "running");
+        assert_eq!(status["active_generation"], 7);
+        assert_eq!(status["module_hash"], "test-component");
+
+        // Near-miss paths belong to the application, not the runtime.
+        for path in ["/healthz/", "/healthz2", "/_nosrc/status/", "/_nosrc"] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(body_text(response).await, format!("GET {path}"), "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_requests_are_serialized_without_lost_updates() {
+        let app = app_with_active_handler().await;
+        let mut requests = tokio::task::JoinSet::new();
+        for _ in 0..16 {
+            let app = app.clone();
+            requests.spawn(async move {
+                let response = app
+                    .oneshot(
+                        Request::builder()
+                            .uri("/counter")
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                body_text(response).await.parse::<u32>().unwrap()
+            });
+        }
+
+        let mut seen = Vec::new();
+        while let Some(result) = requests.join_next().await {
+            seen.push(result.unwrap());
+        }
+        seen.sort_unstable();
+        // The module-level counter starts at zero in this fresh instance, so serialized
+        // execution must hand out each value exactly once.
+        let first = seen[0];
+        let expected: Vec<u32> = (first..first + 16).collect();
+        assert_eq!(seen, expected);
+    }
+
+    #[tokio::test]
+    async fn non_utf8_header_values_are_dropped_instead_of_failing_the_request() {
+        let app = app_with_active_handler().await;
+        let request = Request::builder()
+            .uri("/echo?q=1")
+            .header("x-good", "ok")
+            .header(
+                "x-binary",
+                axum::http::HeaderValue::from_bytes(&[0xff, 0xfe, 0xfd]).unwrap(),
+            )
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let echoed: serde_json::Value = serde_json::from_str(&body_text(response).await).unwrap();
+        assert_eq!(echoed["headers"]["x-good"], "ok");
+        assert!(echoed["headers"].get("x-binary").is_none());
+        assert_eq!(echoed["query"]["q"], "1");
+    }
+
+    #[tokio::test]
+    async fn invalid_utf8_request_bodies_are_rejected_with_a_client_error() {
+        let app = app_with_active_handler().await;
+        let request = Request::builder()
+            .method("POST")
+            .uri("/echo")
+            .body(Body::from(vec![0xff, 0xfe, 0x00]))
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.headers()["x-nosrc-error"], "InvalidRequestBody");
+    }
 }
