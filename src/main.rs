@@ -5,6 +5,7 @@ pub mod error;
 pub mod export;
 pub mod ingress;
 pub mod mcp;
+pub mod server;
 pub mod spec;
 pub mod synthesizer;
 pub mod verifier;
@@ -110,6 +111,9 @@ pub enum Commands {
         /// Directory for content-addressed, locally cached verified artifacts
         #[arg(long, default_value = "./.nosrc-cache")]
         cache_dir: std::path::PathBuf,
+        /// Root directory in which MCP export_app may create bundle directories
+        #[arg(long, default_value = "./.nosrc-exports")]
+        export_root: std::path::PathBuf,
         /// Bypass artifact cache
         #[arg(long)]
         no_cache: bool,
@@ -480,7 +484,7 @@ async fn main() -> anyhow::Result<()> {
                 "nosrc is serving a verified offline bundle"
             );
 
-            axum::serve(listener, app).await?;
+            crate::server::serve(listener, app).await?;
             Ok(())
         }
         Some(Commands::Mcp {
@@ -488,6 +492,7 @@ async fn main() -> anyhow::Result<()> {
             http_port,
             http_bind,
             cache_dir,
+            export_root,
             no_cache,
             verbose,
         }) => {
@@ -527,6 +532,7 @@ async fn main() -> anyhow::Result<()> {
                 spec,
                 cache_dir,
                 no_cache,
+                export_root,
                 http_port.map(|port| (http_bind, port)),
             )
             .await
@@ -586,7 +592,7 @@ async fn main() -> anyhow::Result<()> {
                 "nosrc is listening with a verified JavaScript handler"
             );
 
-            axum::serve(listener, app).await?;
+            crate::server::serve(listener, app).await?;
             Ok(())
         }
     }
@@ -724,6 +730,7 @@ mod tests {
                 http_port,
                 http_bind,
                 cache_dir,
+                export_root,
                 no_cache,
                 verbose,
             }) => {
@@ -731,6 +738,7 @@ mod tests {
                 assert_eq!(http_port, Some(8081));
                 assert_eq!(http_bind, "0.0.0.0".parse::<IpAddr>().unwrap());
                 assert_eq!(cache_dir, std::path::PathBuf::from("./cache"));
+                assert_eq!(export_root, std::path::PathBuf::from("./.nosrc-exports"));
                 assert!(no_cache);
                 assert!(verbose);
             }

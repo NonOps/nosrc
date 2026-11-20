@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -52,7 +52,7 @@ struct ActivateAppParams {
 struct ExportAppParams {
     /// Opaque generation ID returned by prepare_app.
     generation_id: String,
-    /// New or absent destination directory for the complete offline bundle.
+    /// Single directory name for the bundle, created under the operator-configured export root.
     out_dir: PathBuf,
 }
 
@@ -73,6 +73,25 @@ struct InvokeAppParams {
 #[derive(Clone)]
 pub struct NosrcMcpServer {
     pub lifecycle: Arc<Mutex<AppLifecycle>>,
+    pub export_root: PathBuf,
+}
+
+fn resolve_export_destination(root: &Path, name: &Path) -> anyhow::Result<PathBuf> {
+    let mut components = name.components();
+    let valid_name =
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
+    if !valid_name {
+        anyhow::bail!("out_dir must be a single directory name beneath the configured export root");
+    }
+    std::fs::create_dir_all(root)?;
+    let canonical_root = std::fs::canonicalize(root)?;
+    let destination = canonical_root.join(name);
+    match std::fs::symlink_metadata(&destination) {
+        Ok(_) => anyhow::bail!("export destination already exists"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(destination)
 }
 
 async fn prepare_and_publish<F>(
@@ -97,6 +116,7 @@ where
             "state": "ready",
             "module_hash": generation.map(|item| item.module_hash.as_str()),
             "trusted_assertions_passed": generation.map(|item| item.trusted_assertions_passed).unwrap_or(0),
+            "activation_eligible": generation.map(|item| item.trusted_assertions_passed > 0).unwrap_or(false),
             "model_assertions_passed": generation.map(|item| item.model_assertions_passed).unwrap_or(0),
             "model_assertions_failed": generation.map(|item| item.model_assertions_failed).unwrap_or(0),
             "supplemental_assertions_passed": generation.map(|item| item.supplemental_assertions_passed).unwrap_or(0),
@@ -260,7 +280,7 @@ impl NosrcMcpServer {
     }
 
     #[tool(
-        description = "Export a prepared generation using the same atomic artifact pipeline as the CLI. The resulting bundle can be served offline with 'nosrc serve --bundle' without provider credentials."
+        description = "Export a prepared generation beneath the operator-configured export root. out_dir must be one directory name, not an absolute path or path containing parent or subdirectory components. The resulting bundle can be served offline with 'nosrc serve --bundle' without provider credentials."
     )]
     async fn export_app(&self, Parameters(params): Parameters<ExportAppParams>) -> CallToolResult {
         let export = {
@@ -277,7 +297,15 @@ impl NosrcMcpServer {
                 }
             }
         };
-        let out_dir = params.out_dir;
+        let out_dir = match resolve_export_destination(&self.export_root, &params.out_dir) {
+            Ok(path) => path,
+            Err(error) => {
+                return CallToolResult::structured_error(json!({
+                    "error": "invalid_export_destination",
+                    "message": error.to_string()
+                }))
+            }
+        };
         let policy_mode = export.policy_mode.clone();
         let result = tokio::task::spawn_blocking(move || {
             crate::export::export_artifacts_with_policy(
@@ -501,6 +529,7 @@ mod tests {
         ).unwrap();
         let lifecycle = AppLifecycle::new(&spec, None).unwrap();
         let server = NosrcMcpServer {
+            export_root: std::env::temp_dir().join("nosrc-mcp-test-exports"),
             lifecycle: Arc::new(Mutex::new(lifecycle)),
         };
 
@@ -592,7 +621,9 @@ mod tests {
         let spec = ServiceSpec::parse(spec_text).unwrap();
         let lifecycle =
             AppLifecycle::new_with_spec_text(&spec, spec_text.to_string(), None).unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let server = NosrcMcpServer {
+            export_root: temp.path().join("exports"),
             lifecycle: Arc::new(Mutex::new(lifecycle)),
         };
         let prepared = server
@@ -609,12 +640,12 @@ mod tests {
             .unwrap()
             .to_string();
 
-        let temp = tempfile::tempdir().unwrap();
-        let bundle_path = temp.path().join("offline-bundle");
+        let bundle_name = PathBuf::from("offline-bundle");
+        let bundle_path = server.export_root.join(&bundle_name);
         let exported = server
             .export_app(Parameters(ExportAppParams {
                 generation_id,
-                out_dir: bundle_path.clone(),
+                out_dir: bundle_name,
             }))
             .await;
         assert_eq!(exported.is_error, Some(false));
@@ -634,7 +665,9 @@ mod tests {
         use crate::engine::quickjs::test_support::HANDLER_SOURCE;
 
         let lifecycle = AppLifecycle::new_mcp_first(None).unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let server = NosrcMcpServer {
+            export_root: temp.path().join("exports"),
             lifecycle: Arc::new(Mutex::new(lifecycle)),
         };
         let prepared = server
@@ -646,10 +679,31 @@ mod tests {
             }))
             .await;
         assert_eq!(prepared.is_error, Some(false));
-        assert_eq!(
-            prepared.structured_content.unwrap()["trusted_assertions_passed"],
-            0
+        let generation_id = prepared.structured_content.unwrap()["generation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let activation = server
+            .activate_app(Parameters(ActivateAppParams { generation_id }))
+            .await;
+        assert_eq!(activation.is_error, Some(true));
+        let activation_error = activation.structured_content.unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            activation_error.contains(
+                "Activation requires an operator-controlled SPEC with at least one trusted verification case; review the draft and restart nosrc with --spec"
+            ),
+            "unexpected activation error: {activation_error}"
         );
+        assert!(server
+            .lifecycle
+            .lock()
+            .await
+            .get_status()
+            .active_generation
+            .is_none());
     }
 
     #[tokio::test]
@@ -706,6 +760,7 @@ mod tests {
         let first_id = lifecycle.insert_prepared(first);
         let second_id = lifecycle.insert_prepared(second);
         let server = NosrcMcpServer {
+            export_root: std::env::temp_dir().join("nosrc-mcp-test-exports"),
             lifecycle: Arc::new(Mutex::new(lifecycle)),
         };
 
@@ -809,6 +864,7 @@ mod tests {
         )
         .unwrap();
         let server = NosrcMcpServer {
+            export_root: std::env::temp_dir().join("nosrc-mcp-test-exports"),
             lifecycle: Arc::new(Mutex::new(AppLifecycle::new(&spec, None).unwrap())),
         };
         let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
@@ -849,6 +905,7 @@ mod tests {
         ).unwrap();
         let lifecycle = AppLifecycle::new(&spec, None).unwrap();
         let server = NosrcMcpServer {
+            export_root: std::env::temp_dir().join("nosrc-mcp-test-exports"),
             lifecycle: Arc::new(Mutex::new(lifecycle)),
         };
 
@@ -877,6 +934,7 @@ mod tests {
         ).unwrap();
         let lifecycle = AppLifecycle::new(&spec, None).unwrap();
         let server = NosrcMcpServer {
+            export_root: std::env::temp_dir().join("nosrc-mcp-test-exports"),
             lifecycle: Arc::new(Mutex::new(lifecycle)),
         };
         let bad_handler = r#"
@@ -1031,24 +1089,9 @@ mod tests {
         assert_eq!(lifecycle.get_status().status, "idle");
         assert!(lifecycle.get_status().active_generation.is_none());
         let server = NosrcMcpServer {
+            export_root: std::env::temp_dir().join("nosrc-mcp-test-exports"),
             lifecycle: Arc::new(Mutex::new(lifecycle)),
         };
-
-        // Start the same HTTP ingress state that MCP activation will publish into.
-        let ingress_state = server.lifecycle.lock().await.ingress_state();
-        let shared_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let shared_address = shared_listener.local_addr().unwrap();
-        let shared_app = crate::ingress::build_ingress_router(ingress_state);
-        let (shared_shutdown_tx, shared_shutdown_rx) = tokio::sync::oneshot::channel();
-        let shared_task = tokio::spawn(serve_http(shared_listener, shared_app, shared_shutdown_rx));
-
-        let unavailable = reqwest::get(format!("http://{shared_address}/hello"))
-            .await
-            .unwrap();
-        assert_eq!(
-            unavailable.status(),
-            reqwest::StatusCode::SERVICE_UNAVAILABLE
-        );
 
         let draft_spec = "# Service: mcp-first-e2e\n\n## Capabilities\n- state: volatile\n- egress: []\n\n## Endpoints\n### `GET /hello`\n- Response `200`: hello from nosrc\n\n## Verification\n### `GET /hello`\n- Response `200`\n- Body contains: `hello from nosrc`\n";
         let synthesizer = crate::synthesizer::Synthesizer::new(crate::synthesizer::LlmConfig {
@@ -1082,27 +1125,34 @@ mod tests {
             .to_string();
         assert_eq!(request_count.load(Ordering::SeqCst), 1);
 
-        let activated = server
+        // Agent-authored draft policy is exportable for review, but cannot activate.
+        let activation = server
             .activate_app(Parameters(ActivateAppParams {
                 generation_id: generation_id.clone(),
             }))
             .await;
-        assert_eq!(activated.structured_content.unwrap()["state"], "active");
-
-        // Activation must immediately change the already-running shared listener.
-        let live_response = reqwest::get(format!("http://{shared_address}/hello"))
+        assert_eq!(activation.is_error, Some(true));
+        assert!(server
+            .lifecycle
+            .lock()
             .await
-            .unwrap();
-        assert_eq!(live_response.status(), reqwest::StatusCode::OK);
-        assert_eq!(live_response.text().await.unwrap(), "hello from nosrc");
+            .get_status()
+            .active_generation
+            .is_none());
 
         // Export through the MCP tool and confirm the intent and implementation coexist.
         let temp = tempfile::tempdir().unwrap();
-        let bundle_path = temp.path().join("mcp-first-bundle");
-        let exported = server
+        let export_root = temp.path().join("exports");
+        let bundle_name = PathBuf::from("mcp-first-bundle");
+        let bundle_path = export_root.join(&bundle_name);
+        let export_server = NosrcMcpServer {
+            export_root: export_root.clone(),
+            lifecycle: server.lifecycle.clone(),
+        };
+        let exported = export_server
             .export_app(Parameters(ExportAppParams {
                 generation_id,
-                out_dir: bundle_path.clone(),
+                out_dir: bundle_name,
             }))
             .await;
         assert_eq!(
@@ -1155,10 +1205,39 @@ mod tests {
         assert!(restarted.get_status().active_generation.is_none());
 
         let _ = offline_shutdown_tx.send(());
-        let _ = shared_shutdown_tx.send(());
         let _ = provider_shutdown_tx.send(());
         offline_task.await.unwrap();
-        shared_task.await.unwrap();
         provider_task.await.unwrap();
+    }
+    #[test]
+    fn export_destination_rejects_paths_outside_the_configured_root() {
+        let temp = tempfile::tempdir().unwrap();
+        for invalid in [
+            Path::new("../outside"),
+            Path::new("nested/bundle"),
+            Path::new("/tmp/outside"),
+            Path::new("."),
+            Path::new(""),
+        ] {
+            assert!(
+                resolve_export_destination(temp.path(), invalid).is_err(),
+                "accepted {invalid:?}"
+            );
+        }
+        let resolved = resolve_export_destination(temp.path(), Path::new("bundle")).unwrap();
+        assert_eq!(resolved, temp.path().canonicalize().unwrap().join("bundle"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_destination_rejects_symlink_destinations() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let link = temp.path().join("escape");
+        symlink(outside.path(), &link).unwrap();
+
+        assert!(resolve_export_destination(temp.path(), Path::new("escape")).is_err());
     }
 }

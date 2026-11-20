@@ -10,7 +10,7 @@ Do not expose this prototype to untrusted users or production traffic without a 
 
 ### Operator-controlled SPEC
 
-The optional startup SPEC and its verification cases are supplied by the operator. In operator-controlled mode they define acceptance criteria that MCP clients cannot replace or relax. In MCP-first mode there is no application-specific trusted policy yet; baseline runtime resource ceilings still apply. An MCP client's `draft_spec` is synthesis input only and never replaces or weakens a startup policy. An operator must review a draft and restart with it as `--spec` to establish trusted acceptance criteria.
+The optional startup SPEC and its verification cases are supplied by the operator. Every activation requires a non-empty operator-controlled verification suite. In MCP-first mode there is no application-specific trusted policy; baseline runtime resource ceilings still apply. An MCP client's `draft_spec` is synthesis input and candidate-test material only. Draft-SPEC generations may be inspected and exported for review; direct-JavaScript candidates without a SPEC can only be prepared as compile checks. `activate_app` rejects activation until the operator reviews the SPEC and restarts with it as `--spec`.
 
 ### LLM output
 
@@ -57,7 +57,7 @@ Normal diagnostics are scoped to nosrc events. Verbose mode enables nosrc DEBUG 
 - Durable application-state persistence and durable generation/control-plane metadata are backlog items. Any storage capability must have a narrow WIT contract, explicit policy gates, bounded operations, candidate isolation, defined consistency/recovery behavior, and component-level tests.
 - The current string-based request ABI does not support arbitrary non-UTF-8 request bodies.
 - Assertions are examples, not proof of correctness or security.
-- MCP-first mode intentionally starts without application-specific trusted assertions; direct-JavaScript candidates therefore rely on baseline sandbox limits until an operator-reviewed SPEC is supplied at restart.
+- MCP-first mode intentionally starts without application-specific trusted assertions. Candidates may be prepared and exported for review under baseline sandbox limits, but cannot be activated until an operator-reviewed SPEC is supplied at restart.
 - The export manifest is not signed and does not contain complete build provenance or assertion execution records.
 - Offline bundle serving validates component hashes and reruns exported assertions, but the manifest and assertions are unsigned and are stored alongside the component. It does not authenticate a bundle against an independently trusted SPEC or signer.
 - Offline bundle artifact opens reject symbolic links and other reparse points on Unix and Windows using no-follow open flags, then inspect the opened handle and enforce bounded reads. Other operating-system targets fail closed because an equivalent no-follow primitive is not implemented there.
@@ -82,4 +82,4 @@ For future outbound HTTP, validate DNS answers and every redirect target, includ
 
 ## MCP generation export
 
-MCP `export_app` delegates to the same atomic artifact writer as the CLI. Operator-mode bundles carry the immutable startup policy assertions. MCP-first draft-mode bundles explicitly record that no operator-trusted application assertions were configured; their generated draft assertions are rerun offline but are not represented as operator approval. New bundles embed the exact synthesis SPEC as `SPEC.md` and the loader verifies its digest. This does not sign or authenticate the bundle; the directory and manifest still require operator-controlled storage.
+MCP `export_app` delegates to the same atomic artifact writer as the CLI. Its `out_dir` argument must be a single directory name beneath the configured `--export-root` (default `./.nosrc-exports`); absolute paths, traversal, and nested directories are rejected. The root is canonicalized before the destination is formed, and the artifact writer rejects an existing destination. Operator-mode bundles carry the immutable startup policy assertions. MCP-first draft-mode bundles explicitly record that no operator-trusted application assertions were configured; their generated draft assertions are rerun offline but are not represented as operator approval. New bundles embed the exact synthesis SPEC as `SPEC.md` and the loader verifies its digest. This does not sign or authenticate the bundle; protect the export root with operator-controlled filesystem permissions.

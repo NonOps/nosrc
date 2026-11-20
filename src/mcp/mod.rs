@@ -20,6 +20,7 @@ pub async fn serve(
     spec: Option<(ServiceSpec, String)>,
     cache_dir: PathBuf,
     no_cache: bool,
+    export_root: PathBuf,
     http_listener: Option<(IpAddr, u16)>,
 ) -> anyhow::Result<()> {
     let cache = if no_cache {
@@ -38,13 +39,14 @@ pub async fn serve(
         let app = crate::ingress::build_ingress_router(ingress_state);
         tracing::info!(%address, "nosrc MCP and HTTP interfaces share one application lifecycle");
         tokio::spawn(async move {
-            if let Err(error) = axum::serve(listener, app).await {
+            if let Err(error) = crate::server::serve(listener, app).await {
                 tracing::error!(%error, "Shared HTTP ingress stopped");
             }
         });
     }
     let server = NosrcMcpServer {
         lifecycle: Arc::new(Mutex::new(lifecycle)),
+        export_root,
     };
     let service = server.serve(stdio()).await?;
     service.waiting().await?;

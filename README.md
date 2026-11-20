@@ -66,7 +66,7 @@ export LLM_API_KEY="your-api-key" # required for source: "spec"
 cargo run -- mcp --spec ./examples/minimal/SPEC.md
 ```
 
-The default MCP mode uses stdio and does not open an HTTP listener. It exposes six tools: `prepare_app`, `activate_app`, `invoke_app`, `get_app_status`, `rollback_app`, and `export_app`. Rollback is limited to the immediately previous retained generation. Generation state and rollback history are process-local and disappear when the MCP process exits.
+The default MCP mode uses stdio and does not open an HTTP listener. It exposes six tools: `prepare_app`, `activate_app`, `invoke_app`, `get_app_status`, `rollback_app`, and `export_app`. Exports are confined to the configured `--export-root` (default `./.nosrc-exports`). Rollback is limited to the immediately previous retained generation. Generation state and rollback history are process-local and disappear when the MCP process exits.
 
 MCP can also start without an operator SPEC:
 
@@ -74,7 +74,7 @@ MCP can also start without an operator SPEC:
 cargo run -- mcp
 ```
 
-This starts with empty application state and baseline runtime resource limits. The agent can prepare direct JavaScript with `source: "direct_js"`, or provide a draft contract with `source: "draft_spec"` and a `draft_spec` Markdown string. Draft SPEC data is synthesis input, not trusted operator policy. Its verification cases are included with model-generated assertions as candidate checks, and the baseline sandbox limits remain in force. Use `export_app` with the prepared generation ID to write the same offline bundle format as the CLI exporter. The bundle includes `SPEC.md`, handler source, component, assertions, and manifest, and can be served without an API key. To establish an operator-controlled acceptance policy, review the exported draft and restart with `--spec PATH`.
+This starts with empty application state and baseline runtime resource limits. The agent can prepare direct JavaScript with `source: "direct_js"`, or provide a draft contract with `source: "draft_spec"` and a `draft_spec` Markdown string. Draft SPEC data is synthesis input and candidate-test material, not trusted operator policy. Prepared generations can be inspected, and draft-SPEC generations can be exported for review, but **cannot be activated** until an operator reviews the draft and restarts nosrc with it as `--spec PATH`; activation always requires at least one operator-controlled trusted verification case. Direct-JavaScript preparation without a startup SPEC is a compile/preparation check only: it cannot be invoked, activated, or exported. MCP `export_app` accepts only a single bundle directory name beneath the configured `--export-root` (default `./.nosrc-exports`), never an arbitrary filesystem path. The bundle includes `SPEC.md`, handler source, component, assertions, and manifest, and can be served without an API key.
 
 To expose HTTP from the same process and share the active generation with MCP, add `--http-port` (and optionally `--http-bind`):
 
@@ -171,8 +171,10 @@ See [CLI reference](docs/CLI.md) for all commands, options, and environment vari
 
 - JavaScript module state is volatile and scoped to one active generation. It does not survive handler replacement or process restart.
 - The current WIT world exposes only the handler entrypoint. Guest code has no filesystem, process, network, database, or key-value host capability.
-- Requests to one active handler instance are serialized.
-- HTTP request bodies and serialized guest response envelopes are limited to 1 MiB. Non-UTF-8 request bodies are unsupported by the current text-based handler ABI.
+- Requests to one active handler instance are serialized. HTTP ingress admits at most 32 application requests at once; excess requests receive `503 Service Unavailable` with `Retry-After: 1`. Health and status probes remain available during overload.
+- HTTP/1 request headers must arrive within 10 seconds; connections that exceed the header-read deadline are closed. The server also caps HTTP/1 requests at 64 headers.
+- Requests wait at most 5 seconds for the serialized guest execution slot, then receive a retryable `503`. Guest execution has a 30-second HTTP response deadline; the overall application request deadline is 40 seconds, including body receipt. Wasm fuel remains the hard execution bound. A response deadline does not preempt a blocking guest task, which retains the execution slot until it actually exits.
+- HTTP request bodies and serialized guest response envelopes are limited to 1 MiB. Non-UTF-8 request bodies are unsupported by the current text-based handler ABI. Guest responses cannot set message-framing or hop-by-hop headers (`Content-Length`, `Transfer-Encoding`, `Connection`, and related fields); invalid status codes are mapped to `500`. `HEAD`, `204`, and `304` responses never include a body.
 - LLM synthesis requests are limited to 2 MiB; connect and total timeouts are 10 and 120 seconds; successful and error response bodies are capped at 4 MiB and 8 KiB.
 - The local artifact cache is an optimization, not a verification bypass. Cached components are recompiled and both verification suites run again.
 - There is no automatic rebuild, file watching, automatic rollback, remote MCP transport, authentication/authorization for MCP, or Kubernetes orchestration.
