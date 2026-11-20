@@ -341,10 +341,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert_eq!(
-            tokio::time::timeout(
-                Duration::from_millis(100),
-                app.clone().oneshot(health)
-            )
+            tokio::time::timeout(Duration::from_millis(100), app.clone().oneshot(health))
             .await
             .unwrap()
             .unwrap()

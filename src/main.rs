@@ -5,8 +5,8 @@ pub mod error;
 pub mod export;
 pub mod ingress;
 pub mod mcp;
-pub mod spec;
 pub mod server;
+pub mod spec;
 pub mod synthesizer;
 pub mod verifier;
 
