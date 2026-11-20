@@ -2,7 +2,7 @@ use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::error::EngineError;
 
@@ -97,22 +97,54 @@ impl ResponseEnvelope {
         self
     }
 
-    /// Converts the `ResponseEnvelope` into an Axum HTTP `Response`
+    /// Converts an untrusted guest response into a safe host-owned HTTP response.
+    ///
+    /// Guests may choose an ordinary final status and end-to-end headers, but may not
+    /// control message framing or hop-by-hop connection behavior. Invalid status values
+    /// become 500; malformed header names and values are discarded.
     pub fn into_axum_response(self) -> Response {
-        let status = StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let status = if (200..=599).contains(&self.status) {
+            StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        };
 
         let mut builder = Response::builder().status(status);
-
-        for (k, v) in self.headers {
-            if let (Ok(h_name), Ok(h_val)) = (
-                HeaderName::try_from(k.as_str()),
-                HeaderValue::try_from(v.as_str()),
-            ) {
-                builder = builder.header(h_name, h_val);
+        let mut connection_tokens = HashSet::new();
+        for (name, value) in &self.headers {
+            if name.eq_ignore_ascii_case("connection") {
+                connection_tokens.extend(
+                    value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|token| !token.is_empty())
+                        .map(str::to_ascii_lowercase),
+                );
             }
         }
 
-        let body_content = self.body.unwrap_or_default();
+        for (key, value) in self.headers {
+            let normalized = key.to_ascii_lowercase();
+            if is_forbidden_guest_header(&normalized) || connection_tokens.contains(&normalized) {
+                continue;
+            }
+
+            if let (Ok(header_name), Ok(header_value)) = (
+                HeaderName::try_from(key.as_str()),
+                HeaderValue::try_from(value.as_str()),
+            ) {
+                builder = builder.header(header_name, header_value);
+            }
+        }
+
+        // 204 and 304 responses never carry a message body. In particular, do not
+        // let guest-supplied content sneak through on a bodyless status.
+        let body_content = if status == StatusCode::NO_CONTENT || status == StatusCode::NOT_MODIFIED {
+            String::new()
+        } else {
+            self.body.unwrap_or_default()
+        };
+
         builder
             .body(axum::body::Body::from(body_content))
             .unwrap_or_else(|_| {
@@ -123,6 +155,22 @@ impl ResponseEnvelope {
                     .into_response()
             })
     }
+}
+
+/// Headers that can alter HTTP message framing or connection management are owned
+/// by the host/server and must never be copied from an untrusted guest envelope.
+fn is_forbidden_guest_header(name: &str) -> bool {
+    matches!(
+        name,
+        "content-length"
+            | "transfer-encoding"
+            | "connection"
+            | "keep-alive"
+            | "proxy-connection"
+            | "te"
+            | "trailer"
+            | "upgrade"
+    )
 }
 
 /// Error response structure when Wasm guest traps, runs out of fuel, or panics
@@ -172,7 +220,11 @@ impl ErrorEnvelope {
     }
 
     pub fn into_axum_response(self) -> Response {
-        let status = StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let status = if (200..=599).contains(&self.status) {
+            StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        };
         let body = serde_json::to_string(&self).unwrap_or_default();
 
         Response::builder()
@@ -247,5 +299,57 @@ mod tests {
         .unwrap_err();
 
         assert!(error.utf8_error().error_len().is_some());
+    }
+
+    #[test]
+    fn guest_cannot_set_framing_or_hop_by_hop_headers() {
+        let response = ResponseEnvelope::new(200, Some("hello".into()))
+            .with_header("content-type", "text/plain")
+            .with_header("content-length", "999")
+            .with_header("transfer-encoding", "chunked")
+            .with_header("connection", "x-internal, keep-alive")
+            .with_header("x-internal", "attacker-controlled")
+            .with_header("keep-alive", "timeout=5")
+            .into_axum_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get("content-type").unwrap(), "text/plain");
+        for name in [
+            "content-length",
+            "transfer-encoding",
+            "connection",
+            "keep-alive",
+            "x-internal",
+        ] {
+            assert!(!response.headers().contains_key(name), "{name} leaked");
+        }
+    }
+
+    #[test]
+    fn guest_status_must_be_a_final_response_status() {
+        for status in [0, 100, 101, 199, 600, 999] {
+            let response = ResponseEnvelope::new(status, Some("body".into())).into_axum_response();
+            assert_eq!(
+                response.status(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "status {status} should be rejected"
+            );
+        }
+        for status in [200, 204, 304, 400, 599] {
+            let response = ResponseEnvelope::new(status, None).into_axum_response();
+            assert_eq!(response.status().as_u16(), status);
+        }
+    }
+
+    #[tokio::test]
+    async fn no_content_and_not_modified_responses_have_no_body() {
+        for status in [204, 304] {
+            let response =
+                ResponseEnvelope::new(status, Some("must not be sent".into())).into_axum_response();
+            let body = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            assert!(body.is_empty(), "status {status} carried a body");
+        }
     }
 }

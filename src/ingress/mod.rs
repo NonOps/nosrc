@@ -253,12 +253,24 @@ mod tests {
             .uri("/hello")
             .body(Body::empty())
             .unwrap();
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
         assert_eq!(body.as_ref(), b"GET /hello");
+
+        let head = Request::builder()
+            .method("HEAD")
+            .uri("/hello")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(head).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(body.is_empty());
     }
 }

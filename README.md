@@ -171,8 +171,9 @@ See [CLI reference](docs/CLI.md) for all commands, options, and environment vari
 
 - JavaScript module state is volatile and scoped to one active generation. It does not survive handler replacement or process restart.
 - The current WIT world exposes only the handler entrypoint. Guest code has no filesystem, process, network, database, or key-value host capability.
-- Requests to one active handler instance are serialized.
-- HTTP request bodies and serialized guest response envelopes are limited to 1 MiB. Non-UTF-8 request bodies are unsupported by the current text-based handler ABI.
+- Requests to one active handler instance are serialized. HTTP ingress admits at most 32 application requests at once; excess requests receive `503 Service Unavailable` with `Retry-After: 1`. Health and status probes remain available during overload.
+- Requests wait at most 5 seconds for the serialized guest execution slot, then receive a retryable `503`. Guest execution has a 30-second HTTP response deadline; Wasm fuel remains the hard execution bound. A response deadline does not preempt a blocking guest task, which retains the execution slot until it actually exits.
+- HTTP request bodies and serialized guest response envelopes are limited to 1 MiB. Non-UTF-8 request bodies are unsupported by the current text-based handler ABI. Guest responses cannot set message-framing or hop-by-hop headers (`Content-Length`, `Transfer-Encoding`, `Connection`, and related fields); invalid status codes are mapped to `500`. `HEAD`, `204`, and `304` responses never include a body.
 - LLM synthesis requests are limited to 2 MiB; connect and total timeouts are 10 and 120 seconds; successful and error response bodies are capped at 4 MiB and 8 KiB.
 - The local artifact cache is an optimization, not a verification bypass. Cached components are recompiled and both verification suites run again.
 - There is no automatic rebuild, file watching, automatic rollback, remote MCP transport, authentication/authorization for MCP, or Kubernetes orchestration.
