@@ -168,14 +168,12 @@ async fn main() -> anyhow::Result<()> {
             };
 
             let prepared =
-                mcp::lifecycle::prepare_spec_generation(spec, spec_text, cache, &synthesizer)
+                mcp::lifecycle::prepare_spec_export(spec, spec_text, cache, &synthesizer)
                     .await
                     .map_err(|error| anyhow::anyhow!("Generation preparation failed: {error:?}"))?;
-            let export_data = prepared.export_data.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("Prepared SPEC generation is missing export provenance")
-            })?;
-            let trusted_count = prepared.trusted_results.len();
-            let generated_count = prepared.model_results.len();
+            let export_data = &prepared.export;
+            let trusted_count = prepared.generation.trusted_results.len();
+            let generated_count = prepared.generation.model_results.len();
 
             export::export_artifacts(
                 &out_dir,
@@ -183,7 +181,7 @@ async fn main() -> anyhow::Result<()> {
                 &export_data.spec_text,
                 &export_data.output,
                 &export_data.component_bytes,
-                &prepared.module_hash,
+                &prepared.generation.module_hash,
                 &export_data.trusted_assertions,
             )?;
 
