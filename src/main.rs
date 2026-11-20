@@ -729,6 +729,7 @@ mod tests {
                 http_port,
                 http_bind,
                 cache_dir,
+                export_root,
                 no_cache,
                 verbose,
             }) => {
@@ -736,6 +737,7 @@ mod tests {
                 assert_eq!(http_port, Some(8081));
                 assert_eq!(http_bind, "0.0.0.0".parse::<IpAddr>().unwrap());
                 assert_eq!(cache_dir, std::path::PathBuf::from("./cache"));
+                assert_eq!(export_root, std::path::PathBuf::from("./.nosrc-exports"));
                 assert!(no_cache);
                 assert!(verbose);
             }
