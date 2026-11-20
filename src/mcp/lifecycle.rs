@@ -801,6 +801,11 @@ impl AppLifecycle {
 
     /// Atomically activate a generation that has already passed trusted verification.
     pub fn activate(&mut self, id: &GenerationId) -> Result<(), EngineError> {
+        if self.policy.spec_assertions.is_empty() {
+            return Err(EngineError::Internal(
+                "Activation requires an operator-controlled SPEC with at least one trusted verification case; review the draft and restart nosrc with --spec".into(),
+            ));
+        }
         let candidate = self
             .generations
             .get(id)
