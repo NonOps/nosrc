@@ -20,6 +20,7 @@ pub async fn serve(
     spec: Option<(ServiceSpec, String)>,
     cache_dir: PathBuf,
     no_cache: bool,
+    export_root: PathBuf,
     http_listener: Option<(IpAddr, u16)>,
 ) -> anyhow::Result<()> {
     let cache = if no_cache {
@@ -45,6 +46,7 @@ pub async fn serve(
     }
     let server = NosrcMcpServer {
         lifecycle: Arc::new(Mutex::new(lifecycle)),
+        export_root,
     };
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
