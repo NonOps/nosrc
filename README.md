@@ -11,6 +11,7 @@
 [![CI](https://github.com/NonOps/nosrc/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/NonOps/nosrc/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust 1.97+](https://img.shields.io/badge/rust-1.97%2B-orange.svg)](Cargo.toml)
+![](https://badge.mcpx.dev?type=server 'MCP Server')
 
 **nosrc** is an experimental Rust runtime that turns a declarative `SPEC.md` into a JavaScript request handler, compiles it into a QuickJS-backed WebAssembly component, verifies its contract assertions, and serves requests through the verified handler.
 
