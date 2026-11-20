@@ -15,6 +15,7 @@ cargo run -- [OPTIONS]
 | `--bind IP` | `127.0.0.1` | Listen address; external exposure must be explicit |
 | `--verbose`, `-v` | off | Enable nosrc DEBUG diagnostics |
 | `--cache-dir PATH` | `./.nosrc-cache` | Local content-addressed artifact cache |
+| `--export-root PATH` | `./.nosrc-exports` | Root directory for MCP `export_app`; the tool accepts only one child directory name |
 | `--no-cache` | off | Bypass cache reads and writes |
 
 Example:
