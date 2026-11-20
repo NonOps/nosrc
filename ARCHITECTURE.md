@@ -58,7 +58,7 @@ The HTTP and export CLI paths:
 
 The export command then writes the exported files and exits without starting HTTP ingress. The HTTP command starts its listener only after successful preparation. The `serve --bundle` command instead loads the exported component and assertion suites, verifies integrity metadata, reruns both suites on isolated candidates, and opens HTTP ingress only after successful verification. It does not load a SPEC, instantiate the synthesizer, or read LLM credentials.
 
-MCP `source: "spec"` uses the same mandatory trusted and generated suites. MCP `source: "draft_spec"` synthesizes from an agent-supplied contract while retaining the startup acceptance policy. Its SPEC verification cases are added to the candidate assertion suite, not promoted to trusted policy; in MCP-first mode this means draft/model assertion verification plus baseline runtime limits, not operator-authored trusted assertions. MCP `source: "direct_js"` skips LLM synthesis and has no model-generated suite, but must still pass every trusted SPEC assertion. Optional client-supplied assertions in direct-JavaScript mode are informational and cannot relax the trusted policy. In shared HTTP mode, only an explicit `activate_app` or `rollback_app` changes the handler visible to HTTP; preparing a candidate never publishes it.
+MCP `source: "spec"` uses the same mandatory trusted and generated suites. MCP `source: "draft_spec"` synthesizes from an agent-supplied contract while retaining the startup acceptance policy. Its SPEC verification cases are candidate checks, not trusted policy. In MCP-first mode, draft/model assertions and baseline runtime limits allow preparation and export for review, but activation is rejected because no operator-controlled acceptance policy exists. `MCP source: "direct_js"` also remains preparable for iteration, but cannot be activated in MCP-first mode. Every activation requires a non-empty operator-controlled SPEC verification suite loaded at process startup. An operator reviews the exported draft, restarts with it as `--spec`, and prepares a candidate against that immutable policy. Optional client-supplied assertions remain informational and cannot relax trusted policy. In shared HTTP mode, only explicit activation or rollback changes the handler visible to HTTP.
 
 ## Core contracts and components
 
@@ -121,7 +121,7 @@ Incoming HTTP request bodies and serialized guest response envelopes are limited
 - `invoke_app` — invoke the active generation through the QuickJS handler.
 - `get_app_status` — inspect active, previous, and retained generations, verification summaries, and effective resource limits.
 - `rollback_app` — reactivate the immediately previous retained generation.
-- `export_app` — publish a prepared generation through the existing atomic artifact exporter for offline serving.
+- `export_app` — publish a prepared generation through the existing atomic artifact exporter for offline serving. The destination is a single directory name beneath the operator-configured export root; traversal and absolute paths are rejected.
 
 The stdio process has no MCP-level authentication or authorization. Trust is inherited from the local launcher and ownership of its stdin/stdout pipes. Protocol messages use stdout; diagnostics are sent to stderr.
 
