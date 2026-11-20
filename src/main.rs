@@ -382,7 +382,6 @@ async fn main() -> anyhow::Result<()> {
             spec: spec_path,
             out_dir,
             cache_dir,
-            export_root,
             no_cache,
             verbose,
         }) => {
