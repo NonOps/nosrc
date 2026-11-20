@@ -75,6 +75,13 @@ pub struct GenerationExport {
     pub policy_mode: String,
 }
 
+/// A SPEC generation prepared for export. The separate type guarantees that
+/// export callers always have the provenance and artifacts required by the bundle writer.
+pub struct ExportablePreparedGeneration {
+    pub generation: PreparedGeneration,
+    pub export: GenerationExport,
+}
+
 pub struct PreparedGeneration {
     pub id: GenerationId,
     pub sequence: u64,
@@ -234,7 +241,7 @@ fn compile_handler_with_artifact_on_blocking_thread(
     runtime.block_on(engine.compile_handler_with_artifact(&source))
 }
 
-fn validate_mcp_synthesis(output: &SynthesisOutput) -> Result<(), EngineError> {
+fn validate_synthesis_output(output: &SynthesisOutput) -> Result<(), EngineError> {
     if output.code_format != "javascript" || output.handler_code.trim().is_empty() {
         return Err(EngineError::Internal(
             "Synthesizer returned an empty or unsupported handler artifact".into(),
@@ -264,6 +271,46 @@ pub struct PreparationContext {
     draft_assertions: Vec<ContractAssertion>,
     cache: Option<ArtifactCache>,
     policy: AcceptancePolicy,
+}
+
+/// Prepare a production SPEC through the same synthesis, cache, compilation,
+/// validation, and verification pipeline used by MCP generation requests.
+pub(crate) async fn prepare_spec_generation(
+    spec: ServiceSpec,
+    spec_text: String,
+    cache: Option<ArtifactCache>,
+    synthesizer: &Synthesizer,
+) -> Result<PreparedGeneration, PreparationError> {
+    let policy = AcceptancePolicy::from_spec(&spec).map_err(EngineError::Internal)?;
+    policy.validate().map_err(EngineError::Internal)?;
+    let context = PreparationContext {
+        engine: QuickJsEngine::new()?,
+        spec: Some(spec),
+        spec_text: Some(spec_text),
+        draft_spec: false,
+        draft_assertions: Vec::new(),
+        cache,
+        policy,
+    };
+    context
+        .prepare_from_spec_with_synthesizer(Vec::new(), synthesizer)
+        .await
+}
+
+/// Prepare a production SPEC and require its export payload before returning.
+/// HTTP startup uses prepare_spec_generation; the CLI export command uses this
+/// stronger result type so it cannot accidentally handle an absent export payload.
+pub(crate) async fn prepare_spec_export(
+    spec: ServiceSpec,
+    spec_text: String,
+    cache: Option<ArtifactCache>,
+    synthesizer: &Synthesizer,
+) -> Result<ExportablePreparedGeneration, PreparationError> {
+    let mut generation = prepare_spec_generation(spec, spec_text, cache, synthesizer).await?;
+    let export = generation.export_data.take().ok_or_else(|| {
+        EngineError::Internal("SPEC preparation did not produce export provenance".into())
+    })?;
+    Ok(ExportablePreparedGeneration { generation, export })
 }
 
 impl PreparationContext {
@@ -349,7 +396,7 @@ impl PreparationContext {
             )));
         }
         let synthesizer = Synthesizer::new(LlmConfig::from_env()?);
-        self.prepare_from_spec_with_synthesizer(supplemental_assertions, synthesizer)
+        self.prepare_from_spec_with_synthesizer(supplemental_assertions, &synthesizer)
             .await
     }
 
@@ -405,14 +452,14 @@ impl PreparationContext {
         self.spec = Some(draft);
         self.spec_text = Some(spec_text);
         self.draft_spec = true;
-        self.prepare_from_spec_with_synthesizer(supplemental_assertions, synthesizer)
+        self.prepare_from_spec_with_synthesizer(supplemental_assertions, &synthesizer)
             .await
     }
 
     async fn prepare_from_spec_with_synthesizer(
         self,
         supplemental_assertions: Vec<ContractAssertion>,
-        synthesizer: Synthesizer,
+        synthesizer: &Synthesizer,
     ) -> Result<PreparedGeneration, PreparationError> {
         validate_assertions(&supplemental_assertions, "supplemental")?;
         self.policy.validate().map_err(EngineError::Internal)?;
@@ -438,6 +485,9 @@ impl PreparationContext {
 
         let (output, compiled, component_bytes, cache_hit) = match cached {
             Some(cached) => {
+                // Cache metadata is untrusted input just like a live model response.
+                // Enforce source and assertion limits before compiling cached bytes.
+                validate_synthesis_output(&cached.synthesis)?;
                 let engine = self.engine.clone();
                 let component_bytes = cached.component_bytes;
                 let compile_bytes = component_bytes.clone();
@@ -454,7 +504,7 @@ impl PreparationContext {
                     Err(error) => {
                         tracing::warn!(%error, "Cached MCP artifact failed compilation; synthesizing again");
                         let output = synthesizer.synthesize(&spec, &[]).await?;
-                        validate_mcp_synthesis(&output)?;
+                        validate_synthesis_output(&output)?;
                         let engine = self.engine.clone();
                         let source = output.handler_code.clone();
                         let (compiled, bytes) = tokio::task::spawn_blocking(move || {
@@ -472,7 +522,7 @@ impl PreparationContext {
             }
             None => {
                 let output = synthesizer.synthesize(&spec, &[]).await?;
-                validate_mcp_synthesis(&output)?;
+                validate_synthesis_output(&output)?;
                 let engine = self.engine.clone();
                 let source = output.handler_code.clone();
                 let (compiled, bytes) = tokio::task::spawn_blocking(move || {
@@ -489,7 +539,7 @@ impl PreparationContext {
         let cache_output = output.clone();
         let mut output = output;
         output.assertions.extend(self.draft_assertions.clone());
-        validate_mcp_synthesis(&output)?;
+        validate_synthesis_output(&output)?;
         let engine = self.engine.clone();
         let policy = self.policy.clone();
         let model_assertions = output.assertions.clone();
@@ -1044,6 +1094,76 @@ mod tests {
     }
 
     #[test]
+    fn synthesized_handler_size_limit_is_enforced_by_shared_validation() {
+        let output = SynthesisOutput {
+            handler_code: "x".repeat(MAX_JS_SOURCE_BYTES + 1),
+            code_format: "javascript".into(),
+            assertions: vec![ContractAssertion {
+                name: "bounded handler".into(),
+                request: request("/health"),
+                expected_status: 200,
+                body_contains: None,
+                header_matches: None,
+            }],
+            rationale: None,
+        };
+
+        let error = validate_synthesis_output(&output).unwrap_err();
+        assert!(error.to_string().contains("2 MiB source limit"));
+    }
+
+    #[tokio::test]
+    async fn oversized_cached_synthesis_is_rejected_before_component_compilation() {
+        let spec = test_spec();
+        let engine = QuickJsEngine::new().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache = ArtifactCache::new(cache_dir.path());
+        let synthesizer = Synthesizer::new(LlmConfig {
+            api_key: String::new(),
+            base_url: "http://127.0.0.1:1/v1".into(),
+            model: "oversized-cache-test".into(),
+            temperature: 0.0,
+        });
+        let output = SynthesisOutput {
+            handler_code: "x".repeat(MAX_JS_SOURCE_BYTES + 1),
+            code_format: "javascript".into(),
+            assertions: vec![ContractAssertion {
+                name: "cached assertion".into(),
+                request: request("/health"),
+                expected_status: 200,
+                body_contains: None,
+                header_matches: None,
+            }],
+            rationale: Some("legacy oversized cache entry".into()),
+        };
+        // Invalid component bytes ensure the size check runs before the
+        // compile-failure fallback attempts synthesis (which has no API key).
+        let cache_key = synthesizer.artifact_cache_key(&spec);
+        cache
+            .store(&cache_key, &output, b"not a valid component")
+            .unwrap();
+
+        let context = PreparationContext {
+            engine,
+            spec: Some(spec.clone()),
+            spec_text: Some("# Service: lifecycle-test".into()),
+            draft_spec: false,
+            draft_assertions: Vec::new(),
+            cache: Some(cache),
+            policy: AcceptancePolicy::from_spec(&spec).unwrap(),
+        };
+        let error = match context
+            .prepare_from_spec_with_synthesizer(Vec::new(), &synthesizer)
+            .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("oversized cached synthesis metadata must be rejected"),
+        };
+
+        assert!(format!("{error:?}").contains("2 MiB source limit"));
+    }
+
+    #[test]
     fn draft_export_is_blocked_when_operator_assertions_have_separate_provenance() {
         let trusted = vec![ContractAssertion {
             name: "operator assertion".into(),
@@ -1299,7 +1419,7 @@ mod tests {
             policy,
         };
         let prepared = context
-            .prepare_from_spec_with_synthesizer(Vec::new(), synthesizer)
+            .prepare_from_spec_with_synthesizer(Vec::new(), &synthesizer)
             .await
             .unwrap();
 

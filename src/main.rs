@@ -12,16 +12,12 @@ pub mod verifier;
 
 use clap::{Parser, Subcommand};
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::sync::Arc;
 
 use artifact_cache::ArtifactCache;
-use engine::http_envelope::RequestEnvelope;
-use engine::quickjs::{QuickJsEngine, DEFAULT_COMPONENT_FUEL};
 use ingress::{ActiveGeneration, IngressState};
 use spec::ServiceSpec;
-use synthesizer::{ContractAssertion, LlmConfig, SynthesisOutput, Synthesizer};
-use verifier::ShadowVerifier;
+use synthesizer::{LlmConfig, Synthesizer};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -123,255 +119,22 @@ pub enum Commands {
     },
 }
 
-fn validate_runtime_spec(spec: &ServiceSpec) -> anyhow::Result<()> {
-    if spec.capabilities.state != "volatile" {
-        anyhow::bail!(
-            "SPEC state mode '{}' is not supported yet; this runtime supports only volatile, generation-scoped JavaScript state",
-            spec.capabilities.state
-        );
-    }
-    if !spec.capabilities.egress.is_empty() {
-        anyhow::bail!(
-            "SPEC requests outbound egress ({}) but network capabilities are not available in this runtime",
-            spec.capabilities.egress.iter().cloned().collect::<Vec<_>>().join(", ")
-        );
-    }
-    if !spec.schema.is_empty() {
-        anyhow::bail!(
-            "SPEC declares database schema, but SQL capabilities are not available in this runtime"
-        );
-    }
-
-    spec.validate_verification()
-        .map_err(|error| anyhow::anyhow!("Invalid trusted verification suite: {error}"))?;
-
-    Ok(())
-}
-
-/// Validate synthesis output before it is compiled or loaded from cache.
-fn validate_synthesis_output(output: &SynthesisOutput) -> anyhow::Result<()> {
-    if output.code_format != "javascript" {
-        anyhow::bail!(
-            "Synthesizer returned unsupported code format '{}'; expected 'javascript'",
-            output.code_format
-        );
-    }
-    if output.handler_code.trim().is_empty() {
-        anyhow::bail!("Synthesizer returned an empty JavaScript handler");
-    }
-    Ok(())
-}
-
-/// Synthesize (or load), compile, verify, and instantiate one production generation.
-///
-/// Cache hits skip provider synthesis and componentization, but are always recompiled
-/// by the current Wasmtime engine and rerun through both isolated verification suites.
-async fn prepare_generation(
-    spec: &ServiceSpec,
-    synthesizer: &Synthesizer,
-    cache: Option<&ArtifactCache>,
-) -> anyhow::Result<(
-    ActiveGeneration,
-    usize,
-    usize,
-    Option<String>,
-    SynthesisOutput,
-    Vec<u8>,
-    Vec<ContractAssertion>,
-)> {
-    let validation_started = Instant::now();
-    tracing::debug!("Validating runtime capabilities and trusted SPEC verification suite");
-    validate_runtime_spec(spec)?;
-    tracing::debug!(
-        elapsed_ms = validation_started.elapsed().as_millis(),
-        "SPEC validation completed"
-    );
-
-    let engine = QuickJsEngine::new()?;
-    let cache_key = synthesizer.artifact_cache_key(spec);
-    let cached = cache.and_then(|artifact_cache| artifact_cache.load(&cache_key));
-
-    let (output, compiled, component_bytes, cache_hit) = match cached {
-        Some(cached_artifact) => match engine.compile_component(&cached_artifact.component_bytes) {
-            Ok(compiled) => {
-                tracing::info!(cache_key = %cache_key, "Loaded component artifact from cache");
-                (
-                    cached_artifact.synthesis,
-                    compiled,
-                    cached_artifact.component_bytes,
-                    true,
-                )
-            }
-            Err(error) => {
-                tracing::warn!(cache_key = %cache_key, %error, "Cached component could not be loaded; regenerating");
-                let synthesis_started = Instant::now();
-                let output = synthesizer.synthesize(spec, &[]).await?;
-                validate_synthesis_output(&output)?;
-                tracing::debug!(
-                    elapsed_ms = synthesis_started.elapsed().as_millis(),
-                    code_format = %output.code_format,
-                    handler_bytes = output.handler_code.len(),
-                    generated_assertions = output.assertions.len(),
-                    "Handler synthesis completed"
-                );
-                let compilation_started = Instant::now();
-                let (compiled, component_bytes) = engine
-                    .compile_handler_with_artifact(&output.handler_code)
-                    .await?;
-                tracing::debug!(
-                    elapsed_ms = compilation_started.elapsed().as_millis(),
-                    module_hash = %compiled.module_hash,
-                    "Wasm component compilation completed"
-                );
-                (output, compiled, component_bytes, false)
-            }
-        },
-        None => {
-            let synthesis_started = Instant::now();
-            let output = synthesizer.synthesize(spec, &[]).await?;
-            validate_synthesis_output(&output)?;
-            tracing::debug!(
-                elapsed_ms = synthesis_started.elapsed().as_millis(),
-                code_format = %output.code_format,
-                handler_bytes = output.handler_code.len(),
-                generated_assertions = output.assertions.len(),
-                "Handler synthesis completed"
-            );
-            let compilation_started = Instant::now();
-            tracing::debug!("Initializing QuickJS/Wasm engine and compiling generated JavaScript");
-            let (compiled, component_bytes) = engine
-                .compile_handler_with_artifact(&output.handler_code)
-                .await?;
-            tracing::debug!(
-                elapsed_ms = compilation_started.elapsed().as_millis(),
-                module_hash = %compiled.module_hash,
-                "Wasm component compilation completed"
-            );
-            (output, compiled, component_bytes, false)
-        }
-    };
-
-    // SPEC-authored cases are independent of the model that generated the handler.
-    // Separate candidate instances prevent the supplemental suite from mutating trusted-test state.
-    let trusted_assertions = trusted_assertions_from_spec(spec)?;
-
-    let trusted_started = Instant::now();
-    tracing::debug!(
-        assertions = trusted_assertions.len(),
-        "Running SPEC-authored trusted verification suite"
-    );
-    let mut trusted_candidate = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
-    let trusted_results =
-        match ShadowVerifier::new().verify_handler(&mut trusted_candidate, &trusted_assertions) {
-            Ok(results) => results,
-            Err(error) => {
-                tracing::error!(
-                    suite = "trusted",
-                    "Contract verification failed; detailed error returned to caller"
-                );
-                return Err(error.into());
-            }
-        };
-    tracing::debug!(
-        passed = trusted_results.len(),
-        total = trusted_assertions.len(),
-        elapsed_ms = trusted_started.elapsed().as_millis(),
-        "Trusted verification suite passed"
-    );
-    drop(trusted_candidate);
-
-    let generated_started = Instant::now();
-    tracing::debug!(
-        assertions = output.assertions.len(),
-        "Running model-generated supplemental verification suite"
-    );
-    let mut generated_candidate = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
-    let generated_results =
-        match ShadowVerifier::new().verify_handler(&mut generated_candidate, &output.assertions) {
-            Ok(results) => results,
-            Err(error) => {
-                tracing::error!(
-                    suite = "generated",
-                    "Contract verification failed; detailed error returned to caller"
-                );
-                return Err(error.into());
-            }
-        };
-    tracing::debug!(
-        passed = generated_results.len(),
-        total = output.assertions.len(),
-        elapsed_ms = generated_started.elapsed().as_millis(),
-        "Generated verification suite passed"
-    );
-    drop(generated_candidate);
-
-    tracing::debug!("Creating a fresh production handler instance after verification");
-    let active_handler = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
-    let generation = ActiveGeneration {
-        generation_id: 1,
-        module_hash: compiled.module_hash,
-        handler: Arc::new(Mutex::new(active_handler)),
-    };
-
-    if !cache_hit {
-        if let Some(artifact_cache) = cache {
-            if let Err(error) = artifact_cache.store(&cache_key, &output, &component_bytes) {
-                tracing::warn!(cache_key = %cache_key, %error, "Could not persist verified artifact cache entry");
-            } else {
-                tracing::info!(cache_key = %cache_key, "Stored verified component artifact in cache");
-            }
-        }
-    }
-
-    let rationale = output.rationale.clone();
-    Ok((
-        generation,
-        trusted_results.len(),
-        generated_results.len(),
-        rationale,
-        output,
-        component_bytes,
-        trusted_assertions,
-    ))
-}
-
-fn trusted_assertions_from_spec(spec: &ServiceSpec) -> anyhow::Result<Vec<ContractAssertion>> {
-    spec.verification
-        .iter()
-        .map(|case| {
-            Ok(ContractAssertion {
-                name: format!("SPEC {} {}", case.method, case.path),
-                request: RequestEnvelope {
-                    method: case.method.clone(),
-                    path: case.path.clone(),
-                    query: case.query.clone(),
-                    headers: case.headers.clone(),
-                    body: case.body.clone(),
-                },
-                expected_status: case.expected_status.ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "verification case {} {} has no response status",
-                        case.method,
-                        case.path
-                    )
-                })?,
-                body_contains: case.body_contains.clone(),
-                header_matches: if case.response_headers.is_empty() {
-                    None
-                } else {
-                    Some(case.response_headers.clone())
-                },
-            })
-        })
-        .collect()
-}
-
 fn default_log_filter(verbose: bool) -> &'static str {
     if verbose {
         "warn,nosrc=debug"
     } else {
         "warn,nosrc=info"
     }
+}
+
+fn initialize_tracing(verbose: bool) {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_log_filter(verbose)));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_target(false)
+        .init();
 }
 
 #[tokio::main]
@@ -386,15 +149,7 @@ async fn main() -> anyhow::Result<()> {
             no_cache,
             verbose,
         }) => {
-            let filter =
-                tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                    tracing_subscriber::EnvFilter::new(default_log_filter(verbose))
-                });
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .with_writer(std::io::stderr)
-                .with_target(false)
-                .init();
+            initialize_tracing(verbose);
 
             let spec_text = tokio::fs::read_to_string(&spec_path)
                 .await
@@ -412,28 +167,26 @@ async fn main() -> anyhow::Result<()> {
                 Some(ArtifactCache::new(cache_dir))
             };
 
-            let (
-                generation,
-                trusted_count,
-                generated_count,
-                _rationale,
-                output,
-                component_bytes,
-                trusted_assertions,
-            ) = prepare_generation(&spec, &synthesizer, cache.as_ref()).await?;
+            let prepared =
+                mcp::lifecycle::prepare_spec_export(spec, spec_text, cache, &synthesizer)
+                    .await
+                    .map_err(|error| anyhow::anyhow!("Generation preparation failed: {error:?}"))?;
+            let export_data = &prepared.export;
+            let trusted_count = prepared.generation.trusted_results.len();
+            let generated_count = prepared.generation.model_results.len();
 
             export::export_artifacts(
                 &out_dir,
-                &spec,
-                &spec_text,
-                &output,
-                &component_bytes,
-                &generation.module_hash,
-                &trusted_assertions,
+                &export_data.spec,
+                &export_data.spec_text,
+                &export_data.output,
+                &export_data.component_bytes,
+                &prepared.generation.module_hash,
+                &export_data.trusted_assertions,
             )?;
 
             tracing::info!(
-                service = %spec.name,
+                service = %export_data.spec.name,
                 trusted_assertions = trusted_count,
                 generated_assertions = generated_count,
                 out_dir = %out_dir.display(),
@@ -441,7 +194,7 @@ async fn main() -> anyhow::Result<()> {
             );
             println!(
                 "Exported verified artifacts for '{}' to {}",
-                spec.name,
+                export_data.spec.name,
                 out_dir.display()
             );
             Ok(())
@@ -452,15 +205,7 @@ async fn main() -> anyhow::Result<()> {
             bind,
             verbose,
         }) => {
-            let filter =
-                tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                    tracing_subscriber::EnvFilter::new(default_log_filter(verbose))
-                });
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .with_writer(std::io::stderr)
-                .with_target(false)
-                .init();
+            initialize_tracing(verbose);
 
             let (generation, summary) = bundle::load_and_verify(&bundle_dir)?;
             tracing::info!(
@@ -496,15 +241,7 @@ async fn main() -> anyhow::Result<()> {
             no_cache,
             verbose,
         }) => {
-            let filter =
-                tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                    tracing_subscriber::EnvFilter::new(default_log_filter(verbose))
-                });
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .with_writer(std::io::stderr)
-                .with_target(false)
-                .init();
+            initialize_tracing(verbose);
 
             let spec = match spec_path {
                 Some(path) => {
@@ -514,7 +251,6 @@ async fn main() -> anyhow::Result<()> {
                     let spec = ServiceSpec::parse(&spec_text).map_err(|error| {
                         anyhow::anyhow!("Failed to parse SPEC at {}: {error}", path.display())
                     })?;
-                    validate_runtime_spec(&spec)?;
                     Some((spec, spec_text))
                 }
                 None => None,
@@ -538,15 +274,7 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         None => {
-            let filter =
-                tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                    tracing_subscriber::EnvFilter::new(default_log_filter(cli.verbose))
-                });
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .with_writer(std::io::stderr)
-                .with_target(false)
-                .init();
+            initialize_tracing(cli.verbose);
 
             let spec_text = tokio::fs::read_to_string(&cli.spec)
                 .await
@@ -571,8 +299,17 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 Some(ArtifactCache::new(cli.cache_dir.clone()))
             };
-            let (generation, trusted_assertions, generated_assertions, _rationale, _, _, _) =
-                prepare_generation(&spec, &synthesizer, cache.as_ref()).await?;
+            let prepared =
+                mcp::lifecycle::prepare_spec_generation(spec, spec_text, cache, &synthesizer)
+                    .await
+                    .map_err(|error| anyhow::anyhow!("Generation preparation failed: {error:?}"))?;
+            let trusted_assertions = prepared.trusted_results.len();
+            let generated_assertions = prepared.model_results.len();
+            let generation = ActiveGeneration {
+                generation_id: 1,
+                module_hash: prepared.module_hash,
+                handler: prepared.handler,
+            };
 
             tracing::info!(
                 trusted_assertions,
@@ -860,7 +597,9 @@ mod tests {
 "#;
         let spec = ServiceSpec::parse(markdown).unwrap();
         spec.validate_verification().unwrap();
-        let assertions = trusted_assertions_from_spec(&spec).unwrap();
+        let assertions = crate::mcp::policy::AcceptancePolicy::from_spec(&spec)
+            .unwrap()
+            .spec_assertions;
         assert_eq!(assertions.len(), 1);
         assert_eq!(assertions[0].request.path, "/search");
         assert_eq!(
@@ -975,29 +714,43 @@ mod tests {
 
         let cache_directory = tempfile::tempdir().unwrap();
         let cache = ArtifactCache::new(cache_directory.path());
-        let (generation, trusted_count, generated_count, rationale, _, _, _) =
-            prepare_generation(&spec, &synthesizer, Some(&cache))
-                .await
-                .unwrap();
-
-        assert_eq!(trusted_count, 1);
-        assert_eq!(generated_count, 1);
+        let prepared = mcp::lifecycle::prepare_spec_generation(
+            spec.clone(),
+            include_str!("../examples/minimal/SPEC.md").to_string(),
+            Some(cache.clone()),
+            &synthesizer,
+        )
+        .await
+        .unwrap();
+        assert_eq!(prepared.trusted_results.len(), 1);
+        assert_eq!(prepared.model_results.len(), 1);
         assert_eq!(
-            rationale.as_deref(),
+            prepared
+                .export_data
+                .as_ref()
+                .and_then(|data| data.output.rationale.as_deref()),
             Some("Deterministic handler returned by the test provider")
         );
+        let generation = ActiveGeneration {
+            generation_id: 1,
+            module_hash: prepared.module_hash.clone(),
+            handler: prepared.handler.clone(),
+        };
         assert_eq!(request_count.load(Ordering::SeqCst), 1);
 
         // A second startup must load the cached component, rerun both suites,
         // and avoid a second request to the model provider.
-        let (cached_generation, cached_trusted, cached_generated, cached_rationale, _, _, _) =
-            prepare_generation(&spec, &synthesizer, Some(&cache))
-                .await
-                .unwrap();
-        assert_eq!(cached_trusted, trusted_count);
-        assert_eq!(cached_generated, generated_count);
-        assert_eq!(cached_rationale, rationale);
-        assert_eq!(cached_generation.module_hash, generation.module_hash);
+        let cached = mcp::lifecycle::prepare_spec_generation(
+            spec.clone(),
+            include_str!("../examples/minimal/SPEC.md").to_string(),
+            Some(cache.clone()),
+            &synthesizer,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cached.trusted_results.len(), prepared.trusted_results.len());
+        assert_eq!(cached.model_results.len(), prepared.model_results.len());
+        assert_eq!(cached.module_hash, generation.module_hash);
         assert_eq!(request_count.load(Ordering::SeqCst), 1);
 
         // The API key is not part of the cache identity, so a keyless configuration
@@ -1008,20 +761,30 @@ mod tests {
             model: "nosrc-test-model".to_string(),
             temperature: 0.0,
         });
-        let (keyless_generation, ..) = prepare_generation(&spec, &keyless, Some(&cache))
-            .await
-            .unwrap();
-        assert_eq!(keyless_generation.module_hash, generation.module_hash);
+        let keyless_prepared = mcp::lifecycle::prepare_spec_generation(
+            spec.clone(),
+            include_str!("../examples/minimal/SPEC.md").to_string(),
+            Some(cache.clone()),
+            &keyless,
+        )
+        .await
+        .unwrap();
+        assert_eq!(keyless_prepared.module_hash, generation.module_hash);
         assert_eq!(request_count.load(Ordering::SeqCst), 1);
 
         // Without a cache entry, the keyless configuration fails before any request.
         let empty_cache_directory = tempfile::tempdir().unwrap();
         let empty_cache = ArtifactCache::new(empty_cache_directory.path());
-        let error = prepare_generation(&spec, &keyless, Some(&empty_cache))
-            .await
-            .err()
-            .expect("keyless synthesis without a cache hit must fail");
-        assert!(error.to_string().contains("LLM_API_KEY"));
+        let error = mcp::lifecycle::prepare_spec_generation(
+            spec.clone(),
+            include_str!("../examples/minimal/SPEC.md").to_string(),
+            Some(empty_cache),
+            &keyless,
+        )
+        .await
+        .err()
+        .expect("keyless synthesis without a cache hit must fail");
+        assert!(format!("{error:?}").contains("LLM_API_KEY"));
         assert_eq!(request_count.load(Ordering::SeqCst), 1);
 
         let state = Arc::new(IngressState::new());
