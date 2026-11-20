@@ -1142,11 +1142,17 @@ mod tests {
 
         // Export through the MCP tool and confirm the intent and implementation coexist.
         let temp = tempfile::tempdir().unwrap();
-        let bundle_path = temp.path().join("mcp-first-bundle");
-        let exported = server
+        let export_root = temp.path().join("exports");
+        let bundle_name = PathBuf::from("mcp-first-bundle");
+        let bundle_path = export_root.join(&bundle_name);
+        let export_server = NosrcMcpServer {
+            export_root: export_root.clone(),
+            lifecycle: server.lifecycle.clone(),
+        };
+        let exported = export_server
             .export_app(Parameters(ExportAppParams {
                 generation_id,
-                out_dir: bundle_path.clone(),
+                out_dir: bundle_name,
             }))
             .await;
         assert_eq!(
