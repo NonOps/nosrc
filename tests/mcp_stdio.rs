@@ -407,7 +407,7 @@ async fn shared_http_listener_serves_the_generation_activated_over_mcp() {
     // A header far beyond any sane limit must never reach the handler.
     let mut oversized =
         b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nX-Big: ".to_vec();
-    oversized.extend(std::iter::repeat(b'a').take(2 * 1024 * 1024));
+    oversized.extend(std::iter::repeat_n(b'a', 2 * 1024 * 1024));
     oversized.extend_from_slice(b"\r\n\r\n");
     let rejected = raw_http(http_port, &oversized).await;
     assert!(
