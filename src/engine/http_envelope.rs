@@ -139,7 +139,8 @@ impl ResponseEnvelope {
 
         // 204 and 304 responses never carry a message body. In particular, do not
         // let guest-supplied content sneak through on a bodyless status.
-        let body_content = if status == StatusCode::NO_CONTENT || status == StatusCode::NOT_MODIFIED {
+        let body_content = if status == StatusCode::NO_CONTENT || status == StatusCode::NOT_MODIFIED
+        {
             String::new()
         } else {
             self.body.unwrap_or_default()
@@ -313,7 +314,10 @@ mod tests {
             .into_axum_response();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers().get("content-type").unwrap(), "text/plain");
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "text/plain"
+        );
         for name in [
             "content-length",
             "transfer-encoding",
