@@ -335,15 +335,26 @@ mod tests {
                 app.oneshot(request).await.unwrap().status()
             });
         }
-        while let Some(result) = requests.join_next().await {
-            assert_eq!(result.unwrap(), StatusCode::SERVICE_UNAVAILABLE);
-        }
-
+        // Probe health while the overload burst is still outstanding.
         let health = Request::builder()
             .uri("/healthz")
             .body(Body::empty())
             .unwrap();
-        assert_eq!(app.oneshot(health).await.unwrap().status(), StatusCode::OK);
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                app.clone().oneshot(health)
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .status(),
+            StatusCode::OK
+        );
+
+        while let Some(result) = requests.join_next().await {
+            assert_eq!(result.unwrap(), StatusCode::SERVICE_UNAVAILABLE);
+        }
         drop(permits);
     }
 
