@@ -492,6 +492,7 @@ async fn main() -> anyhow::Result<()> {
             http_port,
             http_bind,
             cache_dir,
+            export_root,
             no_cache,
             verbose,
         }) => {
