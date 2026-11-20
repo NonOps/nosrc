@@ -13,7 +13,6 @@ pub struct AcceptancePolicy {
 /// Hard ceilings enforced by the runtime, independent of agent input.
 #[derive(Debug, Clone)]
 pub struct PolicyInvariants {
-    pub require_endpoint_coverage: bool,
     pub max_response_bytes: usize,
     pub max_fuel: u64,
     pub max_memory_bytes: usize,
@@ -25,7 +24,6 @@ impl AcceptancePolicy {
         Self {
             spec_assertions: Vec::new(),
             invariants: PolicyInvariants {
-                require_endpoint_coverage: true,
                 max_response_bytes: crate::engine::http_envelope::MAX_HANDLER_RESPONSE_BYTES,
                 max_fuel: DEFAULT_COMPONENT_FUEL,
                 max_memory_bytes: DEFAULT_COMPONENT_MEMORY_BYTES,
@@ -90,9 +88,6 @@ impl AcceptancePolicy {
 
     /// Validate policy ceilings before any candidate is compiled.
     pub fn validate(&self) -> Result<(), String> {
-        if !self.invariants.require_endpoint_coverage {
-            return Err("endpoint coverage cannot be disabled".into());
-        }
         if self.invariants.max_response_bytes == 0
             || self.invariants.max_response_bytes
                 > crate::engine::http_envelope::MAX_HANDLER_RESPONSE_BYTES
