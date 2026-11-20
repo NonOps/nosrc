@@ -1,0 +1,16 @@
+# cargo-deny policy. CI runs `advisories`, `bans`, and `sources`.
+# License policy is intentionally not enforced yet: it needs an explicit decision
+# about which licenses the project accepts before it can be added.
+
+[advisories]
+version = 2
+
+[bans]
+# Wasmtime's dependency tree legitimately pulls in duplicate versions.
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
