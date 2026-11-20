@@ -158,9 +158,9 @@ Every declared endpoint must have at least one matching case under `## Verificat
 
 ## Configuration and diagnostics
 
-`LLM_API_KEY` is required for synthesis. Optional variables:
+`LLM_API_KEY` is required whenever a model request is made; a verified cache hit in HTTP or export mode does not need it. Optional variables:
 
-- `LLM_BASE_URL` (default: `https://api.openai.com/v1`)
+- `LLM_BASE_URL` (default: `https://api.openai.com/v1`; must be `https` unless it points at a loopback address)
 - `LLM_MODEL` (default: `gpt-4o-mini`)
 
 Pass `--verbose` (or `-v`) for nosrc DEBUG diagnostics covering generation stages, provider request timing and sizes, assertion results, component compilation, and HTTP request metadata. Diagnostics are written to stderr and omit API keys, authorization headers, prompts, generated source, request/response bodies, and query strings. `RUST_LOG` overrides the scoped default and can enable noisy dependency logs. Review logs before sharing them; bounded provider errors and assertion mismatch details may still contain sensitive context.

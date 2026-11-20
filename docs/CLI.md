@@ -103,11 +103,13 @@ cargo run -- serve --bundle ./dist --bind 127.0.0.1 --port 8080
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_API_KEY` | none | Required by HTTP and export startup, including cache hits; MCP requires it when using SPEC-driven synthesis. Direct-JavaScript MCP preparation does not require an LLM call |
-| `LLM_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API base URL |
+| `LLM_API_KEY` | none | Required whenever a model request is actually made (HTTP and export on a cache miss; MCP SPEC-driven synthesis). Not needed for a verified cache hit, direct-JavaScript MCP preparation, or `serve --bundle` |
+| `LLM_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API base URL. Must use `https`, except that `http` is accepted for `localhost` and loopback IPs |
 | `LLM_MODEL` | `gpt-4o-mini` | Model identifier |
 
-HTTP and export currently construct the LLM configuration before cache lookup, so `LLM_API_KEY` must be set even when a valid cache entry exists. MCP direct-JavaScript preparation and `serve --bundle` can run without it; offline bundle serving does not construct an LLM client or contact a provider.
+HTTP and export read `LLM_API_KEY` lazily: the key is not part of the artifact cache identity, so a valid cache entry is loaded, recompiled, and fully re-verified without it. On a cache miss (or with `--no-cache`) startup fails with a missing-key error before any request is sent. MCP SPEC-driven synthesis still requires the key at startup. Offline bundle serving does not construct an LLM client or contact a provider.
+
+Synthesis requests are retried up to three attempts total, with exponential backoff, on HTTP 429, 5xx, connection failures, and timeouts. Provider error bodies are scrubbed of the configured key and `sk-` style tokens before being reported.
 
 `RUST_LOG` overrides the default scoped tracing filter. Without it, normal mode uses `warn,nosrc=info`; verbose mode uses `warn,nosrc=debug`. Diagnostics are emitted to stderr. Broad filters such as `RUST_LOG=trace` can enable verbose dependency logging.
 
