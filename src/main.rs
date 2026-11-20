@@ -110,6 +110,9 @@ pub enum Commands {
         /// Directory for content-addressed, locally cached verified artifacts
         #[arg(long, default_value = "./.nosrc-cache")]
         cache_dir: std::path::PathBuf,
+        /// Root directory in which MCP export_app may create bundle directories
+        #[arg(long, default_value = "./.nosrc-exports")]
+        export_root: std::path::PathBuf,
         /// Bypass artifact cache
         #[arg(long)]
         no_cache: bool,
@@ -379,6 +382,7 @@ async fn main() -> anyhow::Result<()> {
             spec: spec_path,
             out_dir,
             cache_dir,
+            export_root,
             no_cache,
             verbose,
         }) => {
@@ -527,6 +531,7 @@ async fn main() -> anyhow::Result<()> {
                 spec,
                 cache_dir,
                 no_cache,
+                export_root,
                 http_port.map(|port| (http_bind, port)),
             )
             .await
