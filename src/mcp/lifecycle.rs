@@ -286,7 +286,7 @@ pub(crate) async fn prepare_spec_generation(
         policy,
     };
     context
-        .prepare_from_spec_with_synthesizer(Vec::new(), &synthesizer)
+        .prepare_from_spec_with_synthesizer(Vec::new(), synthesizer)
         .await
 }
 
@@ -1342,7 +1342,7 @@ mod tests {
             policy,
         };
         let prepared = context
-            .prepare_from_spec_with_synthesizer(Vec::new(), synthesizer)
+            .prepare_from_spec_with_synthesizer(Vec::new(), &synthesizer)
             .await
             .unwrap();
 
