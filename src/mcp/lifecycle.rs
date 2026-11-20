@@ -266,6 +266,30 @@ pub struct PreparationContext {
     policy: AcceptancePolicy,
 }
 
+/// Prepare a production SPEC through the same synthesis, cache, compilation,
+/// validation, and verification pipeline used by MCP generation requests.
+pub(crate) async fn prepare_spec_generation(
+    spec: ServiceSpec,
+    spec_text: String,
+    cache: Option<ArtifactCache>,
+    synthesizer: Synthesizer,
+) -> Result<PreparedGeneration, PreparationError> {
+    let policy = AcceptancePolicy::from_spec(&spec).map_err(EngineError::Internal)?;
+    policy.validate().map_err(EngineError::Internal)?;
+    let context = PreparationContext {
+        engine: QuickJsEngine::new()?,
+        spec: Some(spec),
+        spec_text: Some(spec_text),
+        draft_spec: false,
+        draft_assertions: Vec::new(),
+        cache,
+        policy,
+    };
+    context
+        .prepare_from_spec_with_synthesizer(Vec::new(), synthesizer)
+        .await
+}
+
 impl PreparationContext {
     pub async fn prepare_from_js(
         self,
