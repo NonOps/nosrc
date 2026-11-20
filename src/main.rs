@@ -781,7 +781,7 @@ mod tests {
             spec.clone(),
             include_str!("../examples/minimal/SPEC.md").to_string(),
             Some(empty_cache),
-            keyless,
+            &keyless,
         )
         .await
         .err()
