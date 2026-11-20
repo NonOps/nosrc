@@ -66,7 +66,7 @@ export LLM_API_KEY="your-api-key" # required for source: "spec"
 cargo run -- mcp --spec ./examples/minimal/SPEC.md
 ```
 
-The default MCP mode uses stdio and does not open an HTTP listener. It exposes six tools: `prepare_app`, `activate_app`, `invoke_app`, `get_app_status`, `rollback_app`, and `export_app`. Rollback is limited to the immediately previous retained generation. Generation state and rollback history are process-local and disappear when the MCP process exits.
+The default MCP mode uses stdio and does not open an HTTP listener. It exposes six tools: `prepare_app`, `activate_app`, `invoke_app`, `get_app_status`, `rollback_app`, and `export_app`. Exports are confined to the configured `--export-root` (default `./.nosrc-exports`). Rollback is limited to the immediately previous retained generation. Generation state and rollback history are process-local and disappear when the MCP process exits.
 
 MCP can also start without an operator SPEC:
 
@@ -74,7 +74,7 @@ MCP can also start without an operator SPEC:
 cargo run -- mcp
 ```
 
-This starts with empty application state and baseline runtime resource limits. The agent can prepare direct JavaScript with `source: "direct_js"`, or provide a draft contract with `source: "draft_spec"` and a `draft_spec` Markdown string. Draft SPEC data is synthesis input, not trusted operator policy. Its verification cases are included with model-generated assertions as candidate checks, and the baseline sandbox limits remain in force. Use `export_app` with the prepared generation ID to write the same offline bundle format as the CLI exporter. The bundle includes `SPEC.md`, handler source, component, assertions, and manifest, and can be served without an API key. To establish an operator-controlled acceptance policy, review the exported draft and restart with `--spec PATH`.
+This starts with empty application state and baseline runtime resource limits. The agent can prepare direct JavaScript with `source: "direct_js"`, or provide a draft contract with `source: "draft_spec"` and a `draft_spec` Markdown string. Draft SPEC data is synthesis input and candidate-test material, not trusted operator policy. Prepared generations can be inspected and exported, but **cannot be activated** until an operator reviews the draft and restarts nosrc with it as `--spec PATH`; activation always requires at least one operator-controlled trusted verification case. MCP `export_app` accepts only a single bundle directory name beneath the configured `--export-root` (default `./.nosrc-exports`), never an arbitrary filesystem path. The bundle includes `SPEC.md`, handler source, component, assertions, and manifest, and can be served without an API key.
 
 To expose HTTP from the same process and share the active generation with MCP, add `--http-port` (and optionally `--http-bind`):
 
