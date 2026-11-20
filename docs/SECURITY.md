@@ -10,7 +10,7 @@ Do not expose this prototype to untrusted users or production traffic without a 
 
 ### Operator-controlled SPEC
 
-The optional startup SPEC and its verification cases are supplied by the operator. Every activation requires a non-empty operator-controlled verification suite. In MCP-first mode there is no application-specific trusted policy; baseline runtime resource ceilings still apply. An MCP client's `draft_spec` is synthesis input and candidate-test material only. Prepared generations may be inspected and exported for review, but `activate_app` rejects activation until the operator reviews the SPEC and restarts with it as `--spec`.
+The optional startup SPEC and its verification cases are supplied by the operator. Every activation requires a non-empty operator-controlled verification suite. In MCP-first mode there is no application-specific trusted policy; baseline runtime resource ceilings still apply. An MCP client's `draft_spec` is synthesis input and candidate-test material only. Draft-SPEC generations may be inspected and exported for review; direct-JavaScript candidates without a SPEC can only be prepared as compile checks. `activate_app` rejects activation until the operator reviews the SPEC and restarts with it as `--spec`.
 
 ### LLM output
 
