@@ -167,14 +167,10 @@ async fn main() -> anyhow::Result<()> {
                 Some(ArtifactCache::new(cache_dir))
             };
 
-            let prepared = mcp::lifecycle::prepare_spec_generation(
-                spec,
-                spec_text,
-                cache,
-                &synthesizer,
-            )
-            .await
-            .map_err(|error| anyhow::anyhow!("Generation preparation failed: {error:?}"))?;
+            let prepared =
+                mcp::lifecycle::prepare_spec_generation(spec, spec_text, cache, &synthesizer)
+                    .await
+                    .map_err(|error| anyhow::anyhow!("Generation preparation failed: {error:?}"))?;
             let export_data = prepared.export_data.as_ref().ok_or_else(|| {
                 anyhow::anyhow!("Prepared SPEC generation is missing export provenance")
             })?;
@@ -305,14 +301,10 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 Some(ArtifactCache::new(cli.cache_dir.clone()))
             };
-            let prepared = mcp::lifecycle::prepare_spec_generation(
-                spec,
-                spec_text,
-                cache,
-                &synthesizer,
-            )
-            .await
-            .map_err(|error| anyhow::anyhow!("Generation preparation failed: {error:?}"))?;
+            let prepared =
+                mcp::lifecycle::prepare_spec_generation(spec, spec_text, cache, &synthesizer)
+                    .await
+                    .map_err(|error| anyhow::anyhow!("Generation preparation failed: {error:?}"))?;
             let trusted_assertions = prepared.trusted_results.len();
             let generated_assertions = prepared.model_results.len();
             let generation = ActiveGeneration {
