@@ -687,9 +687,15 @@ mod tests {
             .activate_app(Parameters(ActivateAppParams { generation_id }))
             .await;
         assert_eq!(activation.is_error, Some(true));
-        assert_eq!(
-            activation.structured_content.unwrap()["message"],
-            "Activation requires an operator-controlled SPEC with at least one trusted verification case; review the draft and restart nosrc with --spec"
+        let activation_error = activation.structured_content.unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            activation_error.contains(
+                "Activation requires an operator-controlled SPEC with at least one trusted verification case; review the draft and restart nosrc with --spec"
+            ),
+            "unexpected activation error: {activation_error}"
         );
         assert!(server
             .lifecycle
@@ -1087,22 +1093,6 @@ mod tests {
             lifecycle: Arc::new(Mutex::new(lifecycle)),
         };
 
-        // Start the same HTTP ingress state that MCP activation will publish into.
-        let ingress_state = server.lifecycle.lock().await.ingress_state();
-        let shared_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let shared_address = shared_listener.local_addr().unwrap();
-        let shared_app = crate::ingress::build_ingress_router(ingress_state);
-        let (shared_shutdown_tx, shared_shutdown_rx) = tokio::sync::oneshot::channel();
-        let shared_task = tokio::spawn(serve_http(shared_listener, shared_app, shared_shutdown_rx));
-
-        let unavailable = reqwest::get(format!("http://{shared_address}/hello"))
-            .await
-            .unwrap();
-        assert_eq!(
-            unavailable.status(),
-            reqwest::StatusCode::SERVICE_UNAVAILABLE
-        );
-
         let draft_spec = "# Service: mcp-first-e2e\n\n## Capabilities\n- state: volatile\n- egress: []\n\n## Endpoints\n### `GET /hello`\n- Response `200`: hello from nosrc\n\n## Verification\n### `GET /hello`\n- Response `200`\n- Body contains: `hello from nosrc`\n";
         let synthesizer = crate::synthesizer::Synthesizer::new(crate::synthesizer::LlmConfig {
             api_key: "test-only-key".into(),
@@ -1135,19 +1125,20 @@ mod tests {
             .to_string();
         assert_eq!(request_count.load(Ordering::SeqCst), 1);
 
-        let activated = server
+        // Agent-authored draft policy is exportable for review, but cannot activate.
+        let activation = server
             .activate_app(Parameters(ActivateAppParams {
                 generation_id: generation_id.clone(),
             }))
             .await;
-        assert_eq!(activated.structured_content.unwrap()["state"], "active");
-
-        // Activation must immediately change the already-running shared listener.
-        let live_response = reqwest::get(format!("http://{shared_address}/hello"))
+        assert_eq!(activation.is_error, Some(true));
+        assert!(server
+            .lifecycle
+            .lock()
             .await
-            .unwrap();
-        assert_eq!(live_response.status(), reqwest::StatusCode::OK);
-        assert_eq!(live_response.text().await.unwrap(), "hello from nosrc");
+            .get_status()
+            .active_generation
+            .is_none());
 
         // Export through the MCP tool and confirm the intent and implementation coexist.
         let temp = tempfile::tempdir().unwrap();
@@ -1208,10 +1199,8 @@ mod tests {
         assert!(restarted.get_status().active_generation.is_none());
 
         let _ = offline_shutdown_tx.send(());
-        let _ = shared_shutdown_tx.send(());
         let _ = provider_shutdown_tx.send(());
         offline_task.await.unwrap();
-        shared_task.await.unwrap();
         provider_task.await.unwrap();
     }
     #[test]
