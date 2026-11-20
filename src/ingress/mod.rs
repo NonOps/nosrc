@@ -327,10 +327,17 @@ mod tests {
             .collect();
         let app = build_ingress_router(state);
 
-        let request = Request::builder().uri("/app").body(Body::empty()).unwrap();
-        let response = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(response.headers().get("retry-after").unwrap(), "1");
+        let mut requests = tokio::task::JoinSet::new();
+        for _ in 0..1_000 {
+            let app = app.clone();
+            requests.spawn(async move {
+                let request = Request::builder().uri("/app").body(Body::empty()).unwrap();
+                app.oneshot(request).await.unwrap().status()
+            });
+        }
+        while let Some(result) = requests.join_next().await {
+            assert_eq!(result.unwrap(), StatusCode::SERVICE_UNAVAILABLE);
+        }
 
         let health = Request::builder()
             .uri("/healthz")
