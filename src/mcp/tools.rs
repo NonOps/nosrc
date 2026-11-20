@@ -78,12 +78,10 @@ pub struct NosrcMcpServer {
 
 fn resolve_export_destination(root: &Path, name: &Path) -> anyhow::Result<PathBuf> {
     let mut components = name.components();
-    let valid_name = matches!(components.next(), Some(Component::Normal(_)))
-        && components.next().is_none();
+    let valid_name =
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
     if !valid_name {
-        anyhow::bail!(
-            "out_dir must be a single directory name beneath the configured export root"
-        );
+        anyhow::bail!("out_dir must be a single directory name beneath the configured export root");
     }
     std::fs::create_dir_all(root)?;
     let canonical_root = std::fs::canonicalize(root)?;
@@ -301,10 +299,12 @@ impl NosrcMcpServer {
         };
         let out_dir = match resolve_export_destination(&self.export_root, &params.out_dir) {
             Ok(path) => path,
-            Err(error) => return CallToolResult::structured_error(json!({
-                "error": "invalid_export_destination",
-                "message": error.to_string()
-            })),
+            Err(error) => {
+                return CallToolResult::structured_error(json!({
+                    "error": "invalid_export_destination",
+                    "message": error.to_string()
+                }))
+            }
         };
         let policy_mode = export.policy_mode.clone();
         let result = tokio::task::spawn_blocking(move || {
@@ -691,7 +691,13 @@ mod tests {
             activation.structured_content.unwrap()["message"],
             "Activation requires an operator-controlled SPEC with at least one trusted verification case; review the draft and restart nosrc with --spec"
         );
-        assert!(server.lifecycle.lock().await.get_status().active_generation.is_none());
+        assert!(server
+            .lifecycle
+            .lock()
+            .await
+            .get_status()
+            .active_generation
+            .is_none());
     }
 
     #[tokio::test]
@@ -1239,5 +1245,4 @@ mod tests {
 
         assert!(resolve_export_destination(temp.path(), Path::new("escape")).is_err());
     }
-
 }
