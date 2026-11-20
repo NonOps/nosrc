@@ -108,7 +108,7 @@ A cache hit can avoid an LLM request and componentization. It does not bypass co
 
 ### HTTP ingress
 
-Axum handles `GET /healthz` and `GET /_nosrc/status`. Other requests are converted into the handler request envelope and dispatched to the active QuickJS handler. The listener binds to `127.0.0.1` by default; external binding requires an explicit `--bind` address.
+Axum handles `GET /healthz` and `GET /_nosrc/status`. Other requests are converted into the handler request envelope and dispatched to the active QuickJS handler. The listener binds to `127.0.0.1` by default; external binding requires an explicit `--bind` address. The accept loop enforces a 128-connection ceiling before spawning per-connection tasks; when the cap is reached, newly accepted sockets are closed. This transport-level bound is independent of application request admission.
 
 Incoming HTTP request bodies and serialized guest response envelopes are limited to 1 MiB. The current text-based ABI does not support arbitrary non-UTF-8 request bodies. A mutex serializes calls to the active handler instance. HTTP error responses use sanitized messages while detailed diagnostics are written to server logs.
 

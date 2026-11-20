@@ -37,6 +37,7 @@ The optional `mcp --http-port` mode also opens an HTTP application listener in t
 - Component fuel budget: 50,000,000 units by default, with operator policy unable to exceed the runtime ceiling.
 - Per-linear-memory growth: 64 MiB default ceiling.
 - Component handles, table elements, instances, tables, and memories are bounded.
+- Active HTTP connection limit: 128; the accept loop closes connections above the cap before spawning per-connection tasks.
 - HTTP request body limit: 1 MiB.
 - Serialized guest response envelope limit: 1 MiB.
 - LLM serialized request limit: 2 MiB.

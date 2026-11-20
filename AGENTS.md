@@ -57,6 +57,7 @@ See `docs/SECURITY.md` for the current threat model and known gaps.
 - Componentization and Wasm verification belong on Tokio's blocking pool.
 - A preparation timeout must prevent a late worker from publishing a generation. It does not necessarily terminate the already-running blocking task.
 - Rollback is limited to the immediately previous retained generation.
+- The HTTP accept loop must enforce a finite connection limit before spawning per-connection tasks; retain each connection permit for the full task lifetime.
 - Requests to one QuickJS handler instance are serialized to preserve module state.
 - Do not add hot reload or generation draining without an explicit concurrency/lifecycle design and regression tests.
 
