@@ -148,7 +148,7 @@ The export manifest is provenance metadata. It does not contain a signed attesta
 - `LLM_BASE_URL` defaults to `https://api.openai.com/v1`.
 - `LLM_MODEL` defaults to `gpt-4o-mini`.
 - LLM requests are limited to 2 MiB serialized request size, with a 10-second connect timeout and 120-second total timeout. Success and error response bodies are capped at 4 MiB and 8 KiB.
-- HTTP request bodies and guest response envelopes are capped at 1 MiB.
+- HTTP request bodies and guest response envelopes are capped at 1 MiB. Synthesized JavaScript handlers are capped at 2 MiB across CLI and MCP preparation.
 - Verbose diagnostics are enabled with `--verbose`; `RUST_LOG` overrides the scoped default.
 - The MCP lifecycle has a preparation timeout. Cancellation prevents publication after timeout but does not guarantee termination of an already-running blocking worker.
 

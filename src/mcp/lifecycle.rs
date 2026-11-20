@@ -234,7 +234,7 @@ fn compile_handler_with_artifact_on_blocking_thread(
     runtime.block_on(engine.compile_handler_with_artifact(&source))
 }
 
-fn validate_mcp_synthesis(output: &SynthesisOutput) -> Result<(), EngineError> {
+fn validate_synthesis_output(output: &SynthesisOutput) -> Result<(), EngineError> {
     if output.code_format != "javascript" || output.handler_code.trim().is_empty() {
         return Err(EngineError::Internal(
             "Synthesizer returned an empty or unsupported handler artifact".into(),
@@ -478,7 +478,7 @@ impl PreparationContext {
                     Err(error) => {
                         tracing::warn!(%error, "Cached MCP artifact failed compilation; synthesizing again");
                         let output = synthesizer.synthesize(&spec, &[]).await?;
-                        validate_mcp_synthesis(&output)?;
+                        validate_synthesis_output(&output)?;
                         let engine = self.engine.clone();
                         let source = output.handler_code.clone();
                         let (compiled, bytes) = tokio::task::spawn_blocking(move || {
@@ -496,7 +496,7 @@ impl PreparationContext {
             }
             None => {
                 let output = synthesizer.synthesize(&spec, &[]).await?;
-                validate_mcp_synthesis(&output)?;
+                validate_synthesis_output(&output)?;
                 let engine = self.engine.clone();
                 let source = output.handler_code.clone();
                 let (compiled, bytes) = tokio::task::spawn_blocking(move || {
@@ -513,7 +513,7 @@ impl PreparationContext {
         let cache_output = output.clone();
         let mut output = output;
         output.assertions.extend(self.draft_assertions.clone());
-        validate_mcp_synthesis(&output)?;
+        validate_synthesis_output(&output)?;
         let engine = self.engine.clone();
         let policy = self.policy.clone();
         let model_assertions = output.assertions.clone();
@@ -1065,6 +1065,25 @@ mod tests {
             )))
         })??;
         Ok(lifecycle.insert_prepared(prepared))
+    }
+
+    #[test]
+    fn synthesized_handler_size_limit_is_enforced_by_shared_validation() {
+        let output = SynthesisOutput {
+            handler_code: "x".repeat(MAX_JS_SOURCE_BYTES + 1),
+            code_format: "javascript".into(),
+            assertions: vec![ContractAssertion {
+                name: "bounded handler".into(),
+                request: request("/health"),
+                expected_status: 200,
+                body_contains: None,
+                header_matches: None,
+            }],
+            rationale: None,
+        };
+
+        let error = validate_synthesis_output(&output).unwrap_err();
+        assert!(error.to_string().contains("2 MiB source limit"));
     }
 
     #[test]
