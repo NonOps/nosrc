@@ -874,6 +874,7 @@ mod tests {
         ).unwrap();
         let lifecycle = AppLifecycle::new(&spec, None).unwrap();
         let server = NosrcMcpServer {
+            export_root: std::env::temp_dir().join("nosrc-mcp-test-exports"),
             lifecycle: Arc::new(Mutex::new(lifecycle)),
         };
 
@@ -902,6 +903,7 @@ mod tests {
         ).unwrap();
         let lifecycle = AppLifecycle::new(&spec, None).unwrap();
         let server = NosrcMcpServer {
+            export_root: std::env::temp_dir().join("nosrc-mcp-test-exports"),
             lifecycle: Arc::new(Mutex::new(lifecycle)),
         };
         let bad_handler = r#"
@@ -1056,6 +1058,7 @@ mod tests {
         assert_eq!(lifecycle.get_status().status, "idle");
         assert!(lifecycle.get_status().active_generation.is_none());
         let server = NosrcMcpServer {
+            export_root: std::env::temp_dir().join("nosrc-mcp-test-exports"),
             lifecycle: Arc::new(Mutex::new(lifecycle)),
         };
 
