@@ -300,12 +300,16 @@ pub struct Synthesizer {
 
 impl Synthesizer {
     pub fn new(config: LlmConfig) -> Self {
+        Self::with_request_timeout(config, LLM_REQUEST_TIMEOUT)
+    }
+
+    fn with_request_timeout(config: LlmConfig, request_timeout: Duration) -> Self {
         Self {
             config,
             client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::limited(3))
                 .connect_timeout(LLM_CONNECT_TIMEOUT)
-                .timeout(LLM_REQUEST_TIMEOUT)
+                .timeout(request_timeout)
                 .build()
                 .unwrap_or_default(),
         }
@@ -776,5 +780,285 @@ mod tests {
         assert!(!message.contains(&address.to_string()));
 
         server.await.unwrap();
+    }
+
+    struct Reply {
+        status: u16,
+        body: String,
+        delay: Duration,
+    }
+
+    impl Reply {
+        fn new(status: u16, body: impl Into<String>) -> Self {
+            Self {
+                status,
+                body: body.into(),
+                delay: Duration::ZERO,
+            }
+        }
+    }
+
+    /// Start a mock chat-completions provider. `handler` receives the zero-based request index.
+    async fn spawn_provider(
+        handler: impl Fn(usize) -> Reply + Send + Sync + 'static,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use axum::http::StatusCode;
+        use axum::routing::post;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let handler = Arc::new(handler);
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post({
+                let counter = counter.clone();
+                move || {
+                    let counter = counter.clone();
+                    let handler = handler.clone();
+                    async move {
+                        let index = counter.fetch_add(1, Ordering::SeqCst);
+                        let reply = handler(index);
+                        if !reply.delay.is_zero() {
+                            tokio::time::sleep(reply.delay).await;
+                        }
+                        (StatusCode::from_u16(reply.status).unwrap(), reply.body)
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (format!("http://{address}/v1"), counter, task)
+    }
+
+    const TEST_KEY: &str = "test-key-123456";
+
+    fn test_synthesizer(base_url: String, timeout: Duration) -> Synthesizer {
+        Synthesizer::with_request_timeout(
+            LlmConfig {
+                api_key: TEST_KEY.into(),
+                base_url,
+                model: "test-model".into(),
+                temperature: 0.0,
+            },
+            timeout,
+        )
+    }
+
+    fn test_spec() -> ServiceSpec {
+        ServiceSpec::parse(include_str!("../../examples/minimal/SPEC.md")).unwrap()
+    }
+
+    fn completion_body(content: &str) -> String {
+        serde_json::json!({ "choices": [{ "message": { "content": content } }] }).to_string()
+    }
+
+    fn valid_synthesis_content() -> String {
+        serde_json::json!({
+            "handler_code": "export function handle(r) { return r; }",
+            "code_format": "javascript",
+            "assertions": [],
+            "rationale": "ok"
+        })
+        .to_string()
+    }
+
+    fn count(counter: &std::sync::atomic::AtomicUsize) -> usize {
+        counter.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[tokio::test]
+    async fn unauthorized_response_is_not_retried_and_key_is_scrubbed() {
+        let (url, requests, server) = spawn_provider(|_| {
+            Reply::new(
+                401,
+                format!(r#"{{"error":"Incorrect API key provided: {TEST_KEY}"}}"#),
+            )
+        })
+        .await;
+        let error = test_synthesizer(url, Duration::from_secs(5))
+            .synthesize(&test_spec(), &[])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("401"), "{error}");
+        assert!(!error.contains(TEST_KEY), "{error}");
+        assert_eq!(count(&requests), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn bad_request_is_not_retried() {
+        let (url, requests, server) = spawn_provider(|_| Reply::new(400, "bad")).await;
+        let error = test_synthesizer(url, Duration::from_secs(5))
+            .synthesize(&test_spec(), &[])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("400"), "{error}");
+        assert_eq!(count(&requests), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn throttled_then_successful_response_is_retried() {
+        let (url, requests, server) = spawn_provider(|index| {
+            if index < 2 {
+                Reply::new(429, "slow down")
+            } else {
+                Reply::new(200, completion_body(&valid_synthesis_content()))
+            }
+        })
+        .await;
+        let output = test_synthesizer(url, Duration::from_secs(5))
+            .synthesize(&test_spec(), &[])
+            .await
+            .unwrap();
+        assert_eq!(output.code_format, "javascript");
+        assert_eq!(count(&requests), 3);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn persistent_server_error_stops_after_the_attempt_limit() {
+        let (url, requests, server) = spawn_provider(|_| Reply::new(503, "unavailable")).await;
+        let error = test_synthesizer(url, Duration::from_secs(5))
+            .synthesize(&test_spec(), &[])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("503"), "{error}");
+        assert_eq!(count(&requests), MAX_LLM_ATTEMPTS as usize);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oversized_error_body_does_not_hide_the_status() {
+        let huge = "x".repeat(MAX_LLM_ERROR_BYTES * 3);
+        let (url, _requests, server) = spawn_provider(move |_| Reply::new(400, huge.clone())).await;
+        let error = test_synthesizer(url, Duration::from_secs(5))
+            .synthesize(&test_spec(), &[])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("400"), "{error}");
+        assert!(error.len() < MAX_LLM_ERROR_BYTES, "{}", error.len());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn malformed_provider_json_is_reported() {
+        let (url, _requests, server) = spawn_provider(|_| Reply::new(200, "{not json")).await;
+        let error = test_synthesizer(url, Duration::from_secs(5))
+            .synthesize(&test_spec(), &[])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("Failed to parse LLM response JSON"),
+            "{error}"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn missing_choices_field_is_reported() {
+        let (url, _requests, server) = spawn_provider(|_| Reply::new(200, r#"{"id":"x"}"#)).await;
+        let error = test_synthesizer(url, Duration::from_secs(5))
+            .synthesize(&test_spec(), &[])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("missing content field"), "{error}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn empty_choices_array_is_reported() {
+        let (url, _requests, server) =
+            spawn_provider(|_| Reply::new(200, r#"{"choices":[]}"#)).await;
+        let error = test_synthesizer(url, Duration::from_secs(5))
+            .synthesize(&test_spec(), &[])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("missing content field"), "{error}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn non_synthesis_content_is_reported() {
+        let (url, _requests, server) =
+            spawn_provider(|_| Reply::new(200, completion_body("just prose, not JSON"))).await;
+        let error = test_synthesizer(url, Duration::from_secs(5))
+            .synthesize(&test_spec(), &[])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("Malformed synthesis JSON payload"),
+            "{error}"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn content_missing_required_fields_is_reported() {
+        let (url, _requests, server) =
+            spawn_provider(|_| Reply::new(200, completion_body(r#"{"handler_code":"x"}"#))).await;
+        let error = test_synthesizer(url, Duration::from_secs(5))
+            .synthesize(&test_spec(), &[])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("Malformed synthesis JSON payload"),
+            "{error}"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn slow_provider_times_out_and_error_omits_the_url() {
+        let (url, requests, server) = spawn_provider(|_| Reply {
+            status: 200,
+            body: String::new(),
+            delay: Duration::from_secs(5),
+        })
+        .await;
+        let error = test_synthesizer(url.clone(), Duration::from_millis(200))
+            .synthesize(&test_spec(), &[])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(!error.contains(&url), "{error}");
+        assert_eq!(count(&requests), MAX_LLM_ATTEMPTS as usize);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn refused_connection_is_retried_and_reported_without_the_url() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+
+        let url = format!("http://{address}/v1");
+        let error = test_synthesizer(url, Duration::from_secs(5))
+            .synthesize(&test_spec(), &[])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("could not connect"), "{error}");
+        assert!(error.contains("3 attempt(s)"), "{error}");
+        assert!(!error.contains(&address.to_string()), "{error}");
     }
 }
