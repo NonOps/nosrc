@@ -70,7 +70,7 @@ The current runtime accepts only `state: volatile`, no outbound egress declarati
 
 ### Synthesis
 
-The synthesizer calls an OpenAI-compatible chat-completions endpoint. `LLM_API_KEY` is required for synthesis; `LLM_BASE_URL` and `LLM_MODEL` are optional. The expected output contains JavaScript handler source, a code-format identifier, generated assertions, and optional rationale.
+The synthesizer calls an OpenAI-compatible chat-completions endpoint. `LLM_API_KEY` is required when a request is made (HTTP and export check it lazily, so a cache hit needs no key); `LLM_BASE_URL` (https, or loopback http) and `LLM_MODEL` are optional. `LlmConfig` redacts the key in `Debug`, provider error bodies are scrubbed before reporting, and transient failures (429, 5xx, connect, timeout) are retried with backoff. The expected output contains JavaScript handler source, a code-format identifier, generated assertions, and optional rationale.
 
 Generated code is untrusted input. It must satisfy the expected schema, componentize successfully, and pass the required verification suites before activation.
 
@@ -144,7 +144,7 @@ The export manifest is provenance metadata. It does not contain a signed attesta
 ## Configuration and operational limits
 
 - Rust 1.97 or later is required.
-- `LLM_API_KEY` is required when synthesis is needed.
+- `LLM_API_KEY` is required when synthesis is needed; HTTP and export defer the check until a model request would be sent.
 - `LLM_BASE_URL` defaults to `https://api.openai.com/v1`.
 - `LLM_MODEL` defaults to `gpt-4o-mini`.
 - LLM requests are limited to 2 MiB serialized request size, with a 10-second connect timeout and 120-second total timeout. Success and error response bodies are capped at 4 MiB and 8 KiB.

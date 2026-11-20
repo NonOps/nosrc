@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::io::{self, Write};
+use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use crate::engine::http_envelope::RequestEnvelope;
@@ -11,26 +13,59 @@ const LLM_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_LLM_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 const MAX_LLM_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_LLM_ERROR_BYTES: usize = 8 * 1024;
+/// Total attempts per synthesis request, including the first one.
+const MAX_LLM_ATTEMPTS: u32 = 3;
+const LLM_RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
 
 /// Configuration for the OpenAI-compatible LLM endpoint
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LlmConfig {
+    /// Empty when no key is configured; synthesis then fails before any request is sent.
     pub api_key: String,
     pub base_url: String,
     pub model: String,
     pub temperature: f32,
 }
 
+impl fmt::Debug for LlmConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LlmConfig")
+            .field("api_key", &"<redacted>")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("temperature", &self.temperature)
+            .finish()
+    }
+}
+
 impl LlmConfig {
+    /// Read the configuration from the environment and require `LLM_API_KEY`.
     pub fn from_env() -> Result<Self, EngineError> {
-        let api_key = std::env::var("LLM_API_KEY").map_err(|_| {
-            EngineError::Internal("Missing required environment variable LLM_API_KEY".into())
-        })?;
+        Self::from_lookup(|name| std::env::var(name).ok(), true)
+    }
 
-        let base_url = std::env::var("LLM_BASE_URL")
-            .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+    /// Like `from_env`, but a missing `LLM_API_KEY` is reported only when synthesis is
+    /// actually attempted, so a verified cache hit does not need provider credentials.
+    pub fn from_env_deferred_key() -> Result<Self, EngineError> {
+        Self::from_lookup(|name| std::env::var(name).ok(), false)
+    }
 
-        let model = std::env::var("LLM_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
+    fn from_lookup(
+        lookup: impl Fn(&str) -> Option<String>,
+        require_key: bool,
+    ) -> Result<Self, EngineError> {
+        let api_key = match lookup("LLM_API_KEY") {
+            Some(key) if !key.trim().is_empty() => key,
+            _ if require_key => return Err(missing_api_key_error()),
+            _ => String::new(),
+        };
+
+        let base_url =
+            lookup("LLM_BASE_URL").unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+        validate_base_url(&base_url)?;
+
+        let model = lookup("LLM_MODEL").unwrap_or_else(|| "gpt-4o-mini".to_string());
 
         Ok(Self {
             api_key,
@@ -39,6 +74,79 @@ impl LlmConfig {
             temperature: 0.1,
         })
     }
+}
+
+fn missing_api_key_error() -> EngineError {
+    EngineError::Internal("Missing required environment variable LLM_API_KEY".into())
+}
+
+/// Reject provider URLs that would send the API key over an unencrypted, non-loopback connection.
+fn validate_base_url(base_url: &str) -> Result<(), EngineError> {
+    let url = reqwest::Url::parse(base_url).map_err(|error| {
+        EngineError::Internal(format!("LLM_BASE_URL is not a valid URL: {error}"))
+    })?;
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" if is_loopback_host(url.host_str().unwrap_or("")) => Ok(()),
+        "http" => Err(EngineError::Internal(
+            "LLM_BASE_URL must use https unless it points at a loopback address".into(),
+        )),
+        other => Err(EngineError::Internal(format!(
+            "LLM_BASE_URL must use https, got scheme '{other}'"
+        ))),
+    }
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+/// Remove credential material from a provider error body before it is logged or returned.
+///
+/// Providers sometimes echo the rejected key, in full or partially masked (for example
+/// `sk-proj-****abcd`), so both the configured key and `sk-` style tokens are replaced.
+fn scrub_provider_error(body: &str, api_key: &str) -> String {
+    let without_key = if api_key.is_empty() {
+        body.to_string()
+    } else {
+        body.replace(api_key, "[redacted]")
+    };
+
+    let is_token_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '*' | '.');
+    let mut scrubbed = String::with_capacity(without_key.len());
+    let mut token = String::new();
+    for c in without_key.chars() {
+        if is_token_char(c) {
+            token.push(c);
+        } else {
+            push_scrubbed_token(&mut scrubbed, &mut token);
+            scrubbed.push(c);
+        }
+    }
+    push_scrubbed_token(&mut scrubbed, &mut token);
+    scrubbed
+}
+
+fn push_scrubbed_token(output: &mut String, token: &mut String) {
+    if token.starts_with("sk-") {
+        output.push_str("[redacted]");
+    } else {
+        output.push_str(token);
+    }
+    token.clear();
+}
+
+fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+/// Exponential backoff between attempts: 500 ms, then 1 s.
+fn retry_delay(attempt: u32) -> Duration {
+    LLM_RETRY_BASE_DELAY * 2u32.saturating_pow(attempt.saturating_sub(1))
 }
 
 /// An executable contract assertion synthesized alongside handler code
@@ -101,28 +209,70 @@ impl Write for LimitedBodyWriter {
     }
 }
 
+/// Why reading a provider response body failed.
+enum BodyReadError {
+    /// The body exceeded the configured byte limit.
+    TooLarge(String),
+    /// The transport failed while streaming the body (timeout, reset, ...).
+    Transport {
+        retryable: bool,
+        class: &'static str,
+    },
+}
+
+impl BodyReadError {
+    fn into_engine_error(self) -> EngineError {
+        match self {
+            Self::TooLarge(message) => EngineError::Internal(message),
+            Self::Transport { class, .. } => {
+                EngineError::Internal(format!("Failed to read LLM response: {class}"))
+            }
+        }
+    }
+}
+
+/// Failure class for a reqwest error. Raw reqwest errors can embed the request URL, so only
+/// this class is ever reported.
+fn transport_error_class(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "timed out"
+    } else if error.is_connect() {
+        "could not connect"
+    } else {
+        "failed"
+    }
+}
+
+fn is_retryable_transport_error(error: &reqwest::Error) -> bool {
+    error.is_connect() || error.is_timeout()
+}
+
 /// Read a provider response without allowing an unbounded body allocation.
-async fn read_limited_body(
+async fn read_body_limited(
     mut response: reqwest::Response,
     max_bytes: usize,
-) -> Result<Vec<u8>, EngineError> {
+) -> Result<Vec<u8>, BodyReadError> {
     if response
         .content_length()
         .is_some_and(|length| length > max_bytes as u64)
     {
-        return Err(EngineError::Internal(format!(
+        return Err(BodyReadError::TooLarge(format!(
             "provider response exceeds the {max_bytes} byte limit"
         )));
     }
 
     let mut body = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| EngineError::Internal(format!("Failed to read LLM response: {error}")))?
-    {
+    loop {
+        let chunk = response
+            .chunk()
+            .await
+            .map_err(|error| BodyReadError::Transport {
+                retryable: is_retryable_transport_error(&error),
+                class: transport_error_class(&error),
+            })?;
+        let Some(chunk) = chunk else { break };
         if body.len().saturating_add(chunk.len()) > max_bytes {
-            return Err(EngineError::Internal(format!(
+            return Err(BodyReadError::TooLarge(format!(
                 "LLM response exceeds the {max_bytes} byte limit"
             )));
         }
@@ -130,6 +280,16 @@ async fn read_limited_body(
     }
 
     Ok(body)
+}
+
+#[cfg(test)]
+async fn read_limited_body(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, EngineError> {
+    read_body_limited(response, max_bytes)
+        .await
+        .map_err(BodyReadError::into_engine_error)
 }
 
 /// Synthesizer service managing LLM prompt construction and schema enforcement
@@ -230,6 +390,9 @@ Assertions must cover every endpoint's documented success response and at least 
         spec: &ServiceSpec,
         historical_regressions: &[ContractAssertion],
     ) -> Result<SynthesisOutput, EngineError> {
+        if self.config.api_key.trim().is_empty() {
+            return Err(missing_api_key_error());
+        }
         let endpoint = format!(
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
@@ -285,32 +448,75 @@ Assertions must cover every endpoint's documented success response and at least 
             "Sending synthesis request to LLM provider"
         );
 
-        let resp = self
-            .client
-            .post(&endpoint)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .body(request_bytes)
-            .send()
-            .await
-            .map_err(|e| EngineError::Internal(format!("LLM request failed: {e}")))?;
+        let mut attempt = 1;
+        let response_bytes = loop {
+            let result = self
+                .client
+                .post(&endpoint)
+                .header("Authorization", format!("Bearer {}", self.config.api_key))
+                .header("Content-Type", "application/json")
+                .body(request_bytes.clone())
+                .send()
+                .await;
 
-        tracing::debug!(
-            status = %resp.status(),
-            elapsed_ms = request_started.elapsed().as_millis(),
-            "LLM provider response headers received"
-        );
+            let resp = match result {
+                Ok(resp) => resp,
+                Err(error) => {
+                    if is_retryable_transport_error(&error) && attempt < MAX_LLM_ATTEMPTS {
+                        tracing::warn!(attempt, "LLM request failed; retrying");
+                        tokio::time::sleep(retry_delay(attempt)).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    // reqwest errors can embed the request URL, so report the failure class only.
+                    return Err(EngineError::Internal(format!(
+                        "LLM request {} after {attempt} attempt(s)",
+                        transport_error_class(&error)
+                    )));
+                }
+            };
 
-        if !resp.status().is_success() {
+            tracing::debug!(
+                status = %resp.status(),
+                elapsed_ms = request_started.elapsed().as_millis(),
+                "LLM provider response headers received"
+            );
+
             let status = resp.status();
-            let error_bytes = read_limited_body(resp, MAX_LLM_ERROR_BYTES).await?;
-            let err_text = String::from_utf8_lossy(&error_bytes);
+            if status.is_success() {
+                match read_body_limited(resp, MAX_LLM_RESPONSE_BYTES).await {
+                    Ok(bytes) => break bytes,
+                    Err(BodyReadError::Transport {
+                        retryable: true, ..
+                    }) if attempt < MAX_LLM_ATTEMPTS => {
+                        tracing::warn!(attempt, "Reading LLM response failed; retrying");
+                        tokio::time::sleep(retry_delay(attempt)).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    Err(error) => return Err(error.into_engine_error()),
+                }
+            }
+
+            if is_retryable_status(status) && attempt < MAX_LLM_ATTEMPTS {
+                tracing::warn!(%status, attempt, "LLM provider returned a retryable status");
+                tokio::time::sleep(retry_delay(attempt)).await;
+                attempt += 1;
+                continue;
+            }
+
+            // A failure while reading the error body must not mask the HTTP status.
+            let err_text = match read_body_limited(resp, MAX_LLM_ERROR_BYTES).await {
+                Ok(bytes) => {
+                    scrub_provider_error(&String::from_utf8_lossy(&bytes), &self.config.api_key)
+                }
+                Err(_) => "<error body unavailable>".to_string(),
+            };
             return Err(EngineError::Internal(format!(
                 "LLM returned HTTP {status}: {err_text}"
             )));
-        }
+        };
 
-        let response_bytes = read_limited_body(resp, MAX_LLM_RESPONSE_BYTES).await?;
         tracing::debug!(
             response_bytes = response_bytes.len(),
             elapsed_ms = request_started.elapsed().as_millis(),
@@ -437,6 +643,137 @@ mod tests {
         assert!(error
             .to_string()
             .contains("LLM response exceeds the 5 byte limit"));
+
+        server.await.unwrap();
+    }
+
+    fn env_from<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_string())
+        }
+    }
+
+    #[test]
+    fn debug_output_redacts_api_key() {
+        let config = LlmConfig {
+            api_key: "sk-super-secret".into(),
+            base_url: "https://example.test/v1".into(),
+            model: "m".into(),
+            temperature: 0.0,
+        };
+        let rendered = format!("{config:?}");
+        assert!(!rendered.contains("sk-super-secret"));
+        assert!(rendered.contains("<redacted>"));
+        assert!(rendered.contains("https://example.test/v1"));
+    }
+
+    #[test]
+    fn from_lookup_requires_key_only_when_asked() {
+        let empty = env_from(&[]);
+        assert!(LlmConfig::from_lookup(&empty, true).is_err());
+        let blank = env_from(&[("LLM_API_KEY", "  ")]);
+        assert!(LlmConfig::from_lookup(&blank, true).is_err());
+
+        let config = LlmConfig::from_lookup(&empty, false).unwrap();
+        assert!(config.api_key.is_empty());
+        assert_eq!(config.base_url, "https://api.openai.com/v1");
+        assert_eq!(config.model, "gpt-4o-mini");
+
+        let keyed = env_from(&[("LLM_API_KEY", "k"), ("LLM_MODEL", "x")]);
+        let config = LlmConfig::from_lookup(&keyed, true).unwrap();
+        assert_eq!(config.api_key, "k");
+        assert_eq!(config.model, "x");
+    }
+
+    #[test]
+    fn base_url_must_be_https_unless_loopback() {
+        for ok in [
+            "https://api.openai.com/v1",
+            "http://localhost:8080/v1",
+            "http://127.0.0.1:1234/v1",
+            "http://[::1]:1234/v1",
+        ] {
+            assert!(validate_base_url(ok).is_ok(), "{ok} should be accepted");
+        }
+        for bad in [
+            "http://api.example.com/v1",
+            "http://10.0.0.5/v1",
+            "ftp://example.com",
+            "not a url",
+        ] {
+            assert!(validate_base_url(bad).is_err(), "{bad} should be rejected");
+        }
+    }
+
+    #[test]
+    fn provider_error_scrubbing_removes_key_and_sk_tokens() {
+        let key = "abc123secret";
+        let body = format!(
+            "bad key {key}; also sk-proj-****wxyz and \"sk-live_ABC\" ok; normal text stays"
+        );
+        let scrubbed = scrub_provider_error(&body, key);
+        assert!(!scrubbed.contains(key));
+        assert!(!scrubbed.contains("sk-proj"));
+        assert!(!scrubbed.contains("sk-live"));
+        assert!(scrubbed.contains("normal text stays"));
+        assert_eq!(scrub_provider_error("plain", ""), "plain");
+    }
+
+    #[test]
+    fn retry_policy_covers_throttling_and_server_errors_only() {
+        use reqwest::StatusCode;
+        assert!(is_retryable_status(StatusCode::TOO_MANY_REQUESTS));
+        assert!(is_retryable_status(StatusCode::BAD_GATEWAY));
+        assert!(!is_retryable_status(StatusCode::UNAUTHORIZED));
+        assert!(!is_retryable_status(StatusCode::BAD_REQUEST));
+        assert_eq!(retry_delay(1), Duration::from_millis(500));
+        assert_eq!(retry_delay(2), Duration::from_millis(1000));
+    }
+
+    #[tokio::test]
+    async fn synthesis_without_api_key_fails_before_any_request() {
+        let synthesizer = Synthesizer::new(LlmConfig {
+            api_key: String::new(),
+            base_url: "http://127.0.0.1:1/v1".into(),
+            model: "m".into(),
+            temperature: 0.0,
+        });
+        let spec = ServiceSpec::parse(include_str!("../../examples/minimal/SPEC.md")).unwrap();
+        let error = synthesizer.synthesize(&spec, &[]).await.unwrap_err();
+        assert!(error.to_string().contains("LLM_API_KEY"));
+    }
+
+    #[tokio::test]
+    async fn truncated_response_body_error_omits_request_url() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await.unwrap();
+            // Promise 100 bytes, send 3, then close: the body read fails mid-stream.
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nabc",
+                )
+                .await
+                .unwrap();
+        });
+
+        let response = reqwest::get(format!("http://{address}/secret-path?token=abc"))
+            .await
+            .unwrap();
+        let error = read_limited_body(response, 1024).await.unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("Failed to read LLM response"));
+        assert!(!message.contains("secret-path"));
+        assert!(!message.contains("token=abc"));
+        assert!(!message.contains(&address.to_string()));
 
         server.await.unwrap();
     }

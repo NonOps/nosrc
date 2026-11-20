@@ -49,7 +49,7 @@ These limits mitigate resource exhaustion but require ongoing adversarial testin
 
 ## Logging
 
-Normal diagnostics are scoped to nosrc events. Verbose mode enables nosrc DEBUG events. Diagnostics omit API keys, authorization headers, prompts, generated source, request/response bodies, and query strings. However, bounded provider error details and assertion mismatch details may still contain sensitive context. Request paths can contain application-specific identifiers. Review logs before sharing them.
+Normal diagnostics are scoped to nosrc events. Verbose mode enables nosrc DEBUG events. Diagnostics omit API keys, authorization headers, prompts, generated source, request/response bodies, and query strings. `LlmConfig` prints the API key as `<redacted>` in `Debug` output, and bounded provider error details are scrubbed of the configured key and `sk-` style tokens before being reported (a best-effort filter; other provider-specific secret formats are not recognized). `LLM_BASE_URL` must use `https` unless it points at a loopback address, so the bearer token is not sent in cleartext over a network. Provider error details and assertion mismatch details may still contain other sensitive context. Request paths can contain application-specific identifiers. Review logs before sharing them.
 
 ## Known gaps and future capability requirements
 

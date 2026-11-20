@@ -401,7 +401,7 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::anyhow!("Failed to parse SPEC at {}: {error}", spec_path.display())
             })?;
 
-            let synthesizer = Synthesizer::new(LlmConfig::from_env()?);
+            let synthesizer = Synthesizer::new(LlmConfig::from_env_deferred_key()?);
             let cache = if no_cache {
                 None
             } else {
@@ -558,7 +558,7 @@ async fn main() -> anyhow::Result<()> {
                 "Loaded service specification"
             );
 
-            let synthesizer = Synthesizer::new(LlmConfig::from_env()?);
+            let synthesizer = Synthesizer::new(LlmConfig::from_env_deferred_key()?);
             let cache = if cli.no_cache {
                 tracing::info!("Artifact cache is disabled");
                 None
@@ -990,6 +990,30 @@ mod tests {
         assert_eq!(cached_generated, generated_count);
         assert_eq!(cached_rationale, rationale);
         assert_eq!(cached_generation.module_hash, generation.module_hash);
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+
+        // The API key is not part of the cache identity, so a keyless configuration
+        // still serves a verified cache hit without contacting the provider.
+        let keyless = Synthesizer::new(LlmConfig {
+            api_key: String::new(),
+            base_url: format!("http://{provider_address}/v1"),
+            model: "nosrc-test-model".to_string(),
+            temperature: 0.0,
+        });
+        let (keyless_generation, ..) = prepare_generation(&spec, &keyless, Some(&cache))
+            .await
+            .unwrap();
+        assert_eq!(keyless_generation.module_hash, generation.module_hash);
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+
+        // Without a cache entry, the keyless configuration fails before any request.
+        let empty_cache_directory = tempfile::tempdir().unwrap();
+        let empty_cache = ArtifactCache::new(empty_cache_directory.path());
+        let error = prepare_generation(&spec, &keyless, Some(&empty_cache))
+            .await
+            .err()
+            .expect("keyless synthesis without a cache hit must fail");
+        assert!(error.to_string().contains("LLM_API_KEY"));
         assert_eq!(request_count.load(Ordering::SeqCst), 1);
 
         let state = Arc::new(IngressState::new());
