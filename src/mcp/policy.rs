@@ -78,7 +78,6 @@ impl AcceptancePolicy {
         Ok(Self {
             spec_assertions,
             invariants: PolicyInvariants {
-                require_endpoint_coverage: true,
                 max_response_bytes: crate::engine::http_envelope::MAX_HANDLER_RESPONSE_BYTES,
                 max_fuel: DEFAULT_COMPONENT_FUEL,
                 max_memory_bytes: DEFAULT_COMPONENT_MEMORY_BYTES,
@@ -128,7 +127,6 @@ mod tests {
                 header_matches: None,
             }],
             invariants: PolicyInvariants {
-                require_endpoint_coverage: true,
                 max_response_bytes: crate::engine::http_envelope::MAX_HANDLER_RESPONSE_BYTES,
                 max_fuel: DEFAULT_COMPONENT_FUEL + 1,
                 max_memory_bytes: DEFAULT_COMPONENT_MEMORY_BYTES,
