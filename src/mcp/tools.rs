@@ -78,9 +78,12 @@ pub struct NosrcMcpServer {
 
 fn resolve_export_destination(root: &Path, name: &Path) -> anyhow::Result<PathBuf> {
     let mut components = name.components();
-    let valid_name = matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
+    let valid_name = matches!(components.next(), Some(Component::Normal(_)))
+        && components.next().is_none();
     if !valid_name {
-        anyhow::bail!("out_dir must be a single directory name beneath the configured export root");
+        anyhow::bail!(
+            "out_dir must be a single directory name beneath the configured export root"
+        );
     }
     std::fs::create_dir_all(root)?;
     let canonical_root = std::fs::canonicalize(root)?;
@@ -1208,8 +1211,17 @@ mod tests {
     #[test]
     fn export_destination_rejects_paths_outside_the_configured_root() {
         let temp = tempfile::tempdir().unwrap();
-        for invalid in [Path::new("../outside"), Path::new("nested/bundle"), Path::new("/tmp/outside"), Path::new("."), Path::new("")] {
-            assert!(resolve_export_destination(temp.path(), invalid).is_err(), "accepted {invalid:?}");
+        for invalid in [
+            Path::new("../outside"),
+            Path::new("nested/bundle"),
+            Path::new("/tmp/outside"),
+            Path::new("."),
+            Path::new(""),
+        ] {
+            assert!(
+                resolve_export_destination(temp.path(), invalid).is_err(),
+                "accepted {invalid:?}"
+            );
         }
         let resolved = resolve_export_destination(temp.path(), Path::new("bundle")).unwrap();
         assert_eq!(resolved, temp.path().canonicalize().unwrap().join("bundle"));
