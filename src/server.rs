@@ -18,9 +18,7 @@ const MAX_ACTIVE_CONNECTIONS: usize = 128;
 
 /// Acquire a connection slot without waiting, so the accept loop never spawns
 /// more than `MAX_ACTIVE_CONNECTIONS` connection tasks.
-fn try_acquire_connection_slot(
-    slots: &Arc<Semaphore>,
-) -> Option<OwnedSemaphorePermit> {
+fn try_acquire_connection_slot(slots: &Arc<Semaphore>) -> Option<OwnedSemaphorePermit> {
     slots.clone().try_acquire_owned().ok()
 }
 
