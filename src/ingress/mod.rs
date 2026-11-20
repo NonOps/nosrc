@@ -96,21 +96,25 @@ async fn admission_control(
     request: Request<Body>,
     next: Next,
 ) -> Response {
+    let is_head = request.method() == Method::HEAD;
     let path = request.uri().path();
     if path == "/healthz" || path == "/_nosrc/status" {
-        return next.run(request).await;
+        return strip_head_body(is_head, next.run(request).await);
     }
 
     let permit = match state.admission.clone().try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => {
             tracing::warn!("HTTP ingress admission limit reached");
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                [("retry-after", "1")],
-                "HTTP ingress is busy; retry shortly",
-            )
-                .into_response();
+            return strip_head_body(
+                is_head,
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    [("retry-after", "1")],
+                    "HTTP ingress is busy; retry shortly",
+                )
+                    .into_response(),
+            );
         }
     };
 
@@ -127,6 +131,13 @@ async fn admission_control(
         }
     };
     drop(permit);
+    strip_head_body(is_head, response)
+}
+
+fn strip_head_body(is_head: bool, mut response: Response) -> Response {
+    if is_head {
+        *response.body_mut() = Body::empty();
+    }
     response
 }
 
@@ -229,7 +240,6 @@ async fn handle_http_request(
     };
 
     let handler = active.handler.clone();
-    let is_head = method == Method::HEAD;
     let mut execution = tokio::task::spawn_blocking(move || {
         // A response timeout cannot preempt spawn_blocking work. Keep the permit inside
         // the task so timed-out work continues to occupy the serialized execution slot.
@@ -250,13 +260,7 @@ async fn handle_http_request(
             }
             .into_axum_response()
         }
-        Ok(Ok(Ok(response))) => {
-            let mut response = response.into_axum_response();
-            if is_head {
-                *response.body_mut() = Body::empty();
-            }
-            response
-        }
+        Ok(Ok(Ok(response))) => response.into_axum_response(),
         Ok(Ok(Err(error))) => {
             tracing::warn!(error = %error, "JavaScript handler execution failed");
             ErrorEnvelope::from_engine_error(&error).into_axum_response()
@@ -353,6 +357,23 @@ mod tests {
             assert_eq!(result.unwrap(), StatusCode::SERVICE_UNAVAILABLE);
         }
         drop(permits);
+    }
+
+    #[tokio::test]
+    async fn head_responses_without_an_active_generation_have_no_body() {
+        let app = build_ingress_router(Arc::new(IngressState::new()));
+        let request = Request::builder()
+            .method(Method::HEAD)
+            .uri("/hello")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(body.is_empty());
     }
 
     #[tokio::test]
