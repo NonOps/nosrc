@@ -84,7 +84,13 @@ fn resolve_export_destination(root: &Path, name: &Path) -> anyhow::Result<PathBu
     }
     std::fs::create_dir_all(root)?;
     let canonical_root = std::fs::canonicalize(root)?;
-    Ok(canonical_root.join(name))
+    let destination = canonical_root.join(name);
+    match std::fs::symlink_metadata(&destination) {
+        Ok(_) => anyhow::bail!("export destination already exists"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(destination)
 }
 
 async fn prepare_and_publish<F>(
@@ -1207,6 +1213,19 @@ mod tests {
         }
         let resolved = resolve_export_destination(temp.path(), Path::new("bundle")).unwrap();
         assert_eq!(resolved, temp.path().canonicalize().unwrap().join("bundle"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_destination_rejects_symlink_destinations() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let link = temp.path().join("escape");
+        symlink(outside.path(), &link).unwrap();
+
+        assert!(resolve_export_destination(temp.path(), Path::new("escape")).is_err());
     }
 
 }
