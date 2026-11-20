@@ -669,10 +669,19 @@ mod tests {
             }))
             .await;
         assert_eq!(prepared.is_error, Some(false));
+        let generation_id = prepared.structured_content.unwrap()["generation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let activation = server
+            .activate_app(Parameters(ActivateAppParams { generation_id }))
+            .await;
+        assert_eq!(activation.is_error, Some(true));
         assert_eq!(
-            prepared.structured_content.unwrap()["trusted_assertions_passed"],
-            0
+            activation.structured_content.unwrap()["message"],
+            "Activation requires an operator-controlled SPEC with at least one trusted verification case; review the draft and restart nosrc with --spec"
         );
+        assert!(server.lifecycle.lock().await.get_status().active_generation.is_none());
     }
 
     #[tokio::test]
