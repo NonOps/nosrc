@@ -54,6 +54,11 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Enforce minimum line coverage
+        # Baseline measured at 77.9% lines; the floor leaves headroom for noise and ratchets up
+        # over time. Black-box tests kill the spawned server, so its coverage is under-counted.
+        run: cargo llvm-cov report --fail-under-lines 70
+
       - name: Export lcov report
         run: cargo llvm-cov report --lcov --output-path lcov.info
 
