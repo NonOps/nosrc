@@ -732,4 +732,113 @@ A resilient spec-driven URL shortener.
             .unwrap_err()
             .contains("missing a Response status"));
     }
+
+    /// Small deterministic xorshift generator so the fuzz test needs no extra dependency
+    /// and any failure reproduces from the printed seed.
+    struct XorShift(u64);
+
+    impl XorShift {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn below(&mut self, bound: usize) -> usize {
+            (self.next() % bound.max(1) as u64) as usize
+        }
+    }
+
+    const FUZZ_SNIPPETS: &[&str] = &[
+        "# Service: X\n",
+        "## Capabilities\n",
+        "- state: volatile\n",
+        "- state: durable\n",
+        "- egress: [\"example.com\"]\n",
+        "## Endpoints\n",
+        "### `GET /a/{id}`\n",
+        "### `POST /`\n",
+        "### `WAT /x`\n",
+        "- Response `200`: ok\n",
+        "- Response `99999`: bad\n",
+        "- Rules: anything at all\n",
+        "## Verification\n",
+        "### `GET /a/1?x=%zz&x=2`\n",
+        "- Response `200`\n",
+        "- Body contains: `hi`\n",
+        "- Request headers: a=b\n",
+        "`\n",
+        "###\n",
+        "- \n",
+        "\u{0}\u{feff}\u{202e}\n",
+        "\r\n\t\n",
+    ];
+
+    #[test]
+    fn parser_never_panics_on_mutated_specs() {
+        let reference = include_str!("../../examples/minimal/SPEC.md");
+        for seed in 1..=300_u64 {
+            let mut rng = XorShift(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+            let mut lines: Vec<String> = reference.lines().map(str::to_string).collect();
+            for _ in 0..rng.below(8) + 1 {
+                match rng.below(4) {
+                    0 if !lines.is_empty() => {
+                        let at = rng.below(lines.len());
+                        lines.remove(at);
+                    }
+                    1 => {
+                        let at = rng.below(lines.len() + 1);
+                        lines.insert(at, FUZZ_SNIPPETS[rng.below(FUZZ_SNIPPETS.len())].into());
+                    }
+                    2 if !lines.is_empty() => {
+                        let at = rng.below(lines.len());
+                        let line = &mut lines[at];
+                        let cut = line.char_indices().nth(rng.below(line.chars().count() + 1));
+                        if let Some((index, _)) = cut {
+                            line.truncate(index);
+                        }
+                    }
+                    _ if !lines.is_empty() => {
+                        let at = rng.below(lines.len());
+                        let other = rng.below(lines.len());
+                        lines.swap(at, other);
+                    }
+                    _ => {}
+                }
+            }
+            let mutated = lines.join("\n");
+            // Both outcomes are acceptable; panicking is not. Validation helpers must
+            // also stay total on whatever the parser accepted.
+            let outcome = std::panic::catch_unwind(|| {
+                if let Ok(spec) = ServiceSpec::parse(&mutated) {
+                    let _ = spec.validate_verification();
+                }
+            });
+            assert!(
+                outcome.is_ok(),
+                "parser panicked for seed {seed} on input:\n{mutated}"
+            );
+        }
+    }
+
+    #[test]
+    fn parser_handles_pathological_inputs_without_panicking() {
+        let inputs = [
+            String::new(),
+            "\n\n\n".to_string(),
+            "#".to_string(),
+            "### `".to_string(),
+            "### ``".to_string(),
+            "### `GET`".to_string(),
+            "- Response `".to_string(),
+            "## Verification\n### `GET /`\n- Response `abc`".to_string(),
+            "\u{0}".repeat(10_000),
+            "### `GET /a`\n".repeat(5_000),
+            format!("# Service: {}\n", "x".repeat(1_000_000)),
+        ];
+        for input in inputs {
+            let _ = ServiceSpec::parse(&input);
+        }
+    }
 }

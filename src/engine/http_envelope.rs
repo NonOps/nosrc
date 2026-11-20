@@ -292,6 +292,29 @@ mod tests {
     }
 
     #[test]
+    fn header_names_are_lowercased_and_non_utf8_values_dropped() {
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Mixed-Case", "value".parse().unwrap());
+        headers.insert(
+            "x-binary",
+            axum::http::HeaderValue::from_bytes(&[0xff, 0xfe]).unwrap(),
+        );
+        let request = RequestEnvelope::try_from_parts(
+            &Method::GET,
+            &"/".parse().unwrap(),
+            &headers,
+            Bytes::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            request.headers.get("x-mixed-case").map(String::as_str),
+            Some("value")
+        );
+        assert!(!request.headers.contains_key("x-binary"));
+    }
+
+    #[test]
     fn invalid_utf8_request_body_is_rejected() {
         let error = RequestEnvelope::try_from_parts(
             &Method::POST,
