@@ -339,6 +339,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn host_probes_reject_a_response_with_a_non_string_body() {
+        let engine = QuickJsEngine::new().unwrap();
+        let source = r#"
+            export function handle(_requestJson) {
+                return JSON.stringify({ status: 200, headers: {}, body: 42 });
+            }
+        "#;
+        let compiled = engine.compile_handler(source).await.unwrap();
+        let mut candidate = engine
+            .instantiate(&compiled, DEFAULT_COMPONENT_FUEL)
+            .unwrap();
+
+        let results = HostProbeVerifier.evaluate_handler(&mut candidate);
+        assert_eq!(results.len(), 3);
+        assert!(results.iter().all(|result| !result.passed), "{results:?}");
+        assert!(
+            results.iter().all(|result| result
+                .error_message
+                .as_deref()
+                .is_some_and(|message| message.contains("invalid response envelope"))),
+            "{results:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn host_probes_reject_a_candidate_that_traps_on_each_probe() {
         let engine = QuickJsEngine::new().unwrap();
         let source = r#"
