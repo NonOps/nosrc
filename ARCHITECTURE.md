@@ -27,7 +27,8 @@ flowchart TD
     CACHE -->|Yes| COMPILE["Compile cached component"]
     COMPONENTIZE --> COMPILE
     COMPILE --> TRUST["Trusted SPEC verification"]
-    TRUST --> GENERATED["Generated assertion verification"]
+    TRUST --> HOST["Host-owned ABI probes"]
+    HOST --> GENERATED["Generated assertion verification"]
     GENERATED --> PROD["Fresh production instance"]
     PROD --> MODES{"Selected operating mode"}
     MODES --> HTTP["HTTP ingress"]
@@ -48,13 +49,14 @@ The HTTP and export CLI paths:
 1. Read and parse the selected SPEC.
 2. Validate runtime-supported capabilities and the human-authored verification suite.
 3. Derive a SHA-256 cache identity from the raw SPEC, configured provider URL/model, synthesis prompt, WIT contract, QuickJS fuel and linear-memory limits, componentizer/runtime configuration flags, package version, and `Cargo.lock`. Other execution limits that do not affect artifact generation are not separately represented in the key.
-4. Load a matching local cache entry or request JavaScript and supplemental assertions from the configured OpenAI-compatible endpoint.
+4. Load a matching local cache entry or request JavaScript and supplemental assertions from the configured OpenAI-compatible endpoint. The model prompt excludes the operator's `## Verification` section; optional `## Examples` content is illustrative only.
 5. Componentize JavaScript when synthesis was required; compile the component with the current Wasmtime component engine even on a cache hit.
 6. Run trusted SPEC assertions against an isolated candidate instance.
-7. Run generated supplemental assertions against a different isolated candidate instance.
-8. Reject preparation if either mandatory suite fails.
-9. Instantiate a fresh production handler only after successful verification.
-10. Store newly generated verified artifacts in the local cache when caching is enabled.
+7. Run fixed host-generated adversarial ABI probes against a separate disposable candidate instance.
+8. Run generated supplemental assertions against another isolated candidate instance.
+9. Reject preparation if the trusted suite, host probes, or generated suite fails.
+10. Instantiate a fresh production handler only after all required checks pass.
+11. Store newly generated verified artifacts in the local cache when caching is enabled.
 
 The export command then writes the exported files and exits without starting HTTP ingress. The HTTP command starts its listener only after successful preparation. The `serve --bundle` command instead loads the exported component and assertion suites, verifies integrity metadata, reruns both suites on isolated candidates, and opens HTTP ingress only after successful verification. It does not load a SPEC, instantiate the synthesizer, or read LLM credentials.
 
@@ -70,7 +72,7 @@ The current runtime accepts only `state: volatile`, no outbound egress declarati
 
 ### Synthesis
 
-The synthesizer calls an OpenAI-compatible chat-completions endpoint. `LLM_API_KEY` is required when a request is made (HTTP and export check it lazily, so a cache hit needs no key); `LLM_BASE_URL` (https, or loopback http) and `LLM_MODEL` are optional. `LlmConfig` redacts the key in `Debug`, provider error bodies are scrubbed before reporting, and transient failures (429, 5xx, connect, timeout) are retried with backoff. The expected output contains JavaScript handler source, a code-format identifier, generated assertions, and optional rationale.
+The synthesizer calls an OpenAI-compatible chat-completions endpoint. `LLM_API_KEY` is required when a request is made (HTTP and export check it lazily, so a cache hit needs no key); `LLM_BASE_URL` (https, or loopback http) and `LLM_MODEL` are optional. `LlmConfig` redacts the key in `Debug`, provider error bodies are scrubbed before reporting, and transient failures (429, 5xx, connect, timeout) are retried with backoff. The model receives the SPEC with the operator-controlled `## Verification` section removed. A `## Examples` section remains visible as explanatory input only; it is not acceptance policy. The expected output contains JavaScript handler source, a code-format identifier, generated assertions, and optional rationale.
 
 Generated code is untrusted input. It must satisfy the expected schema, componentize successfully, and pass the required verification suites before activation.
 
@@ -94,11 +96,13 @@ JavaScript module-level variables are the only current guest state. They survive
 
 ### Verification
 
-Trusted SPEC cases and generated supplemental assertions run on separate disposable candidate instances. Each suite runs sequentially on one instance so stateful request sequences within that suite are preserved. The production instance is created separately after required suites pass.
+Trusted SPEC cases, host-generated ABI probes, and generated supplemental assertions each run on separate disposable candidate instances. Each assertion suite runs sequentially on one instance so stateful request sequences within that suite are preserved. The production instance is created separately after required checks pass.
 
-The verifier checks configured response status, body substring, and response-header expectations. Trusted cases can also set request headers and decoded query parameters. The string-map request ABI cannot represent multi-valued query parameters; repeated query keys in trusted verification headings are rejected.
+The trusted verifier checks operator-configured response status, body substring, and response-header expectations. Trusted cases can also set request headers and decoded query parameters. The string-map request ABI cannot represent multi-valued query parameters; repeated query keys in trusted verification headings are rejected.
 
-Passing assertions are acceptance checks against authored examples, not a proof of correctness, absence of vulnerabilities, or semantic equivalence to the SPEC.
+Host probes are fixed by the runtime and are not derived from SPEC text or model output. They exercise a minimal request, an encoded path with unusual query/header values, and a JSON body containing escaped delimiters and Unicode. They require the guest not to trap and to return a bounded, syntactically valid response envelope with a valid HTTP status and header syntax. They do not test application-specific route semantics, authorization, data handling, or general security.
+
+Generated assertions are supplemental regression checks. Passing trusted assertions and host probes is not proof of correctness, absence of vulnerabilities, or semantic equivalence to the SPEC.
 
 ### Artifact cache
 
