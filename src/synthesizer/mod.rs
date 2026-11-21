@@ -321,7 +321,7 @@ fn synthesis_spec_markdown(markdown: &str) -> String {
             visible.push_str("\n\n");
         }
         visible.push_str(
-            "## Examples\nNo additional illustrative examples were provided.              Follow the endpoint descriptions and response contracts above.",
+            "## Examples\nNo additional illustrative examples were provided. Follow the endpoint descriptions and response contracts above.",
         );
     }
     visible
