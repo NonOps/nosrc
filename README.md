@@ -48,12 +48,13 @@ These are operating modes of one executable, not separate guest runtimes. MCP ca
 ## Runtime and verification
 
 - Loads and parses the operator-provided `SPEC.md`.
-- Calls an OpenAI-compatible chat-completions endpoint to synthesize a self-contained JavaScript ES module and supplemental assertions when no matching artifact is cached.
+- Calls an OpenAI-compatible chat-completions endpoint to synthesize a self-contained JavaScript ES module and supplemental assertions when no matching artifact is cached. The model receives the SPEC with its operator-controlled `## Verification` section removed; an optional `## Examples` section remains illustrative, not authoritative.
 - Uses a content-addressed local cache keyed by the raw SPEC, provider/model configuration, synthesis prompt, WIT contract, resource budgets, componentizer/runtime versions, and `Cargo.lock`.
 - Componentizes JavaScript in-process with `componentize-qjs` and executes it with Wasmtime's component model.
 - Applies Wasm fuel and linear-memory limits to the component store.
-- Runs human-authored SPEC verification cases and a separate model-generated assertion suite against isolated candidate instances before activation in HTTP and SPEC-driven MCP workflows.
-- Keeps the production handler instance separate from verifier instances so verification requests cannot mutate its initial state.
+- Runs human-authored SPEC verification cases, fixed host-generated adversarial ABI probes, and a separate model-generated assertion suite against distinct disposable candidate instances before activation.
+- Keeps the production handler instance separate from every verifier instance so verification requests and probes cannot mutate its initial state.
+- Host probes check that selected unusual but valid request envelopes do not trap the guest and produce a bounded, syntactically valid HTTP response envelope. They do not establish endpoint semantics, authorization correctness, or general security.
 - Preserves JavaScript module-level state between requests handled by the same active generation.
 
 The model-generated assertion suite is supplemental. It does not replace the operator-authored SPEC verification suite, and passing tests do not prove correctness or security.
@@ -159,7 +160,7 @@ The manifest is unsigned, and the exported assertion suites are files in the sam
 
 ## SPEC verification format
 
-Every declared endpoint must have at least one matching case under `## Verification`. Cases use a concrete request target (including a sample value for each `:parameter` segment):
+Every declared endpoint must have at least one matching case under `## Verification`. This section is operator-controlled acceptance policy and is never sent to the synthesis model. Put optional illustrative request/response material under `## Examples`; those examples help explain behavior but are not acceptance criteria. Cases use a concrete request target (including a sample value for each `:parameter` segment):
 
 ```markdown
 ## Verification
