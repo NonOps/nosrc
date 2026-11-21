@@ -281,6 +281,56 @@ mod tests {
         "finished"
     }
 
+    async fn never_finishing_response(State(started): State<Arc<Notify>>) -> &'static str {
+        started.notify_one();
+        std::future::pending::<&'static str>().await
+    }
+
+    async fn assert_shutdown_aborts_stalled_connection(drain_timeout: Duration) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let started = Arc::new(Notify::new());
+        let app = Router::new()
+            .route("/", get(never_finishing_response))
+            .with_state(started.clone());
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        let server = tokio::spawn(serve_with_shutdown(
+            listener,
+            app,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            drain_timeout,
+        ));
+
+        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+        client
+            .write_all(b"GET / HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n")
+            .await
+            .unwrap();
+        started.notified().await;
+        shutdown_tx.send(()).unwrap();
+
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response))
+            .await
+            .expect("stalled connection was not aborted before the test deadline")
+            .unwrap();
+        assert!(response.is_empty(), "stalled handler unexpectedly responded");
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_aborts_connections_when_drain_deadline_expires() {
+        assert_shutdown_aborts_stalled_connection(Duration::from_millis(25)).await;
+    }
+
+    #[tokio::test]
+    async fn zero_shutdown_timeout_aborts_connections_immediately() {
+        assert_shutdown_aborts_stalled_connection(Duration::ZERO).await;
+    }
+
     #[tokio::test]
     async fn graceful_shutdown_drains_an_in_flight_request() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
