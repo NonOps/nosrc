@@ -526,7 +526,6 @@ mod tests {
         assert_eq!(response.body.as_deref(), Some("healthy"));
     }
 
-
     #[tokio::test]
     async fn epoch_deadline_interrupts_guest_independently_of_fuel_and_recovers() {
         let (engine, compiled) = test_support::compiled().await;
