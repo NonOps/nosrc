@@ -548,7 +548,13 @@ mod tests {
             "prepare_app failed: {:?}",
             prepared.structured_content
         );
-        let generation_id = prepared.structured_content.unwrap()["generation_id"]
+        let prepared_content = prepared.structured_content.unwrap();
+        assert_eq!(prepared_content["telemetry"]["schema_version"], 1);
+        assert!(prepared_content["telemetry"]["last_invocation_fuel_consumed"].is_null());
+        assert!(prepared_content["telemetry"]["generation_fuel_high_water"].is_null());
+        assert!(prepared_content["telemetry"]["instance_memory_high_water_bytes"].is_null());
+        assert!(prepared_content["telemetry"]["generation_memory_high_water_bytes"].is_null());
+        let generation_id = prepared_content["generation_id"]
             .as_str()
             .unwrap()
             .to_string();
