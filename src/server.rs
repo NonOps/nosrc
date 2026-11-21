@@ -28,13 +28,25 @@ fn try_acquire_connection_slot(slots: &Arc<Semaphore>) -> Option<OwnedSemaphoreP
 }
 
 fn is_retryable_accept_error(error: &io::Error) -> bool {
-    matches!(
+    if matches!(
         error.kind(),
         io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock | io::ErrorKind::ConnectionAborted
-    ) || matches!(
-        error.raw_os_error(),
-        Some(libc::EMFILE | libc::ENFILE | libc::ECONNABORTED)
-    )
+    ) {
+        return true;
+    }
+
+    #[cfg(unix)]
+    {
+        matches!(
+            error.raw_os_error(),
+            Some(libc::EMFILE | libc::ENFILE | libc::ECONNABORTED)
+        )
+    }
+
+    #[cfg(not(unix))]
+    {
+        false
+    }
 }
 
 /// Retry transient accept failures without taking down the listener. Kept generic
@@ -213,7 +225,7 @@ mod tests {
     async fn injected_transient_accept_failures_are_retried() {
         let attempts = Arc::new(AtomicUsize::new(0));
         let mut results = VecDeque::from([
-            Err(io::Error::from_raw_os_error(libc::EMFILE)),
+            Err(io::Error::new(io::ErrorKind::WouldBlock, "temporarily unavailable")),
             Err(io::Error::new(io::ErrorKind::ConnectionAborted, "aborted")),
             Ok(42_u8),
         ]);
@@ -228,6 +240,23 @@ mod tests {
 
         assert_eq!(accepted, 42);
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn descriptor_exhaustion_accept_failure_is_retried() {
+        let mut results = VecDeque::from([
+            Err(io::Error::from_raw_os_error(libc::EMFILE)),
+            Ok(42_u8),
+        ]);
+
+        let accepted = accept_with_retry(|| {
+            std::future::ready(results.pop_front().expect("injected result"))
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(accepted, 42);
     }
 
     #[tokio::test]
