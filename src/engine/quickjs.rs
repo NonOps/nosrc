@@ -1,7 +1,7 @@
 use componentize_qjs::{componentize, ComponentizeOpts, Runtime};
 use sha2::{Digest, Sha256};
 use wasmtime::component::{Component, Linker, TypedFunc};
-use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
+use wasmtime::{Config, Engine, ResourceLimiter, Store, StoreLimits, StoreLimitsBuilder};
 
 use crate::engine::http_envelope::{RequestEnvelope, ResponseEnvelope, MAX_HANDLER_RESPONSE_BYTES};
 use crate::error::{EngineError, SandboxTrap};
@@ -19,6 +19,71 @@ world handler {
 
 struct ComponentStoreState {
     limits: StoreLimits,
+    memory_high_water_bytes: Option<usize>,
+    pending_memory_growth: Option<(usize, usize)>,
+}
+
+impl ResourceLimiter for ComponentStoreState {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        let allowed = self.limits.memory_growing(current, desired, maximum)?;
+        if allowed {
+            let previous_peak = self.memory_high_water_bytes.unwrap_or(current).max(current);
+            self.pending_memory_growth = Some((previous_peak, desired));
+            self.memory_high_water_bytes = Some(previous_peak.max(desired));
+        }
+        Ok(allowed)
+    }
+
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        self.limits.table_growing(current, desired, maximum)
+    }
+
+    fn memory_grow_failed(&mut self, error: wasmtime::Error) -> wasmtime::Result<()> {
+        if let Some((previous_peak, desired)) = self.pending_memory_growth.take() {
+            if self.memory_high_water_bytes == Some(desired) {
+                self.memory_high_water_bytes = Some(previous_peak);
+            }
+        }
+        self.limits.memory_grow_failed(error)
+    }
+
+    fn table_grow_failed(&mut self, error: wasmtime::Error) -> wasmtime::Result<()> {
+        self.limits.table_grow_failed(error)
+    }
+
+    fn instances(&self) -> usize {
+        self.limits.instances()
+    }
+
+    fn tables(&self) -> usize {
+        self.limits.tables()
+    }
+
+    fn memories(&self) -> usize {
+        self.limits.memories()
+    }
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct RuntimeTelemetry {
+    /// Fuel consumed by the most recent invocation; absent when Wasmtime could not report it.
+    pub last_invocation_fuel_consumed: Option<u64>,
+    /// Largest fuel consumption observed by this handler generation.
+    pub generation_fuel_high_water: Option<u64>,
+    /// Largest linear-memory size observed by the current Wasmtime instance.
+    pub instance_memory_high_water_bytes: Option<usize>,
+    /// Largest linear-memory size observed across this handler generation, including replaced instances.
+    pub generation_memory_high_water_bytes: Option<usize>,
 }
 
 type ComponentHandle = TypedFunc<(String,), (String,)>;
@@ -44,6 +109,7 @@ pub struct QuickJsHandler {
     fuel_budget: u64,
     response_limit_bytes: usize,
     memory_limit_bytes: usize,
+    telemetry: RuntimeTelemetry,
 }
 
 impl QuickJsEngine {
@@ -165,6 +231,7 @@ impl QuickJsEngine {
             fuel_budget,
             response_limit_bytes,
             memory_limit_bytes,
+            telemetry: RuntimeTelemetry::default(),
         })
     }
 }
@@ -183,7 +250,14 @@ fn instantiate_component(
         .memories(4)
         .build();
 
-    let mut store = Store::new(engine, ComponentStoreState { limits });
+    let mut store = Store::new(
+        engine,
+        ComponentStoreState {
+            limits,
+            memory_high_water_bytes: None,
+            pending_memory_growth: None,
+        },
+    );
     store
         .set_fuel(fuel_budget)
         .map_err(|error| EngineError::Internal(format!("Failed to set component fuel: {error}")))?;
@@ -210,9 +284,49 @@ fn instantiate_component(
 }
 
 impl QuickJsHandler {
+    /// Return bounded resource measurements without exposing guest data.
+    pub fn telemetry_snapshot(&self) -> RuntimeTelemetry {
+        let mut telemetry = self.telemetry.clone();
+        telemetry.instance_memory_high_water_bytes =
+            self.store.data().memory_high_water_bytes;
+        telemetry.generation_memory_high_water_bytes = match (
+            telemetry.generation_memory_high_water_bytes,
+            telemetry.instance_memory_high_water_bytes,
+        ) {
+            (Some(generation), Some(instance)) => Some(generation.max(instance)),
+            (generation, instance) => generation.or(instance),
+        };
+        telemetry
+    }
+
+    fn record_invocation_telemetry(&mut self) {
+        self.telemetry.last_invocation_fuel_consumed = self
+            .store
+            .get_fuel()
+            .ok()
+            .map(|remaining| self.fuel_budget.saturating_sub(remaining));
+        if let Some(consumed) = self.telemetry.last_invocation_fuel_consumed {
+            self.telemetry.generation_fuel_high_water = Some(
+                self.telemetry
+                    .generation_fuel_high_water
+                    .unwrap_or_default()
+                    .max(consumed),
+            );
+        }
+        if let Some(memory) = self.store.data().memory_high_water_bytes {
+            self.telemetry.generation_memory_high_water_bytes = Some(
+                self.telemetry
+                    .generation_memory_high_water_bytes
+                    .unwrap_or_default()
+                    .max(memory),
+            );
+        }
+    }
+
     /// Invoke the handler while retaining the same component instance between calls.
     /// This preserves JavaScript module state across successful requests.
     pub fn invoke(&mut self, request: &RequestEnvelope) -> Result<ResponseEnvelope, EngineError> {
+        self.telemetry.last_invocation_fuel_consumed = None;
         let request_json = serde_json::to_string(request).map_err(|error| {
             EngineError::Internal(format!("Failed to serialize request envelope: {error}"))
         })?;
@@ -224,6 +338,7 @@ impl QuickJsHandler {
         let response_json = match self.handle.call(&mut self.store, (request_json,)) {
             Ok((response_json,)) => response_json,
             Err(error) => {
+                self.record_invocation_telemetry();
                 let trap = classify_component_trap(error);
                 // Wasmtime component instances cannot be re-entered after a guest trap.
                 // Recreate the instance from the already-compiled component so one bad
@@ -247,6 +362,8 @@ impl QuickJsHandler {
                 return Err(trap);
             }
         };
+
+        self.record_invocation_telemetry();
 
         if response_json.len() > self.response_limit_bytes {
             return Err(EngineError::Internal(format!(
