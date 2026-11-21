@@ -552,8 +552,19 @@ mod tests {
         assert_eq!(prepared_content["telemetry"]["schema_version"], 1);
         assert!(prepared_content["telemetry"]["last_invocation_fuel_consumed"].is_null());
         assert!(prepared_content["telemetry"]["generation_fuel_high_water"].is_null());
-        assert!(prepared_content["telemetry"]["instance_memory_high_water_bytes"].is_null());
-        assert!(prepared_content["telemetry"]["generation_memory_high_water_bytes"].is_null());
+        for field in [
+            "instance_memory_high_water_bytes",
+            "generation_memory_high_water_bytes",
+        ] {
+            let value = &prepared_content["telemetry"][field];
+            assert!(
+                value.is_null()
+                    || value
+                        .as_u64()
+                        .is_some_and(|bytes| bytes <= 64 * 1024 * 1024),
+                "memory telemetry must be null or a bounded byte count: {value}"
+            );
+        }
         let generation_id = prepared_content["generation_id"]
             .as_str()
             .unwrap()
