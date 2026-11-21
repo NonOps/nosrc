@@ -60,6 +60,15 @@ pub struct Cli {
     /// Bypass artifact cache reads and writes and always synthesize a new handler.
     #[arg(long)]
     pub no_cache: bool,
+
+    /// Maximum time in seconds to drain in-flight HTTP connections after SIGINT/SIGTERM.
+    #[arg(
+        long = "shutdown-timeout",
+        default_value_t = 30,
+        env = "NOSRC_SHUTDOWN_TIMEOUT_SECS",
+        global = true
+    )]
+    pub shutdown_timeout_secs: u64,
 }
 
 #[derive(Subcommand, Debug)]
@@ -148,9 +157,22 @@ fn initialize_tracing(verbose: bool) {
         .init();
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let result = runtime.block_on(run(cli));
+
+    // Tokio's stdin reader uses an uncancellable blocking read. Bound runtime
+    // teardown so SIGTERM can stop an MCP process even while its client keeps
+    // the stdio pipe open.
+    runtime.shutdown_timeout(std::time::Duration::from_secs(1));
+    result
+}
+
+async fn run(cli: Cli) -> anyhow::Result<()> {
+    let shutdown_timeout = std::time::Duration::from_secs(cli.shutdown_timeout_secs);
 
     match cli.command {
         Some(Commands::Export {
@@ -240,7 +262,7 @@ async fn main() -> anyhow::Result<()> {
                 "nosrc is serving a verified offline bundle"
             );
 
-            crate::server::serve(listener, app).await?;
+            crate::server::serve(listener, app, shutdown_timeout).await?;
             Ok(())
         }
         Some(Commands::Mcp {
@@ -281,6 +303,7 @@ async fn main() -> anyhow::Result<()> {
                 no_cache,
                 export_root,
                 http_port.map(|port| (http_bind, port)),
+                shutdown_timeout,
             )
             .await
         }
@@ -340,7 +363,7 @@ async fn main() -> anyhow::Result<()> {
                 "nosrc is listening with a verified JavaScript handler"
             );
 
-            crate::server::serve(listener, app).await?;
+            crate::server::serve(listener, app, shutdown_timeout).await?;
             Ok(())
         }
     }
@@ -393,6 +416,29 @@ mod tests {
                     .map(str::to_owned)
             })
             .unwrap_or_else(|| panic!("Cargo.toml has no `{key}` entry"))
+    }
+
+    #[test]
+    fn shutdown_timeout_defaults_to_thirty_seconds_and_is_global() {
+        let cli = Cli::try_parse_from(["nosrc"]).unwrap();
+        assert_eq!(cli.shutdown_timeout_secs, 30);
+
+        let cli = Cli::try_parse_from(["nosrc", "--shutdown-timeout", "0"]).unwrap();
+        assert_eq!(cli.shutdown_timeout_secs, 0);
+
+        let cli = Cli::try_parse_from(["nosrc", "mcp", "--shutdown-timeout", "7"]).unwrap();
+        assert_eq!(cli.shutdown_timeout_secs, 7);
+
+        let cli = Cli::try_parse_from([
+            "nosrc",
+            "--shutdown-timeout",
+            "11",
+            "serve",
+            "--bundle",
+            "./dist",
+        ])
+        .unwrap();
+        assert_eq!(cli.shutdown_timeout_secs, 11);
     }
 
     #[test]

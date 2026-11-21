@@ -17,6 +17,7 @@ cargo run -- [OPTIONS]
 | `--cache-dir PATH` | `./.nosrc-cache` | Local content-addressed artifact cache |
 | `--export-root PATH` | `./.nosrc-exports` | Root directory for MCP `export_app`; the tool accepts only one child directory name |
 | `--no-cache` | off | Bypass cache reads and writes |
+| `--shutdown-timeout SECONDS` | `30` | Maximum time to drain in-flight HTTP connections after SIGINT or (on Unix) SIGTERM; also settable with `NOSRC_SHUTDOWN_TIMEOUT_SECS` |
 
 Example:
 
@@ -60,6 +61,7 @@ cargo run -- mcp [OPTIONS]
 | `--cache-dir PATH` | `./.nosrc-cache` | Local content-addressed artifact cache |
 | `--no-cache` | off | Bypass cache reads and writes |
 | `--verbose`, `-v` | off | Enable diagnostics on stderr |
+| `--shutdown-timeout SECONDS` | `30` | Maximum time to drain shared HTTP connections after SIGINT or (on Unix) SIGTERM; also settable with `NOSRC_SHUTDOWN_TIMEOUT_SECS` |
 
 Example:
 
@@ -89,6 +91,7 @@ cargo run -- serve --bundle ./dist [OPTIONS]
 | `--port PORT`, `-p PORT` | `8080` | HTTP listen port |
 | `--bind IP` | `127.0.0.1` | Listen address; external binding must be explicit |
 | `--verbose`, `-v` | off | Enable nosrc DEBUG diagnostics |
+| `--shutdown-timeout SECONDS` | `30` | Maximum time to drain in-flight HTTP connections after SIGINT or (on Unix) SIGTERM; also settable with `NOSRC_SHUTDOWN_TIMEOUT_SECS` |
 
 This mode does not read `SPEC.md`, require `LLM_API_KEY`, synthesize code, or contact a model provider. It validates the component digest and manifest fields, checks bounded regular bundle files, compiles the component, and reruns the assertion suites in separate candidate instances according to the manifest's `policy_mode`. The listener starts only after all checks pass. The manifest is unsigned; these checks do not authenticate the bundle or protect against an attacker who can replace the component, assertions, and manifest together. Artifact symlinks/reparse points are rejected on Unix and Windows; other operating-system targets fail closed because safe no-follow file opening is unavailable.
 
@@ -118,6 +121,8 @@ Synthesis requests are retried up to three attempts total, with exponential back
 
 - Invalid/unreadable SPEC files, unsupported requested capabilities, missing synthesis credentials, synthesis/schema failures, componentization failures, malformed bundles, digest mismatches, and failed mandatory verification prevent the selected workflow from proceeding.
 - HTTP ingress is not started until startup preparation and verification succeed.
+- HTTP modes handle SIGINT and, on Unix, SIGTERM by stopping accepts and draining in-flight connections for up to the configured shutdown timeout (30 seconds by default). Remaining connections are aborted when the deadline expires. Set the timeout to `0` to skip draining and abort active connections immediately.
+- In MCP shared-HTTP mode, a shutdown signal ends the HTTP listener and then the MCP process; if the stdio client disconnects first, the shared HTTP task is stopped.
 - Export files are staged in a temporary sibling directory and published together by directory rename. The destination must not already exist; an existing file, directory, or symlink is left untouched and causes export to fail. A staging or publication failure does not expose a partial bundle.
 - MCP preparation does not activate a candidate implicitly. Activation is a separate tool call.
 - Cache errors are treated as cache misses or best-effort store failures where appropriate; cache data never bypasses verification.
