@@ -27,7 +27,7 @@ form_urlencoded = "1.2"
 
 # State & Persistence
 rusqlite = { version = "0.33", features = ["bundled"] }
-redb = "2.3"
+redb = "4.6"
 
 # Lock-Free Hot-Swapping & Concurrency
 arc-swap = "1.7"
