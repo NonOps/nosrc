@@ -292,7 +292,6 @@ async fn read_limited_body(
         .map_err(BodyReadError::into_engine_error)
 }
 
-
 /// Return the model-visible SPEC, excluding operator acceptance policy.
 ///
 /// Verification cases are deliberately host-only inputs. Examples remain visible but
