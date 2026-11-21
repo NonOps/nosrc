@@ -157,9 +157,21 @@ fn initialize_tracing(verbose: bool) {
         .init();
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let result = runtime.block_on(run(cli));
+
+    // Tokio's stdin reader uses an uncancellable blocking read. Bound runtime
+    // teardown so SIGTERM can stop an MCP process even while its client keeps
+    // the stdio pipe open.
+    runtime.shutdown_timeout(std::time::Duration::from_secs(1));
+    result
+}
+
+async fn run(cli: Cli) -> anyhow::Result<()> {
     let shutdown_timeout = std::time::Duration::from_secs(cli.shutdown_timeout_secs);
 
     match cli.command {
