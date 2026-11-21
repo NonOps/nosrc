@@ -225,7 +225,10 @@ mod tests {
     async fn injected_transient_accept_failures_are_retried() {
         let attempts = Arc::new(AtomicUsize::new(0));
         let mut results = VecDeque::from([
-            Err(io::Error::new(io::ErrorKind::WouldBlock, "temporarily unavailable")),
+            Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "temporarily unavailable",
+            )),
             Err(io::Error::new(io::ErrorKind::ConnectionAborted, "aborted")),
             Ok(42_u8),
         ]);
@@ -245,16 +248,13 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn descriptor_exhaustion_accept_failure_is_retried() {
-        let mut results = VecDeque::from([
-            Err(io::Error::from_raw_os_error(libc::EMFILE)),
-            Ok(42_u8),
-        ]);
+        let mut results =
+            VecDeque::from([Err(io::Error::from_raw_os_error(libc::EMFILE)), Ok(42_u8)]);
 
-        let accepted = accept_with_retry(|| {
-            std::future::ready(results.pop_front().expect("injected result"))
-        })
-        .await
-        .unwrap();
+        let accepted =
+            accept_with_retry(|| std::future::ready(results.pop_front().expect("injected result")))
+                .await
+                .unwrap();
 
         assert_eq!(accepted, 42);
     }
