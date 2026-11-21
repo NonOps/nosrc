@@ -41,7 +41,7 @@ nosrc currently provides four operating modes, including an offline path for pre
 - **HTTP runtime:** prepare and verify a handler at startup, activate a fresh generation, and serve HTTP requests.
 - **MCP control plane:** expose local stdio tools to prepare, inspect, invoke, activate, and roll back in-process generations.
 - **Artifact export:** run the verification pipeline and export the JavaScript handler, Wasm component, assertion suites, and a provenance manifest for review and version control.
-- **Offline bundle serving:** load an exported bundle, validate its component digest and manifest metadata, rerun both assertion suites, and serve it without LLM credentials or provider access.
+- **Offline bundle serving:** load an exported bundle, validate its component digest and manifest metadata, rerun both assertion suites and the fixed host-owned ABI probes, and serve it without LLM credentials or provider access.
 
 These are operating modes of one executable, not separate guest runtimes. MCP can run as standalone stdio control plane or with an optional HTTP listener in the same process. In shared mode, MCP activation and rollback immediately change the generation served by HTTP.
 
@@ -154,7 +154,7 @@ After exporting a bundle, start the HTTP runtime without an API key or model-pro
 cargo run -- serve --bundle ./dist --bind 127.0.0.1 --port 8080
 ```
 
-Startup validates the bundle files and SHA-256 metadata, compiles the prebuilt component with the current Wasmtime engine, reruns the assertion suites on separate candidate instances according to the manifest policy mode, and creates a fresh serving instance only after verification passes. The HTTP listener opens only after successful validation. This mode does not read a SPEC file, synthesize code, or access an LLM provider.
+Startup validates the bundle files and SHA-256 metadata, compiles the prebuilt component with the current Wasmtime engine, reruns the assertion suites on separate candidate instances according to the manifest policy mode, runs the fixed host-owned ABI probes on another disposable instance, and creates a fresh serving instance only after every check passes. The HTTP listener opens only after successful validation. This mode does not read a SPEC file, synthesize code, or access an LLM provider.
 
 The manifest is unsigned, and the exported assertion suites are files in the same bundle. Hash validation detects accidental or inconsistent component changes, not malicious replacement of the component, assertions, and manifest together. Treat the bundle and its source directory as operator-controlled inputs. See [Artifact format](docs/ARTIFACTS.md).
 
