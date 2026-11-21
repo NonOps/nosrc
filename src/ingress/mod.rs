@@ -335,7 +335,16 @@ mod tests {
             module_hash: "test".to_string(),
             handler: handler.clone(),
         });
-        let guard = handler.lock().unwrap();
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let locked_handler = handler.clone();
+        let lock_thread = std::thread::spawn(move || {
+            let _guard = locked_handler.lock().unwrap();
+            locked_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+        });
+        locked_rx.recv().unwrap();
+
         let app = build_ingress_router(state);
         let request = Request::builder()
             .uri("/_nosrc/status")
@@ -352,7 +361,9 @@ mod tests {
         let status: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(status["active_generation"], 1);
         assert!(status["telemetry"].is_null());
-        drop(guard);
+
+        release_tx.send(()).unwrap();
+        lock_thread.join().unwrap();
     }
 
     #[tokio::test]
