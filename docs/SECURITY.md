@@ -35,6 +35,7 @@ The optional `mcp --http-port` mode also opens an HTTP application listener in t
 ## Enforced limits and behavior
 
 - Component fuel budget: 50,000,000 units by default, with operator policy unable to exceed the runtime ceiling.
+- Guest wall-clock execution deadline: 30 seconds by default, enforced by Wasmtime epoch interruption independently of fuel. The epoch ticker advances every 10 ms; interruption is coarse-grained and may occur after the nominal deadline at the next instrumented guest check.
 - Per-linear-memory growth: 64 MiB default ceiling.
 - Component handles, table elements, instances, tables, and memories are bounded.
 - Active HTTP connection limit: 128; the accept loop closes connections above the cap before spawning per-connection tasks.
@@ -43,7 +44,7 @@ The optional `mcp --http-port` mode also opens an HTTP application listener in t
 - LLM serialized request limit: 2 MiB.
 - LLM connect timeout: 10 seconds; total request timeout: 120 seconds.
 - LLM success response limit: 4 MiB; error response limit: 8 KiB.
-- One active handler instance serializes invocations to preserve module state.
+- One active handler instance serializes invocations to preserve module state. A guest trap or epoch timeout discards the instance and triggers recreation; if recreation fails, subsequent calls fail closed rather than reusing the trapped instance.
 - MCP preparation timeout prevents late publication, but an already-running blocking task may continue in the background.
 
 These limits mitigate resource exhaustion but require ongoing adversarial testing against the actual component runtime and host process.
