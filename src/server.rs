@@ -317,7 +317,10 @@ mod tests {
             .await
             .expect("stalled connection was not aborted before the test deadline")
             .unwrap();
-        assert!(response.is_empty(), "stalled handler unexpectedly responded");
+        assert!(
+            response.is_empty(),
+            "stalled handler unexpectedly responded"
+        );
         server.await.unwrap().unwrap();
     }
 
