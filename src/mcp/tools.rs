@@ -120,7 +120,8 @@ where
             "model_assertions_passed": generation.map(|item| item.model_assertions_passed).unwrap_or(0),
             "model_assertions_failed": generation.map(|item| item.model_assertions_failed).unwrap_or(0),
             "supplemental_assertions_passed": generation.map(|item| item.supplemental_assertions_passed).unwrap_or(0),
-            "supplemental_assertions_failed": generation.map(|item| item.supplemental_assertions_failed).unwrap_or(0)
+            "supplemental_assertions_failed": generation.map(|item| item.supplemental_assertions_failed).unwrap_or(0),
+            "telemetry": generation.and_then(|item| item.telemetry.as_ref())
         })))
     };
 
