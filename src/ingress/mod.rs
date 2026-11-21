@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 
 use crate::engine::http_envelope::{ErrorEnvelope, RequestEnvelope};
-use crate::engine::quickjs::QuickJsHandler;
+use crate::engine::quickjs::{QuickJsHandler, RuntimeTelemetry};
 use crate::error::EngineError;
 
 const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
@@ -66,6 +66,7 @@ struct RuntimeStatus {
     status: &'static str,
     active_generation: Option<u64>,
     module_hash: Option<String>,
+    telemetry: Option<RuntimeTelemetry>,
 }
 
 async fn healthz() -> StatusCode {
@@ -74,18 +75,24 @@ async fn healthz() -> StatusCode {
 
 async fn runtime_status(State(state): State<Arc<IngressState>>) -> Json<RuntimeStatus> {
     let active = state.active_generation.load();
-    let (active_generation, module_hash) = match active.as_ref() {
+    let (active_generation, module_hash, telemetry) = match active.as_ref() {
         Some(generation) => (
             Some(generation.generation_id),
             Some(generation.module_hash.clone()),
+            generation
+                .handler
+                .lock()
+                .ok()
+                .map(|handler| handler.telemetry_snapshot()),
         ),
-        None => (None, None),
+        None => (None, None, None),
     };
 
     Json(RuntimeStatus {
         status: "running",
         active_generation,
         module_hash,
+        telemetry,
     })
 }
 
