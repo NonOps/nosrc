@@ -86,10 +86,7 @@ fn host_probes() -> Vec<HostProbe> {
 pub struct HostProbeVerifier;
 
 impl HostProbeVerifier {
-    pub fn evaluate_handler(
-        &self,
-        candidate: &mut QuickJsHandler,
-    ) -> Vec<HostProbeResult> {
+    pub fn evaluate_handler(&self, candidate: &mut QuickJsHandler) -> Vec<HostProbeResult> {
         host_probes()
             .into_iter()
             .map(|probe| {
@@ -114,9 +111,7 @@ pub struct HostProbeResult {
     pub error_message: Option<String>,
 }
 
-fn validate_host_probe_response(
-    response: &ResponseEnvelope,
-) -> Result<(), String> {
+fn validate_host_probe_response(response: &ResponseEnvelope) -> Result<(), String> {
     if !(100..=599).contains(&response.status) {
         return Err(format!(
             "Response status {} is outside the valid HTTP range",
@@ -306,7 +301,9 @@ mod tests {
     #[tokio::test]
     async fn host_probes_accept_a_handler_that_returns_valid_responses() {
         let (engine, compiled) = test_support::compiled().await;
-        let mut candidate = engine.instantiate(compiled, DEFAULT_COMPONENT_FUEL).unwrap();
+        let mut candidate = engine
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .unwrap();
         let results = HostProbeVerifier.evaluate_handler(&mut candidate);
         assert_eq!(results.len(), 3);
         assert!(results.iter().all(|result| result.passed), "{results:?}");
@@ -325,17 +322,17 @@ mod tests {
             }
         "#;
         let compiled = engine.compile_handler(source).await.unwrap();
-        let mut candidate = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL).unwrap();
+        let mut candidate = engine
+            .instantiate(&compiled, DEFAULT_COMPONENT_FUEL)
+            .unwrap();
         let results = HostProbeVerifier.evaluate_handler(&mut candidate);
         assert_eq!(results.len(), 3);
+        assert!(results.iter().all(|result| !result.passed), "{results:?}");
         assert!(
-            results.iter().all(|result| !result.passed),
-            "{results:?}"
-        );
-        assert!(
-            results
-                .iter()
-                .all(|result| result.error_message.as_deref().is_some_and(|message| message.contains("Candidate execution failed"))),
+            results.iter().all(|result| result
+                .error_message
+                .as_deref()
+                .is_some_and(|message| message.contains("Candidate execution failed"))),
             "{results:?}"
         );
     }
