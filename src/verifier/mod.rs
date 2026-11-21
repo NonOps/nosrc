@@ -71,7 +71,7 @@ fn host_probes() -> Vec<HostProbe> {
                     "application/json".into(),
                 )]),
                 body: Some(
-                    r#"{"text":"quotes: \\" and slash /","unicode":"こんにちは 🌍","nested":{"items":[1,true,null]}}"#
+                    r#"{"text":"quotes: \" and slash /","unicode":"こんにちは 🌍","nested":{"items":[1,true,null]}}"#
                         .into(),
                 ),
             },
@@ -301,6 +301,43 @@ mod tests {
             body_contains: body_contains.map(str::to_string),
             header_matches: None,
         }
+    }
+
+    #[tokio::test]
+    async fn host_probes_accept_a_handler_that_returns_valid_responses() {
+        let (engine, compiled) = test_support::compiled().await;
+        let mut candidate = engine.instantiate(compiled, DEFAULT_COMPONENT_FUEL).unwrap();
+        let results = HostProbeVerifier.evaluate_handler(&mut candidate);
+        assert_eq!(results.len(), 3);
+        assert!(results.iter().all(|result| result.passed), "{results:?}");
+    }
+
+    #[tokio::test]
+    async fn host_probes_reject_a_candidate_that_traps_on_each_probe() {
+        let engine = QuickJsEngine::new().unwrap();
+        let source = r#"
+            export function handle(requestJson) {
+                const request = JSON.parse(requestJson);
+                if (request.path.startsWith("/__nosrc_probe__/")) {
+                    throw new Error("host probe rejected");
+                }
+                return JSON.stringify({ status: 200, headers: {}, body: "ok" });
+            }
+        "#;
+        let compiled = engine.compile_handler(source).await.unwrap();
+        let mut candidate = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL).unwrap();
+        let results = HostProbeVerifier.evaluate_handler(&mut candidate);
+        assert_eq!(results.len(), 3);
+        assert!(
+            results.iter().all(|result| !result.passed),
+            "{results:?}"
+        );
+        assert!(
+            results
+                .iter()
+                .all(|result| result.error_message.as_deref().is_some_and(|message| message.contains("Candidate execution failed"))),
+            "{results:?}"
+        );
     }
 
     #[tokio::test]
