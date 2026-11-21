@@ -5,6 +5,7 @@ mod tools;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::artifact_cache::ArtifactCache;
 
@@ -22,6 +23,7 @@ pub async fn serve(
     no_cache: bool,
     export_root: PathBuf,
     http_listener: Option<(IpAddr, u16)>,
+    shutdown_timeout: Duration,
 ) -> anyhow::Result<()> {
     let cache = if no_cache {
         None
@@ -33,22 +35,40 @@ pub async fn serve(
         None => AppLifecycle::new_mcp_first(cache)?,
     };
     let ingress_state = lifecycle.ingress_state();
-    if let Some((bind, port)) = http_listener {
+    let http_task = if let Some((bind, port)) = http_listener {
         let listener = tokio::net::TcpListener::bind((bind, port)).await?;
         let address = listener.local_addr()?;
         let app = crate::ingress::build_ingress_router(ingress_state);
         tracing::info!(%address, "nosrc MCP and HTTP interfaces share one application lifecycle");
-        tokio::spawn(async move {
-            if let Err(error) = crate::server::serve(listener, app).await {
-                tracing::error!(%error, "Shared HTTP ingress stopped");
-            }
-        });
-    }
+        Some(tokio::spawn(async move {
+            crate::server::serve(listener, app, shutdown_timeout).await
+        }))
+    } else {
+        None
+    };
+
     let server = NosrcMcpServer {
         lifecycle: Arc::new(Mutex::new(lifecycle)),
         export_root,
     };
     let service = server.serve(stdio()).await?;
-    service.waiting().await?;
+
+    if let Some(mut http_task) = http_task {
+        // A shutdown signal received by shared HTTP ingress ends the whole MCP
+        // process as well. If the stdio client disconnects first, stop HTTP.
+        tokio::select! {
+            result = service.waiting() => {
+                result?;
+                http_task.abort();
+                let _ = http_task.await;
+            }
+            result = &mut http_task => {
+                result.map_err(|error| anyhow::anyhow!("Shared HTTP task failed: {error}"))??;
+            }
+        }
+    } else {
+        service.waiting().await?;
+    }
+
     Ok(())
 }
