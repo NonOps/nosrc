@@ -320,6 +320,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn status_endpoint_does_not_block_when_handler_is_executing() {
+        use crate::engine::quickjs::test_support;
+
+        let (engine, compiled) = test_support::compiled().await;
+        let handler = Arc::new(Mutex::new(
+            engine.instantiate(compiled, crate::engine::quickjs::DEFAULT_COMPONENT_FUEL).unwrap(),
+        ));
+        let state = Arc::new(IngressState::new());
+        state.hot_swap(ActiveGeneration {
+            generation_id: 1,
+            module_hash: "test".to_string(),
+            handler: handler.clone(),
+        });
+        let guard = handler.lock().unwrap();
+        let app = build_ingress_router(state);
+        let request = Request::builder()
+            .uri("/_nosrc/status")
+            .body(Body::empty())
+            .unwrap();
+        let response = tokio::time::timeout(
+            Duration::from_millis(100),
+            app.oneshot(request),
+        )
+        .await
+        .expect("status probe must not wait for the guest execution lock")
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let status: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status["active_generation"], 1);
+        assert!(status["telemetry"].is_null());
+        drop(guard);
+    }
+
+    #[tokio::test]
     async fn oversized_request_body_is_rejected_before_handler_dispatch() {
         let app = build_ingress_router(Arc::new(IngressState::new()));
         let request = Request::builder()
