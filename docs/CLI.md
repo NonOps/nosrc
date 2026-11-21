@@ -121,7 +121,7 @@ Synthesis requests are retried up to three attempts total, with exponential back
 
 - Invalid/unreadable SPEC files, unsupported requested capabilities, missing synthesis credentials, synthesis/schema failures, componentization failures, malformed bundles, digest mismatches, and failed mandatory verification prevent the selected workflow from proceeding.
 - HTTP ingress is not started until startup preparation and verification succeed.
-- HTTP modes handle SIGINT and, on Unix, SIGTERM by stopping accepts and draining in-flight connections for up to the configured shutdown timeout (30 seconds by default). Remaining connections are aborted when the deadline expires.
+- HTTP modes handle SIGINT and, on Unix, SIGTERM by stopping accepts and draining in-flight connections for up to the configured shutdown timeout (30 seconds by default). Remaining connections are aborted when the deadline expires. Set the timeout to `0` to skip draining and abort active connections immediately.
 - In MCP shared-HTTP mode, a shutdown signal ends the HTTP listener and then the MCP process; if the stdio client disconnects first, the shared HTTP task is stopped.
 - Export files are staged in a temporary sibling directory and published together by directory rename. The destination must not already exist; an existing file, directory, or symlink is left untouched and causes export to fail. A staging or publication failure does not expose a partial bundle.
 - MCP preparation does not activate a candidate implicitly. Activation is a separate tool call.
