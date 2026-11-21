@@ -422,6 +422,9 @@ mod tests {
         let cli = Cli::try_parse_from(["nosrc"]).unwrap();
         assert_eq!(cli.shutdown_timeout_secs, 30);
 
+        let cli = Cli::try_parse_from(["nosrc", "--shutdown-timeout", "0"]).unwrap();
+        assert_eq!(cli.shutdown_timeout_secs, 0);
+
         let cli = Cli::try_parse_from(["nosrc", "mcp", "--shutdown-timeout", "7"]).unwrap();
         assert_eq!(cli.shutdown_timeout_secs, 7);
 
