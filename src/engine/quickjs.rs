@@ -300,8 +300,7 @@ impl QuickJsHandler {
     /// Return bounded resource measurements without exposing guest data.
     pub fn telemetry_snapshot(&self) -> RuntimeTelemetry {
         let mut telemetry = self.telemetry.clone();
-        telemetry.instance_memory_high_water_bytes =
-            self.store.data().memory_high_water_bytes;
+        telemetry.instance_memory_high_water_bytes = self.store.data().memory_high_water_bytes;
         telemetry.generation_memory_high_water_bytes = match (
             telemetry.generation_memory_high_water_bytes,
             telemetry.instance_memory_high_water_bytes,
@@ -599,7 +598,10 @@ mod tests {
         );
         let telemetry = handler.telemetry_snapshot();
         assert!(telemetry.last_invocation_fuel_consumed.is_some());
-        assert_eq!(telemetry.last_invocation_fuel_consumed, Some(LOOP_TEST_FUEL));
+        assert_eq!(
+            telemetry.last_invocation_fuel_consumed,
+            Some(LOOP_TEST_FUEL)
+        );
         assert_eq!(telemetry.generation_fuel_high_water, Some(LOOP_TEST_FUEL));
     }
 
@@ -614,7 +616,9 @@ mod tests {
             "Expected fuel exhaustion, got: {error}"
         );
 
-        let generation_memory_before = handler.telemetry_snapshot().generation_memory_high_water_bytes;
+        let generation_memory_before = handler
+            .telemetry_snapshot()
+            .generation_memory_high_water_bytes;
         let response = handler
             .invoke(&request("/health"))
             .expect("same handler should accept a healthy request after a guest trap");
@@ -625,7 +629,10 @@ mod tests {
         assert!(telemetry.instance_memory_high_water_bytes.is_some());
         if let Some(before) = generation_memory_before {
             assert!(
-                telemetry.generation_memory_high_water_bytes.unwrap_or_default() >= before
+                telemetry
+                    .generation_memory_high_water_bytes
+                    .unwrap_or_default()
+                    >= before
             );
         }
     }
