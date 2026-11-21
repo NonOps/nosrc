@@ -1,0 +1,62 @@
+name: Platforms
+
+# Windows and macOS runs are slow (~25 minutes), so they do not run on every commit.
+# They run on main, nightly, on demand, and on pull requests that touch code with
+# platform-specific behavior. The Linux "CI" workflow runs on every pull request.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+    paths:
+      - src/bundle.rs
+      - src/export.rs
+      - src/artifact_cache.rs
+      - src/engine/**
+      - tests/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/platforms.yml
+  schedule:
+    - cron: "23 2 * * *"
+  workflow_dispatch:
+  # Called by release.yml so a tag is only published after Windows and macOS pass.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platforms-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The offline-bundle loader has Windows-specific (reparse point) and Unix-specific
+  # (O_NOFOLLOW) code paths, so build and test on every supported desktop OS.
+  cross-platform:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - macos-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: test-profile-v1-${{ matrix.os }}
+          cache-on-failure: true
+
+      - name: Run tests
+        run: cargo test --all-targets -- --test-threads=2

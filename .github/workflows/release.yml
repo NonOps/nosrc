@@ -9,8 +9,8 @@ permissions:
   contents: write
 
 jobs:
-  publish:
-    name: Create GitHub Release
+  validate:
+    name: Validate milestone tag
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
@@ -18,6 +18,22 @@ jobs:
 
       - name: Validate milestone tag
         run: bash scripts/check-release-tag.sh "$GITHUB_REF_NAME"
+
+  # Windows and macOS only run selectively on ordinary commits, so a release must pass them.
+  platforms:
+    name: Windows and macOS tests
+    needs: validate
+    permissions:
+      contents: read
+    uses: ./.github/workflows/platforms.yml
+
+  publish:
+    name: Create GitHub Release
+    needs: [validate, platforms]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
 
       - name: Create GitHub Release
         env:

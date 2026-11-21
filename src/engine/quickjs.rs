@@ -437,10 +437,15 @@ mod tests {
         );
     }
 
+    /// Small enough that the infinite loop stops within milliseconds, but comfortably above
+    /// the fuel that component instantiation itself consumes. A 100_000 budget was too tight
+    /// on macOS, where instantiation alone exhausted it.
+    const LOOP_TEST_FUEL: u64 = 5_000_000;
+
     #[tokio::test]
     async fn javascript_infinite_loop_is_stopped_by_fuel_budget() {
         let (engine, compiled) = test_support::compiled().await;
-        let mut handler = engine.instantiate(compiled, 100_000).unwrap();
+        let mut handler = engine.instantiate(compiled, LOOP_TEST_FUEL).unwrap();
         let error = handler.invoke(&request("/loop")).unwrap_err();
         assert!(
             matches!(error, EngineError::Trap(SandboxTrap::FuelExhausted)),
@@ -451,7 +456,7 @@ mod tests {
     #[tokio::test]
     async fn handler_remains_usable_after_fuel_exhaustion() {
         let (engine, compiled) = test_support::compiled().await;
-        let mut handler = engine.instantiate(compiled, 100_000).unwrap();
+        let mut handler = engine.instantiate(compiled, LOOP_TEST_FUEL).unwrap();
 
         let error = handler.invoke(&request("/loop")).unwrap_err();
         assert!(

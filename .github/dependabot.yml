@@ -1,0 +1,27 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # AGENTS.md requires a single Wasmtime major; bump the family together.
+      wasmtime:
+        patterns:
+          - "wasmtime*"
+          - "cranelift*"
+          - "pulley*"
+          - "componentize-qjs*"
+      cargo-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
