@@ -316,6 +316,7 @@ mod tests {
         assert_eq!(status["status"], "running");
         assert!(status["active_generation"].is_null());
         assert!(status["module_hash"].is_null());
+        assert!(status["telemetry"].is_null());
     }
 
     #[tokio::test]
