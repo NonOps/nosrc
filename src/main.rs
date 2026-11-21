@@ -60,6 +60,11 @@ pub struct Cli {
     /// Bypass artifact cache reads and writes and always synthesize a new handler.
     #[arg(long)]
     pub no_cache: bool,
+
+    /// Maximum time in seconds to drain in-flight HTTP connections after SIGINT/SIGTERM.
+    #[arg(long, default_value_t = 30, env = "NOSRC_SHUTDOWN_TIMEOUT_SECS", global = true)]
+    pub shutdown_timeout_secs: u64,
+
 }
 
 #[derive(Subcommand, Debug)]
@@ -151,6 +156,7 @@ fn initialize_tracing(verbose: bool) {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let shutdown_timeout = std::time::Duration::from_secs(cli.shutdown_timeout_secs);
 
     match cli.command {
         Some(Commands::Export {
@@ -240,7 +246,7 @@ async fn main() -> anyhow::Result<()> {
                 "nosrc is serving a verified offline bundle"
             );
 
-            crate::server::serve(listener, app).await?;
+            crate::server::serve(listener, app, shutdown_timeout).await?;
             Ok(())
         }
         Some(Commands::Mcp {
@@ -281,6 +287,7 @@ async fn main() -> anyhow::Result<()> {
                 no_cache,
                 export_root,
                 http_port.map(|port| (http_bind, port)),
+                shutdown_timeout,
             )
             .await
         }
