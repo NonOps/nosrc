@@ -188,6 +188,9 @@ impl ErrorEnvelope {
     pub fn from_engine_error(err: &EngineError) -> Self {
         let (status, err_type) = match err {
             EngineError::Trap(crate::error::SandboxTrap::FuelExhausted) => (504, "FuelExhausted"),
+            EngineError::Trap(crate::error::SandboxTrap::ExecutionTimeout) => {
+                (504, "ExecutionTimeout")
+            }
             EngineError::Trap(crate::error::SandboxTrap::MemoryExhausted(_)) => {
                 (500, "MemoryExhausted")
             }
