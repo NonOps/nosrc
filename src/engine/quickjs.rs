@@ -333,6 +333,9 @@ pub(crate) mod test_support {
     use super::*;
     use tokio::sync::OnceCell;
 
+    // Keep epoch tests from racing the independent fuel safeguard on fast CI runners.
+    pub const EPOCH_TEST_FUEL: u64 = 5_000_000_000;
+
     pub const HANDLER_SOURCE: &str = r#"
         let count = 0;
 
@@ -530,7 +533,7 @@ mod tests {
     async fn epoch_deadline_interrupts_guest_independently_of_fuel_and_recovers() {
         let (engine, compiled) = test_support::compiled().await;
         let mut handler = engine
-            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .instantiate(compiled, test_support::EPOCH_TEST_FUEL)
             .unwrap();
         let started = std::time::Instant::now();
 
