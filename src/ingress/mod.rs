@@ -430,7 +430,10 @@ mod tests {
         })
         .await
         .expect("first request should acquire the execution permit");
-        let health_request = Request::builder().uri("/health").body(Body::empty()).unwrap();
+        let health_request = Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
         let health_app = app.clone();
         let health_task =
             tokio::spawn(async move { health_app.oneshot(health_request).await.unwrap() });
