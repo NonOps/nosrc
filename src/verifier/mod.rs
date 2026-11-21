@@ -1,6 +1,4 @@
-use crate::engine::http_envelope::{
-    RequestEnvelope, ResponseEnvelope, MAX_HANDLER_RESPONSE_BYTES,
-};
+use crate::engine::http_envelope::{RequestEnvelope, ResponseEnvelope, MAX_HANDLER_RESPONSE_BYTES};
 use crate::engine::quickjs::QuickJsHandler;
 use crate::error::EngineError;
 use crate::synthesizer::ContractAssertion;
@@ -319,10 +317,7 @@ mod tests {
 
     #[test]
     fn host_probe_response_validation_rejects_an_oversized_body() {
-        let response = ResponseEnvelope::new(
-            200,
-            Some("x".repeat(MAX_HANDLER_RESPONSE_BYTES + 1)),
-        );
+        let response = ResponseEnvelope::new(200, Some("x".repeat(MAX_HANDLER_RESPONSE_BYTES + 1)));
         let error = validate_host_probe_response(&response).unwrap_err();
         assert!(error.contains("Response body exceeds the 1048576 byte limit"));
     }
