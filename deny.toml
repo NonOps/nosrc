@@ -6,11 +6,6 @@
 version = 2
 # Every entry needs a reason and a revisit condition. Remove entries as soon as they stop applying.
 ignore = [
-    # SQLite before 3.54 can leak page-cache memory when opening a crafted database with a
-    # mismatched -wal file. nosrc only uses rusqlite in the legacy host_abi module and its
-    # tests, and only with in-memory connections, so no untrusted database file is ever opened.
-    # Revisit: bump rusqlite to 0.41+ (libsqlite3-sys 0.39+) or remove the legacy engine.
-    { id = "RUSTSEC-2026-0459", reason = "rusqlite is only used with in-memory databases in legacy host_abi code" },
     # chrono is unmaintained (informational) with no drop-in fix; also pulled in by rmcp/schemars.
     # Revisit: when rmcp stops depending on it, or migrate nosrc's own use to time/jiff.
     { id = "RUSTSEC-2026-0543", reason = "unmaintained notice only; no known vulnerability and no safe upgrade" },
