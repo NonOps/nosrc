@@ -70,9 +70,9 @@ pub async fn serve(
         // A shutdown signal received by shared HTTP ingress ends the whole MCP
         // process as well. If the stdio client disconnects first, ask HTTP to
         // stop accepting and drain its in-flight connections before exiting.
-        enum ShutdownSource {
-            Mcp(Result<(), rmcp::ServiceError>),
-            Http(Result<anyhow::Result<()>, tokio::task::JoinError>),
+        enum ShutdownSource<M, H> {
+            Mcp(M),
+            Http(H),
         }
 
         let source = tokio::select! {
