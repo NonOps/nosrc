@@ -19,7 +19,7 @@ const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 const MAX_ADMITTED_REQUESTS: usize = 32;
 const EXECUTION_QUEUE_TIMEOUT: Duration = Duration::from_secs(5);
 const EXECUTION_TASK_JOIN_GRACE: Duration = Duration::from_secs(6);
-const INGRESS_REQUEST_TIMEOUT: Duration = Duration::from_secs(40);
+const INGRESS_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Active generation representing a compiled and contract-verified JavaScript handler.
 pub struct ActiveGeneration {
@@ -244,8 +244,8 @@ async fn handle_http_request(
     let handler = active.handler.clone();
     let execution_timeout = state.execution_timeout;
     let mut execution = tokio::task::spawn_blocking(move || {
-        // A response timeout cannot preempt spawn_blocking work. Keep the permit inside
-        // the task so timed-out work continues to occupy the serialized execution slot.
+        // Keep the permit inside the blocking task until the epoch trap is handled and
+        // bounded instance recovery completes, even if the HTTP future is cancelled.
         let _execution_permit = execution_permit;
         let mut handler = handler
             .lock()
@@ -253,8 +253,8 @@ async fn handle_http_request(
         handler.invoke_with_timeout(&envelope, execution_timeout)
     });
 
-    // Wasmtime epoch checks run on a periodic ticker. Allow one second beyond the
-    // guest deadline for the interrupt trap to unwind and release the execution permit.
+    // Wasmtime epoch checks run on a periodic ticker. Allow time beyond the guest
+    // deadline for the trap to unwind and bounded instance recovery to complete.
     match tokio::time::timeout(
         execution_timeout + EXECUTION_TASK_JOIN_GRACE,
         &mut execution,
@@ -410,7 +410,7 @@ mod tests {
             module_hash: "epoch-timeout-test".to_string(),
             handler: Arc::new(Mutex::new(handler)),
         });
-        let app = build_ingress_router(state);
+        let app = build_ingress_router(state.clone());
 
         let loop_request = Request::builder()
             .uri("/loop")
@@ -419,9 +419,15 @@ mod tests {
         let loop_app = app.clone();
         let loop_task = tokio::spawn(async move { loop_app.oneshot(loop_request).await.unwrap() });
 
-        // Let the first request enter the serialized guest execution before queuing
-        // a second request behind its execution permit.
-        tokio::time::sleep(Duration::from_millis(2)).await;
+        // Wait until the first request owns the serialized execution permit before
+        // queuing a second request behind it.
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while state.execution.available_permits() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first request should acquire the execution permit");
         let health_request = Request::builder()
             .uri("/health")
             .body(Body::empty())
