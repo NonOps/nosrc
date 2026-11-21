@@ -63,7 +63,7 @@ pub struct Cli {
 
     /// Maximum time in seconds to drain in-flight HTTP connections after SIGINT/SIGTERM.
     #[arg(
-        long,
+        long = "shutdown-timeout",
         default_value_t = 30,
         env = "NOSRC_SHUTDOWN_TIMEOUT_SECS",
         global = true
