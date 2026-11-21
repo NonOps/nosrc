@@ -301,13 +301,31 @@ fn synthesis_spec_markdown(markdown: &str) -> String {
     let mut output = Vec::new();
     let mut in_verification = false;
     let mut has_examples = false;
+    let mut fence_marker = None;
 
     for line in markdown.lines() {
-        let trimmed = line.trim();
-        if let Some(section) = trimmed.strip_prefix("## ") {
-            let section = section.trim().to_ascii_lowercase();
-            in_verification = section.contains("verification");
-            has_examples |= section == "examples";
+        let trimmed = line.trim_start();
+        if let Some(marker) = trimmed.chars().next().filter(|ch| *ch == '`' || *ch == '~') {
+            let marker_len = trimmed.chars().take_while(|ch| *ch == marker).count();
+            if marker_len >= 3 {
+                if fence_marker == Some(marker) {
+                    fence_marker = None;
+                } else if fence_marker.is_none() {
+                    fence_marker = Some(marker);
+                }
+                if !in_verification {
+                    output.push(line);
+                }
+                continue;
+            }
+        }
+
+        if fence_marker.is_none() {
+            if let Some(section) = trimmed.strip_prefix("## ") {
+                let section = section.trim().to_ascii_lowercase();
+                in_verification = section.contains("verification");
+                has_examples |= section == "examples";
+            }
         }
 
         if !in_verification {
@@ -920,6 +938,10 @@ mod tests {
 - Response `200`: items
 ## Examples
 ### Request
+```markdown
+## Verification
+This is example text, not a section heading.
+```
 ```json
 {"method":"GET","path":"/items"}
 ```
