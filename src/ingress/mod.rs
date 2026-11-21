@@ -287,6 +287,7 @@ async fn handle_http_request(
 mod tests {
     use super::*;
     use crate::engine::quickjs::{test_support, DEFAULT_COMPONENT_FUEL};
+    use crate::engine::quickjs::test_support::EPOCH_TEST_FUEL;
     use axum::body::Body;
     use axum::http::Request;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -404,7 +405,7 @@ mod tests {
     async fn epoch_timeout_releases_execution_permit_for_a_queued_request() {
         let (engine, compiled) = test_support::compiled().await;
         let handler = engine
-            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .instantiate(compiled, EPOCH_TEST_FUEL)
             .unwrap();
 
         let mut ingress_state = IngressState::new();
@@ -463,7 +464,7 @@ mod tests {
     async fn cancelled_http_request_does_not_leave_guest_execution_running() {
         let (engine, compiled) = test_support::compiled().await;
         let handler = engine
-            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .instantiate(compiled, EPOCH_TEST_FUEL)
             .unwrap();
 
         let mut ingress_state = IngressState::new();
@@ -506,7 +507,7 @@ mod tests {
     async fn graceful_shutdown_drains_epoch_interrupted_guest_execution() {
         let (engine, compiled) = test_support::compiled().await;
         let handler = engine
-            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .instantiate(compiled, EPOCH_TEST_FUEL)
             .unwrap();
 
         let mut ingress_state = IngressState::new();
