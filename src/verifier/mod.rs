@@ -1,4 +1,4 @@
-use crate::engine::http_envelope::ResponseEnvelope;
+use crate::engine::http_envelope::{RequestEnvelope, ResponseEnvelope};
 use crate::engine::quickjs::QuickJsHandler;
 use crate::error::EngineError;
 use crate::synthesizer::ContractAssertion;
