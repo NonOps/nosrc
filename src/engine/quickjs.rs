@@ -516,7 +516,9 @@ mod tests {
     #[test]
     fn committed_memory_growth_cannot_be_rolled_back_by_a_later_failure_callback() {
         let mut state = ComponentStoreState {
-            limits: StoreLimitsBuilder::new().memory_size(DEFAULT_COMPONENT_MEMORY_BYTES).build(),
+            limits: StoreLimitsBuilder::new()
+                .memory_size(DEFAULT_COMPONENT_MEMORY_BYTES)
+                .build(),
             memory_high_water_bytes: Some(8),
             pending_memory_growth: None,
         };
