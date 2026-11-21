@@ -440,7 +440,7 @@ async fn sigterm_stops_shared_http_and_mcp_process() {
         .arg(directory.path().join("exports"))
         .env_remove("LLM_API_KEY")
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()
