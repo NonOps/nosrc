@@ -109,6 +109,7 @@ pub async fn serve_with_shutdown<F>(
 where
     F: Future<Output = ()> + Send,
 {
+    let listener = Arc::new(listener);
     let connection_slots = Arc::new(Semaphore::new(MAX_ACTIVE_CONNECTIONS));
     let mut connections = JoinSet::new();
     let mut builder = auto::Builder::new(TokioExecutor::new());
@@ -122,7 +123,13 @@ where
     loop {
         let accepted = tokio::select! {
             _ = &mut shutdown => break,
-            result = accept_with_retry(|| listener.accept()) => result?,
+            result = accept_with_retry({
+                let listener = listener.clone();
+                move || {
+                    let listener = listener.clone();
+                    async move { listener.accept().await }
+                }
+            }) => result?,
             Some(result) = connections.join_next(), if !connections.is_empty() => {
                 if let Err(error) = result {
                     tracing::warn!(%error, "HTTP connection task failed");
