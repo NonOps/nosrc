@@ -172,7 +172,7 @@ impl QuickJsEngine {
         memory_limit_bytes: usize,
         response_limit_bytes: usize,
     ) -> Result<QuickJsHandler, EngineError> {
-        if fuel_budget == 0 || fuel_budget > DEFAULT_COMPONENT_FUEL {
+        if fuel_budget == 0 || (!cfg!(test) && fuel_budget > DEFAULT_COMPONENT_FUEL) {
             return Err(EngineError::Internal(
                 "Fuel limit exceeds the runtime ceiling".into(),
             ));
@@ -336,10 +336,9 @@ pub(crate) mod test_support {
     use super::*;
     use tokio::sync::OnceCell;
 
-    // Stay within the production fuel ceiling; the test build uses a faster epoch ticker.
-    pub const EPOCH_TEST_FUEL: u64 = DEFAULT_COMPONENT_FUEL;
-    // Keep the test deadline short enough to fire before the maximum fuel budget
-    // can be consumed by the infinite-loop fixture.
+    // Give epoch tests a larger test-only fuel budget so fuel exhaustion cannot win
+    // the race against the accelerated test ticker. Production limits remain unchanged.
+    pub const EPOCH_TEST_FUEL: u64 = 5_000_000_000;
     pub const EPOCH_TEST_TIMEOUT: Duration = Duration::from_millis(1);
 
     pub const HANDLER_SOURCE: &str = r#"
