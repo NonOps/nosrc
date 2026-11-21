@@ -75,7 +75,7 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          key: test-profile-v1
+          key: test-profile-v1-${{ matrix.os }}
           cache-on-failure: true
 
       - name: Run tests
