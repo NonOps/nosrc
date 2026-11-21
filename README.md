@@ -26,6 +26,12 @@ The current implementation is a single-process prototype, not a production-ready
 - **Operator-gated code generation:** Agents can prepare direct-JavaScript candidates or draft SPECs, but preparation never activates a candidate. A draft SPEC must be reviewed and supplied as the operator SPEC on restart before activation.
 - **Offline artifact handoff:** Export the handler, Wasm component, assertion suites, and manifest for review and version control, then run the bundle with `nosrc serve --bundle` without model-provider credentials or requests.
 
+## Not suitable for
+
+- Production traffic or untrusted public users without a separate security review and deployment-specific controls.
+- Multi-tenant hosting or isolation between independent applications.
+- Services requiring durable guest state, filesystem or process access, outbound network access, SQL/KV capabilities, or application orchestration.
+
 ## What is implemented
 
 nosrc currently provides four operating modes, including an offline path for previously exported artifacts:
