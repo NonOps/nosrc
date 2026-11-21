@@ -127,7 +127,7 @@ fn validate_host_probe_response(
     for (name, value) in &response.headers {
         axum::http::header::HeaderName::from_bytes(name.as_bytes())
             .map_err(|_| format!("Response contains an invalid header name: {name:?}"))?;
-        axum::http::header::HeaderValue::from_str(value)
+        axum::http::header::HeaderValue::try_from(value.as_str())
             .map_err(|_| format!("Response contains an invalid value for header {name:?}"))?;
     }
 
