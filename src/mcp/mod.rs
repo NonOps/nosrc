@@ -82,11 +82,11 @@ pub async fn serve(
 
         match source {
             ShutdownSource::Mcp(result) => {
-                result?;
                 let _ = http_shutdown_tx.send(());
                 http_task
                     .await
                     .map_err(|error| anyhow::anyhow!("Shared HTTP task failed: {error}"))??;
+                result?;
             }
             ShutdownSource::Http(result) => {
                 result.map_err(|error| anyhow::anyhow!("Shared HTTP task failed: {error}"))??;
