@@ -30,9 +30,7 @@ fn try_acquire_connection_slot(slots: &Arc<Semaphore>) -> Option<OwnedSemaphoreP
 fn is_retryable_accept_error(error: &io::Error) -> bool {
     matches!(
         error.kind(),
-        io::ErrorKind::Interrupted
-            | io::ErrorKind::WouldBlock
-            | io::ErrorKind::ConnectionAborted
+        io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock | io::ErrorKind::ConnectionAborted
     ) || matches!(
         error.raw_os_error(),
         Some(libc::EMFILE | libc::ENFILE | libc::ECONNABORTED)
@@ -235,7 +233,10 @@ mod tests {
         })
         .await;
 
-        assert_eq!(accepted.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            accepted.unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
     }
 
     async fn slow_response(State(started): State<Arc<Notify>>) -> &'static str {
