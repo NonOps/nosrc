@@ -52,7 +52,7 @@ pub fn load_and_verify(bundle_dir: &Path) -> anyhow::Result<(ActiveGeneration, B
         bail!("Draft-policy bundle must contain SPEC.md");
     }
     if let Some(spec_bytes) = spec_bytes {
-        let embedded_spec_digest = format!("{:x}", Sha256::digest(&spec_bytes));
+        let embedded_spec_digest = crate::hex_lower(Sha256::digest(&spec_bytes));
         if embedded_spec_digest != spec_digest {
             bail!("Bundle SPEC.md SHA-256 does not match manifest spec_sha256");
         }
@@ -64,7 +64,7 @@ pub fn load_and_verify(bundle_dir: &Path) -> anyhow::Result<(ActiveGeneration, B
         bail!("Bundle manifest service_name must not be empty");
     }
 
-    let component_digest = format!("{:x}", Sha256::digest(&component_bytes));
+    let component_digest = crate::hex_lower(Sha256::digest(&component_bytes));
     if component_digest != component_manifest_digest {
         bail!("Bundle component.wasm SHA-256 does not match manifest component_sha256");
     }
@@ -296,7 +296,7 @@ mod tests {
             .compile_handler_with_artifact(test_support::HANDLER_SOURCE)
             .await
             .unwrap();
-        let component_hash = format!("{:x}", Sha256::digest(&component_bytes));
+        let component_hash = crate::hex_lower(Sha256::digest(&component_bytes));
         let manifest = ExportManifest {
             service_name: "Bundle test".into(),
             spec_sha256: "a".repeat(64),
@@ -349,7 +349,7 @@ mod tests {
         manifest.policy_mode = "draft".into();
         manifest.trusted_assertions_count = 0;
         let spec_text = "# Agent draft SPEC\n";
-        manifest.spec_sha256 = format!("{:x}", Sha256::digest(spec_text.as_bytes()));
+        manifest.spec_sha256 = crate::hex_lower(Sha256::digest(spec_text.as_bytes()));
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
 
         let assertions_path = directory.path().join("assertions.json");
