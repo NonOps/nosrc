@@ -286,7 +286,7 @@ async fn handle_http_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::quickjs::test_support::EPOCH_TEST_FUEL;
+    use crate::engine::quickjs::test_support::{EPOCH_TEST_FUEL, EPOCH_TEST_TIMEOUT};
     use crate::engine::quickjs::{test_support, DEFAULT_COMPONENT_FUEL};
     use axum::body::Body;
     use axum::http::Request;
@@ -407,7 +407,7 @@ mod tests {
         let handler = engine.instantiate(compiled, EPOCH_TEST_FUEL).unwrap();
 
         let mut ingress_state = IngressState::new();
-        ingress_state.execution_timeout = Duration::from_millis(10);
+        ingress_state.execution_timeout = EPOCH_TEST_TIMEOUT;
         let state = Arc::new(ingress_state);
         state.hot_swap(ActiveGeneration {
             generation_id: 1,
@@ -464,7 +464,7 @@ mod tests {
         let handler = engine.instantiate(compiled, EPOCH_TEST_FUEL).unwrap();
 
         let mut ingress_state = IngressState::new();
-        ingress_state.execution_timeout = Duration::from_millis(10);
+        ingress_state.execution_timeout = EPOCH_TEST_TIMEOUT;
         let state = Arc::new(ingress_state);
         state.hot_swap(ActiveGeneration {
             generation_id: 1,
@@ -505,7 +505,7 @@ mod tests {
         let handler = engine.instantiate(compiled, EPOCH_TEST_FUEL).unwrap();
 
         let mut ingress_state = IngressState::new();
-        ingress_state.execution_timeout = Duration::from_millis(10);
+        ingress_state.execution_timeout = EPOCH_TEST_TIMEOUT;
         let state = Arc::new(ingress_state);
         state.hot_swap(ActiveGeneration {
             generation_id: 1,
