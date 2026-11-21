@@ -473,8 +473,13 @@ mod tests {
 
         let request = Request::builder().uri("/loop").body(Body::empty()).unwrap();
         let request_task = tokio::spawn(app.oneshot(request));
-        tokio::time::sleep(Duration::from_millis(2)).await;
-        assert_eq!(state.execution.available_permits(), 0);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while state.execution.available_permits() != 0 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("request should acquire the execution permit");
 
         // Dropping the HTTP future cannot cancel spawn_blocking. The Wasmtime
         // epoch deadline must still stop the guest and release its owned permit.
