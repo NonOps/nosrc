@@ -80,7 +80,7 @@ impl ArtifactCache {
         }
 
         let component_bytes = fs::read(&component_path).ok()?;
-        let digest = format!("{:x}", Sha256::digest(&component_bytes));
+        let digest = crate::hex_lower(Sha256::digest(&component_bytes));
         if digest != manifest.component_sha256 {
             tracing::warn!(cache_key = %key, "Ignoring artifact cache entry with a component digest mismatch");
             return None;
@@ -93,7 +93,7 @@ impl ArtifactCache {
                 return None;
             }
         };
-        let synthesis_digest = format!("{:x}", Sha256::digest(&synthesis_bytes));
+        let synthesis_digest = crate::hex_lower(Sha256::digest(&synthesis_bytes));
         if synthesis_digest != manifest.synthesis_sha256 {
             tracing::warn!(cache_key = %key, "Ignoring artifact cache entry with a synthesis metadata digest mismatch");
             return None;
@@ -135,8 +135,8 @@ impl ArtifactCache {
         let manifest = CacheManifest {
             schema_version: CACHE_SCHEMA_VERSION,
             cache_key: key.to_string(),
-            component_sha256: format!("{:x}", Sha256::digest(component_bytes)),
-            synthesis_sha256: format!("{:x}", Sha256::digest(serde_json::to_vec(synthesis)?)),
+            component_sha256: crate::hex_lower(Sha256::digest(component_bytes)),
+            synthesis_sha256: crate::hex_lower(Sha256::digest(serde_json::to_vec(synthesis)?)),
             synthesis: synthesis.clone(),
         };
         let manifest_bytes = serde_json::to_vec(&manifest)?;
