@@ -562,7 +562,8 @@ mod tests {
             "AGENTS.md must distinguish compile-only direct-JavaScript candidates from exportable draft-SPEC candidates"
         );
         assert!(
-            !AGENTS.contains("MCP does not start HTTP ingress or share state with another process."),
+            !AGENTS
+                .contains("MCP does not start HTTP ingress or share state with another process."),
             "AGENTS.md must not contradict the implemented shared mode"
         );
     }
