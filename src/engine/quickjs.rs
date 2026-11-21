@@ -292,6 +292,8 @@ fn instantiate_component(
     store
         .set_fuel(fuel_budget)
         .map_err(|error| EngineError::Internal(format!("Failed to set component fuel: {error}")))?;
+    // Component startup allocations are part of the instance high-water baseline.
+    store.data_mut().pending_memory_growth = None;
 
     Ok((store, handle))
 }
@@ -579,6 +581,12 @@ mod tests {
                 .instance_memory_high_water_bytes
                 .is_some_and(|bytes| bytes <= DEFAULT_COMPONENT_MEMORY_BYTES),
             "memory high-water must reflect an observed allocation within the hard limit: {telemetry:?}"
+        );
+        assert!(
+            telemetry
+                .generation_memory_high_water_bytes
+                .is_some_and(|bytes| bytes <= DEFAULT_COMPONENT_MEMORY_BYTES),
+            "generation memory high-water must retain the trapped instance measurement: {telemetry:?}"
         );
     }
 
