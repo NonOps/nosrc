@@ -47,7 +47,7 @@ Contains two arrays:
 - `trusted_assertions` are derived from the operator-authored SPEC verification cases.
 - `generated_assertions` are returned by the synthesizer. Draft-policy bundles require a non-empty generated suite. Operator-policy bundles may have an empty generated suite when exporting an MCP direct-JavaScript generation; their operator-trusted suite remains mandatory.
 
-These arrays describe the assertion inputs. They are not a record of individual execution results.
+These arrays describe the assertion inputs. They are not a record of individual execution results. Host-owned ABI probes are built into the runtime and are not serialized into the bundle; offline serving reruns them using the current runtime version.
 
 ### `manifest.json`
 
@@ -99,7 +99,7 @@ Before opening the HTTP listener, the loader:
 2. Parses the manifest and assertion document, validates SHA-256 field syntax, and checks assertion counts against the manifest.
 3. Recomputes the component SHA-256 and requires it to match both `component_sha256` and `module_hash`.
 4. Compiles the component with the current Wasmtime engine.
-5. Runs the trusted and generated assertion suites on separate disposable component instances.
+5. Runs the trusted and generated assertion suites on separate disposable component instances, then runs the runtime's fixed host-owned ABI probes on another disposable instance.
 6. Creates a fresh serving instance only after every check succeeds.
 
 The loader does not execute `handler.js`; the prebuilt `component.wasm` is the serving artifact. `handler.js` is required as an audit/review artifact and is checked for presence, regular-file type, size, and non-empty content, but the current manifest has no handler-source digest.

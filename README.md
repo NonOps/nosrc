@@ -41,19 +41,20 @@ nosrc currently provides four operating modes, including an offline path for pre
 - **HTTP runtime:** prepare and verify a handler at startup, activate a fresh generation, and serve HTTP requests.
 - **MCP control plane:** expose local stdio tools to prepare, inspect, invoke, activate, and roll back in-process generations.
 - **Artifact export:** run the verification pipeline and export the JavaScript handler, Wasm component, assertion suites, and a provenance manifest for review and version control.
-- **Offline bundle serving:** load an exported bundle, validate its component digest and manifest metadata, rerun both assertion suites, and serve it without LLM credentials or provider access.
+- **Offline bundle serving:** load an exported bundle, validate its component digest and manifest metadata, rerun both assertion suites and the fixed host-owned ABI probes, and serve it without LLM credentials or provider access.
 
 These are operating modes of one executable, not separate guest runtimes. MCP can run as standalone stdio control plane or with an optional HTTP listener in the same process. In shared mode, MCP activation and rollback immediately change the generation served by HTTP.
 
 ## Runtime and verification
 
 - Loads and parses the operator-provided `SPEC.md`.
-- Calls an OpenAI-compatible chat-completions endpoint to synthesize a self-contained JavaScript ES module and supplemental assertions when no matching artifact is cached.
+- Calls an OpenAI-compatible chat-completions endpoint to synthesize a self-contained JavaScript ES module and supplemental assertions when no matching artifact is cached. The model receives the SPEC with its operator-controlled `## Verification` section removed; an optional `## Examples` section remains illustrative, not authoritative.
 - Uses a content-addressed local cache keyed by the raw SPEC, provider/model configuration, synthesis prompt, WIT contract, resource budgets, componentizer/runtime versions, and `Cargo.lock`.
 - Componentizes JavaScript in-process with `componentize-qjs` and executes it with Wasmtime's component model.
 - Applies Wasm fuel and linear-memory limits to the component store.
-- Runs human-authored SPEC verification cases and a separate model-generated assertion suite against isolated candidate instances before activation in HTTP and SPEC-driven MCP workflows.
-- Keeps the production handler instance separate from verifier instances so verification requests cannot mutate its initial state.
+- Runs human-authored SPEC verification cases, fixed host-generated adversarial ABI probes, and a separate model-generated assertion suite against distinct disposable candidate instances before activation.
+- Keeps the production handler instance separate from every verifier instance so verification requests and probes cannot mutate its initial state.
+- Host probes check that selected unusual but valid request envelopes do not trap the guest and produce a bounded, syntactically valid HTTP response envelope. They do not establish endpoint semantics, authorization correctness, or general security.
 - Preserves JavaScript module-level state between requests handled by the same active generation.
 
 The model-generated assertion suite is supplemental. It does not replace the operator-authored SPEC verification suite, and passing tests do not prove correctness or security.
@@ -153,13 +154,13 @@ After exporting a bundle, start the HTTP runtime without an API key or model-pro
 cargo run -- serve --bundle ./dist --bind 127.0.0.1 --port 8080
 ```
 
-Startup validates the bundle files and SHA-256 metadata, compiles the prebuilt component with the current Wasmtime engine, reruns the assertion suites on separate candidate instances according to the manifest policy mode, and creates a fresh serving instance only after verification passes. The HTTP listener opens only after successful validation. This mode does not read a SPEC file, synthesize code, or access an LLM provider.
+Startup validates the bundle files and SHA-256 metadata, compiles the prebuilt component with the current Wasmtime engine, reruns the assertion suites on separate candidate instances according to the manifest policy mode, runs the fixed host-owned ABI probes on another disposable instance, and creates a fresh serving instance only after every check passes. The HTTP listener opens only after successful validation. This mode does not read a SPEC file, synthesize code, or access an LLM provider.
 
 The manifest is unsigned, and the exported assertion suites are files in the same bundle. Hash validation detects accidental or inconsistent component changes, not malicious replacement of the component, assertions, and manifest together. Treat the bundle and its source directory as operator-controlled inputs. See [Artifact format](docs/ARTIFACTS.md).
 
 ## SPEC verification format
 
-Every declared endpoint must have at least one matching case under `## Verification`. Cases use a concrete request target (including a sample value for each `:parameter` segment):
+Every declared endpoint must have at least one matching case under `## Verification`. This section is operator-controlled acceptance policy and is never sent to the synthesis model. Put optional illustrative request/response material under `## Examples`; those examples help explain behavior but are not acceptance criteria. Cases use a concrete request target (including a sample value for each `:parameter` segment):
 
 ```markdown
 ## Verification
