@@ -604,10 +604,16 @@ mod tests {
         );
         let telemetry = &final_status["generations"][0]["telemetry"];
         assert_eq!(telemetry["schema_version"], 1);
-        assert!(telemetry["last_invocation_fuel_consumed"].as_u64().is_some());
+        assert!(telemetry["last_invocation_fuel_consumed"]
+            .as_u64()
+            .is_some());
         assert!(telemetry["generation_fuel_high_water"].as_u64().is_some());
-        assert!(telemetry["instance_memory_high_water_bytes"].as_u64().is_some());
-        assert!(telemetry["generation_memory_high_water_bytes"].as_u64().is_some());
+        assert!(telemetry["instance_memory_high_water_bytes"]
+            .as_u64()
+            .is_some());
+        assert!(telemetry["generation_memory_high_water_bytes"]
+            .as_u64()
+            .is_some());
 
         let echoed = server
             .invoke_app(Parameters(InvokeAppParams {
