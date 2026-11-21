@@ -12,7 +12,7 @@ use crate::error::EngineError;
 use crate::ingress::{ActiveGeneration, IngressState};
 use crate::spec::ServiceSpec;
 use crate::synthesizer::{ContractAssertion, LlmConfig, SynthesisOutput, Synthesizer};
-use crate::verifier::{AssertionResult, ShadowVerifier};
+use crate::verifier::{AssertionResult, HostProbeVerifier, ShadowVerifier};
 
 use super::policy::AcceptancePolicy;
 
@@ -670,6 +670,30 @@ pub(super) fn prepare_compiled(
         }
         results
     };
+
+    // Host-owned adversarial inputs run on their own disposable instance. These
+    // probes check the request/response ABI only; operator policy remains the
+    // independent source of application-specific acceptance criteria.
+    let mut host_candidate = instantiate(&engine)?;
+    let host_results = HostProbeVerifier.evaluate_handler(&mut host_candidate);
+    drop(host_candidate);
+    let failed_host_probes: Vec<String> = host_results
+        .iter()
+        .filter(|result| !result.passed)
+        .map(|result| {
+            format!(
+                "{}: {}",
+                result.name,
+                result.error_message.as_deref().unwrap_or("probe failed")
+            )
+        })
+        .collect();
+    if !failed_host_probes.is_empty() {
+        return Err(PreparationError::Runtime(EngineError::Internal(format!(
+            "Host-generated adversarial probes failed: {}",
+            failed_host_probes.join("; ")
+        ))));
+    }
 
     // The CLI invariant also applies to SPEC-driven MCP synthesis: generated
     // regression assertions must all pass, in sequence, on their own instance.
