@@ -306,7 +306,7 @@ mod tests {
 
         let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
         client
-            .write_all(b"GET / HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n")
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
             .await
             .unwrap();
         started.notified().await;
