@@ -59,7 +59,7 @@ See `docs/SECURITY.md` for the current threat model and known gaps.
 - Rollback is limited to the immediately previous retained generation.
 - The HTTP accept loop must enforce a finite connection limit before spawning per-connection tasks; retain each connection permit for the full task lifetime.
 - Retry transient accept failures with a brief backoff; return only when the listener is unusable.
-- On SIGINT/SIGTERM, stop accepting, drain in-flight HTTP connections up to the configured shutdown deadline (30 seconds by default), then abort remaining connections.
+- On SIGINT, and on SIGTERM on Unix, stop accepting, drain in-flight HTTP connections up to the configured shutdown deadline (30 seconds by default), then abort remaining connections. Configure it with `--shutdown-timeout SECONDS` or `NOSRC_SHUTDOWN_TIMEOUT_SECS (default: 30).
 - In MCP shared-HTTP mode, HTTP shutdown also ends the MCP process; if the stdio client disconnects first, stop the shared HTTP task.
 - Requests to one QuickJS handler instance are serialized to preserve module state.
 - Do not add hot reload or generation draining without an explicit concurrency/lifecycle design and regression tests.
