@@ -558,6 +558,10 @@ mod tests {
             "AGENTS.md must describe the optional shared HTTP mode"
         );
         assert!(
+            AGENTS.contains("Direct-JavaScript candidates without a startup SPEC are preparation-only"),
+            "AGENTS.md must distinguish compile-only direct-JavaScript candidates from exportable draft-SPEC candidates"
+        );
+        assert!(
             !AGENTS.contains("MCP does not start HTTP ingress or share state with another process."),
             "AGENTS.md must not contradict the implemented shared mode"
         );
