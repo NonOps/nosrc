@@ -22,6 +22,8 @@ on:
   schedule:
     - cron: "23 2 * * *"
   workflow_dispatch:
+  # Called by release.yml so a tag is only published after Windows and macOS pass.
+  workflow_call:
 
 permissions:
   contents: read

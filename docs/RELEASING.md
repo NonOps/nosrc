@@ -25,7 +25,7 @@ Cargo requires a three-component SemVer package version. Keep that internal vers
    git push origin v0.1
    ```
 
-5. The Release workflow validates the tag against `Cargo.toml` and creates a GitHub Release named exactly after the tag, with generated release notes.
+5. The Release workflow validates the tag against `Cargo.toml`, runs the Windows and macOS test suite (`platforms.yml`, about 25 minutes, because those platforms do not run on every commit), and only then creates a GitHub Release named exactly after the tag, with generated release notes. If the platform tests fail, no release is created; fix the problem, delete the tag, and tag again.
 
 The workflow rejects tags with a patch component, prerelease suffix, or major/minor mismatch. It does not build or upload release binaries yet; binary/container distribution is a separate roadmap item.
 
