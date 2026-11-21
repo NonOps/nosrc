@@ -4,9 +4,13 @@ on:
   push:
     branches:
       - main
+  # Coverage is a trend signal and the most expensive job, so pull requests only run it
+  # when the workflow itself changes. Use workflow_dispatch to measure a branch on demand.
   pull_request:
     branches:
       - main
+    paths:
+      - .github/workflows/coverage.yml
   workflow_dispatch:
 
 permissions:
