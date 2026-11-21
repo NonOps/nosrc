@@ -325,7 +325,9 @@ mod tests {
 
         let (engine, compiled) = test_support::compiled().await;
         let handler = Arc::new(Mutex::new(
-            engine.instantiate(compiled, crate::engine::quickjs::DEFAULT_COMPONENT_FUEL).unwrap(),
+            engine
+                .instantiate(compiled, crate::engine::quickjs::DEFAULT_COMPONENT_FUEL)
+                .unwrap(),
         ));
         let state = Arc::new(IngressState::new());
         state.hot_swap(ActiveGeneration {
@@ -339,13 +341,10 @@ mod tests {
             .uri("/_nosrc/status")
             .body(Body::empty())
             .unwrap();
-        let response = tokio::time::timeout(
-            Duration::from_millis(100),
-            app.oneshot(request),
-        )
-        .await
-        .expect("status probe must not wait for the guest execution lock")
-        .unwrap();
+        let response = tokio::time::timeout(Duration::from_millis(100), app.oneshot(request))
+            .await
+            .expect("status probe must not wait for the guest execution lock")
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
