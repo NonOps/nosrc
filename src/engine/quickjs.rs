@@ -274,7 +274,7 @@ fn instantiate_component(
     store
         .set_fuel(fuel_budget)
         .map_err(|error| EngineError::Internal(format!("Failed to set component fuel: {error}")))?;
-    store.limiter(|state| &mut state.limits);
+    store.limiter(|state| state);
     store.set_max_component_handles(1_024);
 
     let linker = Linker::<ComponentStoreState>::new(engine);
