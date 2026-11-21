@@ -11,7 +11,10 @@ use crate::error::{EngineError, SandboxTrap};
 pub const DEFAULT_COMPONENT_FUEL: u64 = 50_000_000;
 pub const DEFAULT_COMPONENT_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 pub const DEFAULT_GUEST_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(not(test))]
 const EPOCH_TICK_INTERVAL: Duration = Duration::from_millis(10);
+#[cfg(test)]
+const EPOCH_TICK_INTERVAL: Duration = Duration::from_micros(100);
 const COMPONENT_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub const HANDLER_WIT: &str = r#"
@@ -333,8 +336,9 @@ pub(crate) mod test_support {
     use super::*;
     use tokio::sync::OnceCell;
 
-    // Keep epoch tests from racing the independent fuel safeguard on fast CI runners.
-    pub const EPOCH_TEST_FUEL: u64 = 5_000_000_000;
+    // Stay within the production fuel ceiling; the test build uses a faster epoch ticker.
+    pub const EPOCH_TEST_FUEL: u64 = DEFAULT_COMPONENT_FUEL;
+    pub const EPOCH_TEST_TIMEOUT: Duration = Duration::from_micros(100);
 
     pub const HANDLER_SOURCE: &str = r#"
         let count = 0;
@@ -538,7 +542,7 @@ mod tests {
         let started = std::time::Instant::now();
 
         let error = handler
-            .invoke_with_timeout(&request("/loop"), Duration::from_millis(10))
+            .invoke_with_timeout(&request("/loop"), test_support::EPOCH_TEST_TIMEOUT)
             .unwrap_err();
 
         assert!(
