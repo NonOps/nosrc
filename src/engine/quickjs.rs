@@ -74,8 +74,9 @@ impl ResourceLimiter for ComponentStoreState {
     }
 }
 
-#[derive(Clone, Debug, Default, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct RuntimeTelemetry {
+    pub schema_version: u8,
     /// Fuel consumed by the most recent invocation; absent when Wasmtime could not report it.
     pub last_invocation_fuel_consumed: Option<u64>,
     /// Largest fuel consumption observed by this handler generation.
@@ -84,6 +85,18 @@ pub struct RuntimeTelemetry {
     pub instance_memory_high_water_bytes: Option<usize>,
     /// Largest linear-memory size observed across this handler generation, including replaced instances.
     pub generation_memory_high_water_bytes: Option<usize>,
+}
+
+impl Default for RuntimeTelemetry {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            last_invocation_fuel_consumed: None,
+            generation_fuel_high_water: None,
+            instance_memory_high_water_bytes: None,
+            generation_memory_high_water_bytes: None,
+        }
+    }
 }
 
 type ComponentHandle = TypedFunc<(String,), (String,)>;
@@ -300,6 +313,9 @@ impl QuickJsHandler {
     }
 
     fn record_invocation_telemetry(&mut self) {
+        // A permitted growth that did not report a failure is treated as successful
+        // once the guest call returns. Failed growth callbacks roll the estimate back.
+        self.store.data_mut().pending_memory_growth = None;
         self.telemetry.last_invocation_fuel_consumed = self
             .store
             .get_fuel()
@@ -511,6 +527,11 @@ mod tests {
                 .as_deref(),
             Some("2")
         );
+        let telemetry = handler.telemetry_snapshot();
+        assert!(telemetry.last_invocation_fuel_consumed.is_some());
+        assert!(telemetry.generation_fuel_high_water.is_some());
+        assert!(telemetry.instance_memory_high_water_bytes.is_some());
+        assert_eq!(telemetry.schema_version, 1);
     }
 
     #[tokio::test]
@@ -552,6 +573,14 @@ mod tests {
             matches!(result, Err(EngineError::Trap(SandboxTrap::GuestPanic(_)))),
             "Expected the guest allocation to fail under the 64 MiB memory cap, got: {result:?}"
         );
+        let telemetry = handler.telemetry_snapshot();
+        assert!(telemetry.last_invocation_fuel_consumed.is_some());
+        assert!(
+            telemetry
+                .instance_memory_high_water_bytes
+                .is_some_and(|bytes| bytes <= DEFAULT_COMPONENT_MEMORY_BYTES),
+            "memory high-water must reflect an observed allocation within the hard limit: {telemetry:?}"
+        );
     }
 
     /// Small enough that the infinite loop stops within milliseconds, but comfortably above
@@ -568,6 +597,10 @@ mod tests {
             matches!(error, EngineError::Trap(SandboxTrap::FuelExhausted)),
             "Expected fuel exhaustion, got: {error}"
         );
+        let telemetry = handler.telemetry_snapshot();
+        assert!(telemetry.last_invocation_fuel_consumed.is_some());
+        assert_eq!(telemetry.last_invocation_fuel_consumed, Some(LOOP_TEST_FUEL));
+        assert_eq!(telemetry.generation_fuel_high_water, Some(LOOP_TEST_FUEL));
     }
 
     #[tokio::test]
@@ -581,10 +614,19 @@ mod tests {
             "Expected fuel exhaustion, got: {error}"
         );
 
+        let generation_memory_before = handler.telemetry_snapshot().generation_memory_high_water_bytes;
         let response = handler
             .invoke(&request("/health"))
             .expect("same handler should accept a healthy request after a guest trap");
         assert_eq!(response.status, 200);
         assert_eq!(response.body.as_deref(), Some("healthy"));
+        let telemetry = handler.telemetry_snapshot();
+        assert!(telemetry.generation_fuel_high_water.is_some());
+        assert!(telemetry.instance_memory_high_water_bytes.is_some());
+        if let Some(before) = generation_memory_before {
+            assert!(
+                telemetry.generation_memory_high_water_bytes.unwrap_or_default() >= before
+            );
+        }
     }
 }
