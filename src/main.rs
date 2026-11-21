@@ -351,7 +351,7 @@ async fn main() -> anyhow::Result<()> {
                 "nosrc is listening with a verified JavaScript handler"
             );
 
-            crate::server::serve(listener, app).await?;
+            crate::server::serve(listener, app, shutdown_timeout).await?;
             Ok(())
         }
     }
