@@ -284,7 +284,7 @@ fn evaluate_response(
 mod tests {
     use super::*;
     use crate::engine::http_envelope::RequestEnvelope;
-    use crate::engine::quickjs::{test_support, DEFAULT_COMPONENT_FUEL};
+    use crate::engine::quickjs::{test_support, QuickJsEngine, DEFAULT_COMPONENT_FUEL};
     use std::collections::HashMap;
 
     fn assertion(expected_status: u16, body_contains: Option<&str>) -> ContractAssertion {
