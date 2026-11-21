@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::artifact_cache::ArtifactCache;
 use crate::engine::http_envelope::{RequestEnvelope, ResponseEnvelope};
-use crate::engine::quickjs::{CompiledHandler, QuickJsEngine, QuickJsHandler};
+use crate::engine::quickjs::{CompiledHandler, QuickJsEngine, QuickJsHandler, RuntimeTelemetry};
 use crate::error::EngineError;
 use crate::ingress::{ActiveGeneration, IngressState};
 use crate::spec::ServiceSpec;
@@ -112,6 +112,7 @@ pub struct GenerationSummary {
     pub trusted_assertions: Vec<AssertionSummary>,
     pub model_assertions: Vec<AssertionSummary>,
     pub supplemental_assertions: Vec<AssertionSummary>,
+    pub telemetry: Option<RuntimeTelemetry>,
 }
 
 #[derive(Debug, Serialize)]
@@ -987,6 +988,11 @@ impl AppLifecycle {
                 trusted_assertions: assertion_summaries(&generation.trusted_results),
                 model_assertions: assertion_summaries(&generation.model_results),
                 supplemental_assertions: assertion_summaries(&generation.supplemental_results),
+                telemetry: generation
+                    .handler
+                    .lock()
+                    .ok()
+                    .map(|handler| handler.telemetry_snapshot()),
             })
             .collect();
         generations.sort_by_key(|item| item.generation_id.clone());
