@@ -1,3 +1,4 @@
+use redb::ReadableDatabase;
 use std::collections::HashSet;
 use std::net::IpAddr;
 use std::sync::Arc;
