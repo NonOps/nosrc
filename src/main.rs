@@ -62,9 +62,13 @@ pub struct Cli {
     pub no_cache: bool,
 
     /// Maximum time in seconds to drain in-flight HTTP connections after SIGINT/SIGTERM.
-    #[arg(long, default_value_t = 30, env = "NOSRC_SHUTDOWN_TIMEOUT_SECS", global = true)]
+    #[arg(
+        long,
+        default_value_t = 30,
+        env = "NOSRC_SHUTDOWN_TIMEOUT_SECS",
+        global = true
+    )]
     pub shutdown_timeout_secs: u64,
-
 }
 
 #[derive(Subcommand, Debug)]
