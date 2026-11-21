@@ -565,7 +565,10 @@ mod tests {
     #[test]
     fn epoch_deadline_rounds_up_and_never_allows_an_immediate_expiration() {
         assert_eq!(epoch_deadline_ticks(Duration::ZERO), 1);
-        assert_eq!(epoch_deadline_ticks(Duration::from_millis(10)), 1);
-        assert_eq!(epoch_deadline_ticks(Duration::from_millis(11)), 2);
+        assert_eq!(epoch_deadline_ticks(EPOCH_TICK_INTERVAL), 1);
+        assert_eq!(
+            epoch_deadline_ticks(EPOCH_TICK_INTERVAL + Duration::from_nanos(1)),
+            2
+        );
     }
 }
