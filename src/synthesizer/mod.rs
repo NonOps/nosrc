@@ -958,7 +958,7 @@ This note remains visible.
         assert!(visible.contains(r#"{"method":"GET","path":"/items"}"#));
         assert!(visible.contains("## Notes"));
         assert!(visible.contains("This note remains visible."));
-        assert!(!visible.contains("## Verification"));
+        assert!(visible.contains("This is example text, not a section heading."));
         assert!(!visible.contains("trusted-case-marker"));
     }
 
