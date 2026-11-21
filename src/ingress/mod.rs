@@ -289,6 +289,9 @@ mod tests {
     use crate::engine::quickjs::{test_support, DEFAULT_COMPONENT_FUEL};
     use axum::body::Body;
     use axum::http::Request;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::oneshot;
     use tower::ServiceExt;
 
     #[tokio::test]
@@ -495,6 +498,67 @@ mod tests {
             released.is_ok(),
             "cancelled request left its blocking guest execution holding the permit"
         );
+    }
+
+    #[tokio::test]
+    async fn graceful_shutdown_drains_epoch_interrupted_guest_execution() {
+        let (engine, compiled) = test_support::compiled().await;
+        let handler = engine
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .unwrap();
+
+        let mut ingress_state = IngressState::new();
+        ingress_state.execution_timeout = Duration::from_millis(10);
+        let state = Arc::new(ingress_state);
+        state.hot_swap(ActiveGeneration {
+            generation_id: 1,
+            module_hash: "shutdown-epoch-test".to_string(),
+            handler: Arc::new(Mutex::new(handler)),
+        });
+        let app = build_ingress_router(state.clone());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let server = tokio::spawn(crate::server::serve_with_shutdown(
+            listener,
+            app,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            Duration::from_secs(2),
+        ));
+
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        stream
+            .write_all(b"GET /loop HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while state.execution.available_permits() != 0 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("guest request should enter execution before shutdown");
+
+        shutdown_tx.send(()).unwrap();
+
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), stream.read_to_end(&mut response))
+            .await
+            .expect("epoch interruption should let the in-flight response drain")
+            .unwrap();
+        let response = String::from_utf8(response).unwrap().to_ascii_lowercase();
+        assert!(response.starts_with("http/1.1 504 gateway timeout"));
+        assert!(response.contains("x-nosrc-error: executiontimeout"));
+
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("server should finish draining the interrupted request")
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]
