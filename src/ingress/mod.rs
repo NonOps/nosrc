@@ -18,7 +18,7 @@ use crate::error::EngineError;
 const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 const MAX_ADMITTED_REQUESTS: usize = 32;
 const EXECUTION_QUEUE_TIMEOUT: Duration = Duration::from_secs(5);
-const EXECUTION_TASK_JOIN_GRACE: Duration = Duration::from_secs(1);
+const EXECUTION_TASK_JOIN_GRACE: Duration = Duration::from_secs(6);
 const INGRESS_REQUEST_TIMEOUT: Duration = Duration::from_secs(40);
 
 /// Active generation representing a compiled and contract-verified JavaScript handler.
@@ -449,6 +449,45 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(body.as_ref(), b"healthy");
+    }
+
+    #[tokio::test]
+    async fn cancelled_http_request_does_not_leave_guest_execution_running() {
+        let (engine, compiled) = test_support::compiled().await;
+        let handler = engine.instantiate(compiled, DEFAULT_COMPONENT_FUEL).unwrap();
+
+        let mut ingress_state = IngressState::new();
+        ingress_state.execution_timeout = Duration::from_millis(10);
+        let state = Arc::new(ingress_state);
+        state.hot_swap(ActiveGeneration {
+            generation_id: 1,
+            module_hash: "cancelled-epoch-test".to_string(),
+            handler: Arc::new(Mutex::new(handler)),
+        });
+        let app = build_ingress_router(state.clone());
+
+        let request = Request::builder()
+            .uri("/loop")
+            .body(Body::empty())
+            .unwrap();
+        let request_task = tokio::spawn(app.oneshot(request));
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        assert_eq!(state.execution.available_permits(), 0);
+
+        // Dropping the HTTP future cannot cancel spawn_blocking. The Wasmtime
+        // epoch deadline must still stop the guest and release its owned permit.
+        request_task.abort();
+        let released = tokio::time::timeout(Duration::from_secs(2), async {
+            while state.execution.available_permits() == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+
+        assert!(
+            released.is_ok(),
+            "cancelled request left its blocking guest execution holding the permit"
+        );
     }
 
     #[tokio::test]
