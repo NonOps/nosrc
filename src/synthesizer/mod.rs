@@ -362,7 +362,7 @@ impl Synthesizer {
         let fuel = crate::engine::quickjs::DEFAULT_COMPONENT_FUEL.to_be_bytes();
         let memory = (crate::engine::quickjs::DEFAULT_COMPONENT_MEMORY_BYTES as u64).to_be_bytes();
         let fields: [&[u8]; 12] = [
-            b"nosrc-artifact-cache-v1",
+            b"nosrc-artifact-cache-v2",
             spec.raw_markdown.as_bytes(),
             self.config.base_url.as_bytes(),
             self.config.model.as_bytes(),
