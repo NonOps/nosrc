@@ -529,7 +529,9 @@ mod tests {
     #[tokio::test]
     async fn epoch_deadline_interrupts_guest_independently_of_fuel_and_recovers() {
         let (engine, compiled) = test_support::compiled().await;
-        let mut handler = engine.instantiate(compiled, DEFAULT_COMPONENT_FUEL).unwrap();
+        let mut handler = engine
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .unwrap();
         let started = std::time::Instant::now();
 
         let error = handler
