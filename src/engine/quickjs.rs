@@ -1,5 +1,7 @@
 use componentize_qjs::{componentize, ComponentizeOpts, Runtime};
 use sha2::{Digest, Sha256};
+use std::thread;
+use std::time::Duration;
 use wasmtime::component::{Component, Linker, TypedFunc};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
 
@@ -8,6 +10,9 @@ use crate::error::{EngineError, SandboxTrap};
 
 pub const DEFAULT_COMPONENT_FUEL: u64 = 50_000_000;
 pub const DEFAULT_COMPONENT_MEMORY_BYTES: usize = 64 * 1024 * 1024;
+pub const DEFAULT_GUEST_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
+const EPOCH_TICK_INTERVAL: Duration = Duration::from_millis(10);
+const COMPONENT_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub const HANDLER_WIT: &str = r#"
 package nosrc:runtime;
@@ -23,6 +28,32 @@ struct ComponentStoreState {
 
 type ComponentHandle = TypedFunc<(String,), (String,)>;
 type InstantiatedComponent = (Store<ComponentStoreState>, ComponentHandle);
+
+fn epoch_deadline_ticks(timeout: Duration) -> u64 {
+    timeout
+        .as_nanos()
+        .div_ceil(EPOCH_TICK_INTERVAL.as_nanos())
+        .clamp(1, u64::MAX as u128) as u64
+}
+
+/// Drive Wasmtime's global epoch using a weak reference so the ticker does not
+/// keep an otherwise-unused engine alive.
+fn start_epoch_ticker(engine: &Engine) -> Result<(), EngineError> {
+    let engine = engine.weak();
+    thread::Builder::new()
+        .name("nosrc-wasmtime-epoch".into())
+        .spawn(move || loop {
+            thread::sleep(EPOCH_TICK_INTERVAL);
+            let Some(engine) = engine.upgrade() else {
+                break;
+            };
+            engine.increment_epoch();
+        })
+        .map(|_| ())
+        .map_err(|error| {
+            EngineError::Internal(format!("Failed to start Wasmtime epoch ticker: {error}"))
+        })
+}
 
 /// Wasmtime component-model engine for JavaScript handlers compiled with QuickJS.
 #[derive(Clone)]
@@ -44,6 +75,7 @@ pub struct QuickJsHandler {
     fuel_budget: u64,
     response_limit_bytes: usize,
     memory_limit_bytes: usize,
+    poisoned: bool,
 }
 
 impl QuickJsEngine {
@@ -51,10 +83,12 @@ impl QuickJsEngine {
         let mut config = Config::new();
         config.wasm_component_model(true);
         config.consume_fuel(true);
+        config.epoch_interruption(true);
 
         let engine = Engine::new(&config).map_err(|error| {
             EngineError::Internal(format!("Failed to create component engine: {error}"))
         })?;
+        start_epoch_ticker(&engine)?;
 
         Ok(Self { engine })
     }
@@ -165,6 +199,7 @@ impl QuickJsEngine {
             fuel_budget,
             response_limit_bytes,
             memory_limit_bytes,
+            poisoned: false,
         })
     }
 }
@@ -189,11 +224,12 @@ fn instantiate_component(
         .map_err(|error| EngineError::Internal(format!("Failed to set component fuel: {error}")))?;
     store.limiter(|state| &mut state.limits);
     store.set_max_component_handles(1_024);
+    store.set_epoch_deadline(epoch_deadline_ticks(COMPONENT_STARTUP_TIMEOUT));
 
     let linker = Linker::<ComponentStoreState>::new(engine);
-    let instance = linker.instantiate(&mut store, component).map_err(|error| {
-        EngineError::Instantiation(format!("Failed to instantiate handler component: {error}"))
-    })?;
+    let instance = linker
+        .instantiate(&mut store, component)
+        .map_err(classify_component_error)?;
     let handle = instance
         .get_typed_func::<(String,), (String,)>(&mut store, "handle")
         .map_err(|error| {
@@ -210,9 +246,24 @@ fn instantiate_component(
 }
 
 impl QuickJsHandler {
-    /// Invoke the handler while retaining the same component instance between calls.
-    /// This preserves JavaScript module state across successful requests.
+    /// Invoke the handler with the default wall-clock deadline.
     pub fn invoke(&mut self, request: &RequestEnvelope) -> Result<ResponseEnvelope, EngineError> {
+        self.invoke_with_timeout(request, DEFAULT_GUEST_EXECUTION_TIMEOUT)
+    }
+
+    /// Invoke the handler while retaining its instance after successful requests.
+    /// A Wasmtime epoch deadline interrupts guest execution independently of fuel.
+    pub fn invoke_with_timeout(
+        &mut self,
+        request: &RequestEnvelope,
+        timeout: Duration,
+    ) -> Result<ResponseEnvelope, EngineError> {
+        if self.poisoned {
+            return Err(EngineError::Internal(
+                "Handler instance is unavailable after a failed recovery attempt".into(),
+            ));
+        }
+
         let request_json = serde_json::to_string(request).map_err(|error| {
             EngineError::Internal(format!("Failed to serialize request envelope: {error}"))
         })?;
@@ -220,14 +271,15 @@ impl QuickJsHandler {
         self.store.set_fuel(self.fuel_budget).map_err(|error| {
             EngineError::Internal(format!("Failed to reset component fuel: {error}"))
         })?;
+        self.store.set_epoch_deadline(epoch_deadline_ticks(timeout));
 
         let response_json = match self.handle.call(&mut self.store, (request_json,)) {
             Ok((response_json,)) => response_json,
             Err(error) => {
-                let trap = classify_component_trap(error);
-                // Wasmtime component instances cannot be re-entered after a guest trap.
-                // Recreate the instance from the already-compiled component so one bad
-                // request does not permanently take this generation's handler offline.
+                let trap = classify_component_error(error);
+                // A trapped component instance is not reusable. Recreate it from the
+                // compiled component; if recovery fails, permanently reject later calls
+                // rather than attempting to reuse the trapped store.
                 match instantiate_component(
                     &self.engine,
                     &self.component,
@@ -239,8 +291,9 @@ impl QuickJsHandler {
                         self.handle = handle;
                     }
                     Err(recovery_error) => {
+                        self.poisoned = true;
                         return Err(EngineError::Internal(format!(
-                            "Guest trapped ({trap}); failed to recreate handler instance: {recovery_error}"
+                            "Guest execution failed ({trap}); handler recovery failed: {recovery_error}"
                         )));
                     }
                 }
@@ -263,14 +316,16 @@ impl QuickJsHandler {
     }
 }
 
-fn classify_component_trap(error: wasmtime::Error) -> EngineError {
+fn classify_component_error(error: wasmtime::Error) -> EngineError {
     if let Some(trap) = error.downcast_ref::<wasmtime::Trap>() {
-        if *trap == wasmtime::Trap::OutOfFuel {
-            return EngineError::Trap(SandboxTrap::FuelExhausted);
+        match trap {
+            wasmtime::Trap::OutOfFuel => EngineError::Trap(SandboxTrap::FuelExhausted),
+            wasmtime::Trap::Interrupt => EngineError::Trap(SandboxTrap::ExecutionTimeout),
+            _ => EngineError::Trap(SandboxTrap::GuestPanic(error.to_string())),
         }
+    } else {
+        EngineError::Instantiation(error.to_string())
     }
-
-    EngineError::Trap(SandboxTrap::GuestPanic(error.to_string()))
 }
 
 #[cfg(test)]
@@ -469,5 +524,40 @@ mod tests {
             .expect("same handler should accept a healthy request after a guest trap");
         assert_eq!(response.status, 200);
         assert_eq!(response.body.as_deref(), Some("healthy"));
+    }
+
+
+    #[tokio::test]
+    async fn epoch_deadline_interrupts_guest_independently_of_fuel_and_recovers() {
+        let (engine, compiled) = test_support::compiled().await;
+        let mut handler = engine.instantiate(compiled, DEFAULT_COMPONENT_FUEL).unwrap();
+        let started = std::time::Instant::now();
+
+        let error = handler
+            .invoke_with_timeout(&request("/loop"), Duration::from_millis(10))
+            .unwrap_err();
+
+        assert!(
+            matches!(error, EngineError::Trap(SandboxTrap::ExecutionTimeout)),
+            "Expected epoch execution timeout, got: {error}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "Epoch interruption took too long: {:?}",
+            started.elapsed()
+        );
+
+        let response = handler
+            .invoke(&request("/health"))
+            .expect("handler should recover after an epoch interruption");
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body.as_deref(), Some("healthy"));
+    }
+
+    #[test]
+    fn epoch_deadline_rounds_up_and_never_allows_an_immediate_expiration() {
+        assert_eq!(epoch_deadline_ticks(Duration::ZERO), 1);
+        assert_eq!(epoch_deadline_ticks(Duration::from_millis(10)), 1);
+        assert_eq!(epoch_deadline_ticks(Duration::from_millis(11)), 2);
     }
 }
