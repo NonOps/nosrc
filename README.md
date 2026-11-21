@@ -169,6 +169,7 @@ Every declared endpoint must have at least one matching case under `## Verificat
 
 `LLM_API_KEY` is required whenever a model request is made; a verified cache hit in HTTP or export mode does not need it. Optional variables:
 
+- `NOSRC_SHUTDOWN_TIMEOUT_SECS` (default: `30`) controls how long HTTP modes drain active connections after SIGINT or SIGTERM. The equivalent CLI option is `--shutdown-timeout SECONDS`.
 - `LLM_BASE_URL` (default: `https://api.openai.com/v1`; must be `https` unless it points at a loopback address)
 - `LLM_MODEL` (default: `gpt-4o-mini`)
 
