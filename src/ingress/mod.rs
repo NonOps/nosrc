@@ -430,10 +430,7 @@ mod tests {
         })
         .await
         .expect("first request should acquire the execution permit");
-        let health_request = Request::builder()
-            .uri("/health")
-            .body(Body::empty())
-            .unwrap();
+        let health_request = Request::builder().uri("/health").body(Body::empty()).unwrap();
         let health_app = app.clone();
         let health_task =
             tokio::spawn(async move { health_app.oneshot(health_request).await.unwrap() });
@@ -462,7 +459,9 @@ mod tests {
     #[tokio::test]
     async fn cancelled_http_request_does_not_leave_guest_execution_running() {
         let (engine, compiled) = test_support::compiled().await;
-        let handler = engine.instantiate(compiled, DEFAULT_COMPONENT_FUEL).unwrap();
+        let handler = engine
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .unwrap();
 
         let mut ingress_state = IngressState::new();
         ingress_state.execution_timeout = Duration::from_millis(10);
