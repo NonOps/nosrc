@@ -338,7 +338,7 @@ pub(crate) mod test_support {
 
     // Stay within the production fuel ceiling; the test build uses a faster epoch ticker.
     pub const EPOCH_TEST_FUEL: u64 = DEFAULT_COMPONENT_FUEL;
-    pub const EPOCH_TEST_TIMEOUT: Duration = Duration::from_micros(100);
+    pub const EPOCH_TEST_TIMEOUT: Duration = Duration::from_millis(100);
 
     pub const HANDLER_SOURCE: &str = r#"
         let count = 0;
