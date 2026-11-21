@@ -23,6 +23,14 @@ struct ComponentStoreState {
     pending_memory_growth: Option<(usize, usize)>,
 }
 
+impl ComponentStoreState {
+    fn commit_pending_memory_growth(&mut self) {
+        // Wasmtime reports failed growth synchronously during the guest call. Once that
+        // call returns, any remaining permitted growth is committed telemetry.
+        self.pending_memory_growth = None;
+    }
+}
+
 impl ResourceLimiter for ComponentStoreState {
     fn memory_growing(
         &mut self,
@@ -316,7 +324,7 @@ impl QuickJsHandler {
     fn record_invocation_telemetry(&mut self) {
         // A permitted growth that did not report a failure is treated as successful
         // once the guest call returns. Failed growth callbacks roll the estimate back.
-        self.store.data_mut().pending_memory_growth = None;
+        self.store.data_mut().commit_pending_memory_growth();
         self.telemetry.last_invocation_fuel_consumed = self
             .store
             .get_fuel()
@@ -503,6 +511,31 @@ mod tests {
             headers: HashMap::new(),
             body: None,
         }
+    }
+
+    #[test]
+    fn committed_memory_growth_cannot_be_rolled_back_by_a_later_failure_callback() {
+        let mut state = ComponentStoreState {
+            limits: StoreLimitsBuilder::new().memory_size(DEFAULT_COMPONENT_MEMORY_BYTES).build(),
+            memory_high_water_bytes: Some(8),
+            pending_memory_growth: None,
+        };
+
+        assert!(state.memory_growing(8, 16, None).unwrap());
+        assert_eq!(state.memory_high_water_bytes, Some(16));
+        assert_eq!(state.pending_memory_growth, Some((8, 16)));
+
+        state.commit_pending_memory_growth();
+        assert_eq!(state.pending_memory_growth, None);
+
+        state
+            .memory_grow_failed(wasmtime::Error::msg("late failure callback"))
+            .unwrap();
+        assert_eq!(
+            state.memory_high_water_bytes,
+            Some(16),
+            "a callback without a matching pending growth must not roll back committed telemetry"
+        );
     }
 
     #[tokio::test]
