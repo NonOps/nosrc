@@ -2,7 +2,7 @@
 
 ## 1. Project identity
 
-nosrc is an experimental Rust runtime that transforms an operator-authored `SPEC.md` into a JavaScript request handler, compiles it into a QuickJS-backed WebAssembly component, verifies it, and exposes it through HTTP, MCP stdio, verified artifact export, or offline bundle serving.
+nosrc is an experimental Rust runtime that transforms an operator-authored `SPEC.md` into a JavaScript request handler, compiles it into a QuickJS-backed WebAssembly component, verifies it, and exposes it through HTTP, MCP stdio (optionally with shared HTTP ingress), verified artifact export, or offline bundle serving.
 
 Read `ARCHITECTURE.md` before changing module boundaries, execution contracts, security assumptions, or lifecycle behavior. Read the relevant documents under `docs/` when changing CLI behavior, export formats, or security boundaries.
 
@@ -10,13 +10,13 @@ Current toolchain: Rust 1.97+, Wasmtime 50 component model, and `componentize-qj
 
 ## 2. Hard invariants
 
-1. **No unverified activation.** HTTP startup and MCP SPEC-driven preparation must pass every operator-authored SPEC verification case and the separate model-generated assertion suite. MCP direct-JavaScript preparation must pass every trusted SPEC case. MCP-first candidates may be prepared and exported for review, but activation is forbidden until an operator-controlled SPEC with at least one trusted verification case is loaded. Supplemental client assertions are informational only. Never activate a candidate without trusted policy or after a failed check.
+1. **No unverified activation.** HTTP startup and MCP SPEC-driven preparation must pass every operator-authored SPEC verification case and the separate model-generated assertion suite. MCP direct-JavaScript preparation must pass every trusted SPEC case. MCP-first draft-SPEC candidates may be prepared and exported for review. Direct-JavaScript candidates without a startup SPEC are preparation-only and cannot be invoked, activated, or exported. Activation is forbidden until an operator-controlled SPEC with at least one trusted verification case is loaded. Supplemental client assertions are informational only. Never activate a candidate without trusted policy or after a failed check.
 2. **Trusted policy belongs to the operator.** An MCP client cannot replace the startup SPEC, weaken trusted assertions, or raise runtime ceilings.
 3. **Strict guest isolation.** The current QuickJS component world exports only the handler entrypoint. Do not grant filesystem, process, network, SQL, KV, or WASI capabilities without an explicit WIT contract, host implementation, policy gate, bounds, and component-level tests.
 4. **Enforce resource limits.** Fuel, linear memory, component handles/tables/instances/memories, request size, and response size must be enforced by the actual runtime path, not merely reported.
 5. **Honest state semantics.** JavaScript module-level state is in-memory and generation-scoped. It is lost on handler replacement or process restart. Do not claim that SQLite/redb prototypes or dependencies provide persistence to the active QuickJS guest.
 6. **Keep verification isolated.** Trusted and model-generated suites use separate disposable instances. Agent-supplied informational assertions use their own disposable instance. Production instances are created only after mandatory checks pass.
-7. **Preserve process-mode boundaries.** HTTP mode and MCP stdio mode are separate process modes. MCP does not start HTTP ingress or share state with another process.
+7. **Preserve process-mode boundaries.** The default HTTP mode and `serve --bundle` each run HTTP ingress in their own process. `nosrc mcp` defaults to a local stdio-only control plane. With `--http-port`, MCP also starts HTTP ingress in the same process and shares one lifecycle and active generation; do not describe that configuration as separate processes.
 8. **Do not invent implemented capabilities.** A crate dependency, legacy module, test fixture, or backlog item is not proof that the active QuickJS guest can use that capability.
 
 ## 3. Current state and persistence roadmap
@@ -34,7 +34,7 @@ Do not add a persistence backend or claim persistence is wired into the request 
 - No subcommand: HTTP runtime. Default SPEC `./SPEC.md`, port `8080`, bind `127.0.0.1`, cache directory `./.nosrc-cache`.
 - `nosrc export`: verifies and exports `handler.js`, `component.wasm`, `assertions.json`, and `manifest.json`; does not start HTTP ingress. It stages the complete bundle in a temporary sibling directory and publishes it by rename; the destination must not already exist.
 - `nosrc serve --bundle PATH`: validates an exported bundle, recompiles its component, reruns both assertion suites, and starts HTTP ingress without LLM credentials or provider access. It does not load a SPEC; the bundle and its unsigned assertion/manifest files are operator-controlled inputs.
-- `nosrc mcp`: local stdio MCP process; does not start HTTP ingress. `--export-root` (default `./.nosrc-exports`) confines `export_app` to single directory names beneath the configured root. MCP-first candidates cannot be activated until an operator SPEC is loaded.
+- `nosrc mcp`: local stdio MCP process by default. With `--http-port`, it also starts HTTP ingress in the same process; MCP activation and rollback update the generation served by that listener. `--export-root` (default `./.nosrc-exports`) confines `export_app` to single directory names beneath the configured root. MCP-first candidates cannot be activated until an operator SPEC is loaded.
 
 See `docs/CLI.md` for exact flags and environment variables, and `docs/ARTIFACTS.md` before changing exported files or manifest fields.
 

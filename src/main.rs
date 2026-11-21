@@ -353,6 +353,7 @@ mod tests {
 
     const MCP_EXAMPLE_CONFIG: &str = include_str!("../examples/mcp/mcp.json");
     const README: &str = include_str!("../README.md");
+    const AGENTS: &str = include_str!("../AGENTS.md");
     const CARGO_TOML: &str = include_str!("../Cargo.toml");
     const MCP_EXAMPLE_SPEC: &str = "/absolute/path/to/SPEC.md";
     const MCP_EXAMPLE_CACHE_DIR: &str = "/absolute/path/to/.nosrc-cache";
@@ -543,6 +544,43 @@ mod tests {
         assert!(
             fenced_json_blocks(README).contains(&example),
             "README.md must contain a ```json block identical to examples/mcp/mcp.json"
+        );
+    }
+
+    #[test]
+    fn agents_document_default_mcp_stdio_and_optional_shared_http_modes() {
+        assert!(
+            AGENTS.contains("local stdio MCP process by default."),
+            "AGENTS.md must describe the default MCP stdio mode"
+        );
+        assert!(
+            AGENTS.contains("With `--http-port`, MCP also starts HTTP ingress in the same process"),
+            "AGENTS.md must describe the optional shared HTTP mode"
+        );
+        assert!(
+            AGENTS.contains("Direct-JavaScript candidates without a startup SPEC are preparation-only"),
+            "AGENTS.md must distinguish compile-only direct-JavaScript candidates from exportable draft-SPEC candidates"
+        );
+        assert!(
+            !AGENTS
+                .contains("MCP does not start HTTP ingress or share state with another process."),
+            "AGENTS.md must not contradict the implemented shared mode"
+        );
+    }
+
+    #[test]
+    fn readme_does_not_claim_multi_tenant_isolation_or_include_retired_section() {
+        assert!(
+            !README.contains("Safe Multi-Tenant"),
+            "README must not claim safe multi-tenant routing"
+        );
+        assert!(
+            !README.contains("## Not suitable for"),
+            "README must not include the retired Not suitable for section"
+        );
+        assert!(
+            README.contains("operator-controlled SPEC with trusted verification cases"),
+            "README must state the operator-controlled activation requirement"
         );
     }
 

@@ -19,13 +19,20 @@ The current implementation is a single-process prototype, not a production-ready
 
 ![nosrc spec to live endpoint demo](./assets/nosrc-demo.gif)
 
-## Use Cases
+## Project vision
+
+The long-term goal is a verified runtime for AI-agent-built services: agents should be able to synthesize, test, and deploy custom endpoints through MCP while remaining inside a tightly constrained execution boundary. This is the intended direction, not a claim that the complete workflow is production-ready today.
 
 - **Sandboxed Execution for AI Agents (MCP):** Allow an LLM agent to synthesize, test, and deploy custom HTTP endpoints via Model Context Protocol without granting host filesystem, network, or process access. Every generated handler runs inside an isolated Wasmtime sandbox with strict fuel and linear-memory ceilings.
 - **Zero-Boilerplate Microservices & Webhooks:** Replace Dockerfiles, Node/Python dependency trees, and Kubernetes manifests for small stateless services (webhook receivers, JSON transformers, mock APIs, internal glue endpoints) with a single `SPEC.md` and an offline-servable Wasm bundle.
-- **Policy-Gated Code Generation:** Enforce human-authored operator verification cases (`--spec`) before any agent-proposed draft (`draft_spec`) can be promoted to the live HTTP listener, preventing unverified LLM output from reaching production traffic.
-- **Auditable, Reproducible Edge & Air-Gapped Bundles:** Export self-contained deployment artifacts (`component.wasm`, `handler.js`, `assertions.json`, `manifest.json`) that can be inspected, versioned, and served deterministically with `nosrc serve --bundle` without any runtime LLM dependency or network access.
-- **Safe Multi-Tenant / Ephemeral Routing:** Hot-swap or roll back isolated request-response handlers in milliseconds across generations with bounded concurrency and deterministic execution limits.
+
+## Use Cases
+
+- **Local agent-assisted prototyping (MCP):** Use the local stdio MCP server to prepare, inspect, invoke, activate, and roll back one application. Activation is explicit and requires an operator-controlled SPEC with trusted verification cases.
+- **Small stateless HTTP handlers:** Build request-response endpoints, JSON transforms, and mock APIs from a `SPEC.md`, within the runtime's documented request, response, fuel, memory, and concurrency limits. This is not a general-purpose application platform.
+- **Operator-gated code generation:** Agents can prepare direct-JavaScript candidates or draft SPECs, but preparation never activates a candidate. A draft SPEC must be reviewed and supplied as the operator SPEC on restart before activation.
+- **Offline artifact handoff:** Export the handler, Wasm component, assertion suites, and manifest for review and version control, then run the bundle with `nosrc serve --bundle` without model-provider credentials or requests.
+
 
 ## What is implemented
 
