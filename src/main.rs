@@ -10,6 +10,17 @@ pub mod spec;
 pub mod synthesizer;
 pub mod verifier;
 
+/// Lowercase hexadecimal encoding. `sha2` 0.11 digests no longer implement `LowerHex`.
+pub(crate) fn hex_lower(bytes: impl AsRef<[u8]>) -> String {
+    use std::fmt::Write;
+    let bytes = bytes.as_ref();
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
 use clap::{Parser, Subcommand};
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -808,5 +819,16 @@ mod tests {
 
         let _ = shutdown_tx.send(());
         provider_task.await.unwrap();
+    }
+
+    #[test]
+    fn hex_lower_matches_the_known_sha256_vector() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            crate::hex_lower(Sha256::digest(b"abc")),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(crate::hex_lower([0x00, 0x0f, 0xff]), "000fff");
+        assert_eq!(crate::hex_lower([]), "");
     }
 }

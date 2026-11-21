@@ -132,9 +132,9 @@ pub fn export_artifacts_with_policy(
 
     let manifest = ExportManifest {
         service_name: spec.name.clone(),
-        spec_sha256: format!("{:x}", Sha256::digest(spec_text.as_bytes())),
+        spec_sha256: crate::hex_lower(Sha256::digest(spec_text.as_bytes())),
         module_hash: module_hash.to_string(),
-        component_sha256: format!("{:x}", Sha256::digest(component_bytes)),
+        component_sha256: crate::hex_lower(Sha256::digest(component_bytes)),
         trusted_assertions_count: policy.trusted_assertions.len(),
         generated_assertions_count: output.assertions.len(),
         rationale: output.rationale.clone(),
@@ -235,7 +235,7 @@ mod tests {
         assert_eq!(manifest.module_hash, "mock_hash_123");
         assert_eq!(
             manifest.component_sha256,
-            format!("{:x}", Sha256::digest(&component_bytes))
+            crate::hex_lower(Sha256::digest(&component_bytes))
         );
     }
 

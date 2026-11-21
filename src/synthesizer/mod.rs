@@ -346,7 +346,7 @@ impl Synthesizer {
             hasher.update((field.len() as u64).to_be_bytes());
             hasher.update(field);
         }
-        format!("{:x}", hasher.finalize())
+        crate::hex_lower(hasher.finalize())
     }
 
     /// Build the strict JavaScript handler and contract-assertion prompt.

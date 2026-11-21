@@ -102,7 +102,7 @@ impl QuickJsEngine {
         &self,
         component_bytes: &[u8],
     ) -> Result<CompiledHandler, EngineError> {
-        let module_hash = format!("{:x}", Sha256::digest(component_bytes));
+        let module_hash = crate::hex_lower(Sha256::digest(component_bytes));
         let component = Component::new(&self.engine, component_bytes).map_err(|error| {
             EngineError::Internal(format!("Invalid handler component: {error}"))
         })?;
