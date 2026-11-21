@@ -292,6 +292,41 @@ async fn read_limited_body(
         .map_err(BodyReadError::into_engine_error)
 }
 
+
+/// Return the model-visible SPEC, excluding operator acceptance policy.
+///
+/// Verification cases are deliberately host-only inputs. Examples remain visible but
+/// are illustrative and must never be treated as acceptance criteria.
+fn synthesis_spec_markdown(markdown: &str) -> String {
+    let mut output = Vec::new();
+    let mut in_verification = false;
+    let mut has_examples = false;
+
+    for line in markdown.lines() {
+        let trimmed = line.trim();
+        if let Some(section) = trimmed.strip_prefix("## ") {
+            let section = section.trim().to_ascii_lowercase();
+            in_verification = section.contains("verification");
+            has_examples |= section == "examples";
+        }
+
+        if !in_verification {
+            output.push(line);
+        }
+    }
+
+    let mut visible = output.join("\n");
+    if !has_examples {
+        if !visible.is_empty() {
+            visible.push_str("\n\n");
+        }
+        visible.push_str(
+            "## Examples\nNo additional illustrative examples were provided.              Follow the endpoint descriptions and response contracts above.",
+        );
+    }
+    visible
+}
+
 /// Synthesizer service managing LLM prompt construction and schema enforcement
 pub struct Synthesizer {
     config: LlmConfig,
@@ -402,9 +437,10 @@ Assertions must cover every endpoint's documented success response and at least 
             self.config.base_url.trim_end_matches('/')
         );
 
+        let visible_spec = synthesis_spec_markdown(&spec.raw_markdown);
         let mut user_prompt = format!(
-            "Implement the following service specification:\n\n```markdown\n{}\n```\n",
-            spec.raw_markdown
+            "Implement the following service specification. The `## Examples` section is illustrative only; it is not acceptance policy. Operator verification cases are intentionally withheld and will be enforced independently by the host.\n\n```markdown\n{}\n```\n",
+            visible_spec
         );
 
         if !historical_regressions.is_empty() {
@@ -873,6 +909,42 @@ mod tests {
 
     fn count(counter: &std::sync::atomic::AtomicUsize) -> usize {
         counter.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[test]
+    fn synthesis_prompt_excludes_operator_verification_and_keeps_examples() {
+        let markdown = r#"
+# Service: Example
+## Endpoints
+### `GET /items`
+- Response `200`: items
+## Examples
+### Request
+```json
+{"method":"GET","path":"/items"}
+```
+## Verification
+### `GET /items?secret=trusted-case-marker`
+- Response `200`
+- Body contains: `trusted-case-marker`
+## Notes
+This note remains visible.
+"#;
+
+        let visible = synthesis_spec_markdown(markdown);
+        assert!(visible.contains("## Examples"));
+        assert!(visible.contains(r#"{"method":"GET","path":"/items"}"#));
+        assert!(visible.contains("## Notes"));
+        assert!(visible.contains("This note remains visible."));
+        assert!(!visible.contains("## Verification"));
+        assert!(!visible.contains("trusted-case-marker"));
+    }
+
+    #[test]
+    fn synthesis_prompt_adds_examples_section_when_missing() {
+        let visible = synthesis_spec_markdown("# Service: Example\n## Endpoints\n### `GET /`");
+        assert!(visible.contains("## Examples"));
+        assert!(visible.contains("No additional illustrative examples were provided."));
     }
 
     #[tokio::test]
