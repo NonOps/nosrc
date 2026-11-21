@@ -402,6 +402,26 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_timeout_defaults_to_thirty_seconds_and_is_global() {
+        let cli = Cli::try_parse_from(["nosrc"]).unwrap();
+        assert_eq!(cli.shutdown_timeout_secs, 30);
+
+        let cli = Cli::try_parse_from(["nosrc", "mcp", "--shutdown-timeout", "7"]).unwrap();
+        assert_eq!(cli.shutdown_timeout_secs, 7);
+
+        let cli = Cli::try_parse_from([
+            "nosrc",
+            "--shutdown-timeout",
+            "11",
+            "serve",
+            "--bundle",
+            "./dist",
+        ])
+        .unwrap();
+        assert_eq!(cli.shutdown_timeout_secs, 11);
+    }
+
+    #[test]
     fn verbose_flag_enables_debug_diagnostics() {
         let cli = Cli::try_parse_from(["nosrc", "--verbose"]).unwrap();
         assert!(cli.verbose);
