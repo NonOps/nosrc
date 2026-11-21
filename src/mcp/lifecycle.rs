@@ -990,7 +990,7 @@ impl AppLifecycle {
                 supplemental_assertions: assertion_summaries(&generation.supplemental_results),
                 telemetry: generation
                     .handler
-                    .lock()
+                    .try_lock()
                     .ok()
                     .map(|handler| handler.telemetry_snapshot()),
             })
