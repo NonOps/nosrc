@@ -424,7 +424,6 @@ async fn shared_http_listener_serves_the_generation_activated_over_mcp() {
     let _ = child.wait().await;
 }
 
-
 #[cfg(unix)]
 #[tokio::test]
 async fn sigterm_stops_shared_http_and_mcp_process() {
