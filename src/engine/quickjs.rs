@@ -172,7 +172,9 @@ impl QuickJsEngine {
         memory_limit_bytes: usize,
         response_limit_bytes: usize,
     ) -> Result<QuickJsHandler, EngineError> {
-        if fuel_budget == 0 || (!cfg!(test) && fuel_budget > DEFAULT_COMPONENT_FUEL) {
+        if fuel_budget == 0
+            || (!cfg!(test) && fuel_budget > DEFAULT_COMPONENT_FUEL)
+        {
             return Err(EngineError::Internal(
                 "Fuel limit exceeds the runtime ceiling".into(),
             ));
