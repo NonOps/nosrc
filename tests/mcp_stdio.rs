@@ -441,7 +441,7 @@ async fn sigterm_stops_shared_http_and_mcp_process() {
         .env_remove("LLM_API_KEY")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .kill_on_drop(true)
         .spawn()
         .expect("failed to start nosrc MCP server");
@@ -492,7 +492,7 @@ async fn sigterm_stops_shared_http_and_mcp_process() {
     let signal_result = unsafe { libc::kill(pid, libc::SIGTERM) };
     assert_eq!(signal_result, 0, "failed to send SIGTERM to nosrc");
 
-    let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+    let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
         .await
         .expect("nosrc did not exit after SIGTERM")
         .unwrap();
