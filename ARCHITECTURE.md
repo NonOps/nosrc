@@ -108,7 +108,7 @@ A cache hit can avoid an LLM request and componentization. It does not bypass co
 
 ### HTTP ingress
 
-Axum handles `GET /healthz` and `GET /_nosrc/status`. Other requests are converted into the handler request envelope and dispatched to the active QuickJS handler. The listener binds to `127.0.0.1` by default; external binding requires an explicit `--bind` address. The accept loop enforces a 128-connection ceiling before spawning per-connection tasks; when the cap is reached, newly accepted sockets are closed. This transport-level bound is independent of application request admission.
+Axum handles `GET /healthz` and `GET /_nosrc/status`. Other requests are converted into the handler request envelope and dispatched to the active QuickJS handler. The listener binds to `127.0.0.1` by default; external binding requires an explicit `--bind` address. The accept loop enforces a 128-connection ceiling before spawning per-connection tasks; when the cap is reached, newly accepted sockets are closed. Transient accept failures (interrupted, aborted, would-block, and descriptor-exhaustion errors) are logged and retried with a short backoff; non-transient listener failures terminate the server. On SIGINT or SIGTERM, the listener stops accepting and active connection tasks are drained for up to 30 seconds by default, then remaining tasks are aborted. Set `--shutdown-timeout SECONDS` or `NOSRC_SHUTDOWN_TIMEOUT_SECS` to change the deadline. This transport-level bound is independent of application request admission.
 
 Incoming HTTP request bodies and serialized guest response envelopes are limited to 1 MiB. The current text-based ABI does not support arbitrary non-UTF-8 request bodies. A mutex serializes calls to the active handler instance. HTTP error responses use sanitized messages while detailed diagnostics are written to server logs.
 
@@ -123,7 +123,7 @@ Incoming HTTP request bodies and serialized guest response envelopes are limited
 - `rollback_app` — reactivate the immediately previous retained generation.
 - `export_app` — publish a prepared generation through the existing atomic artifact exporter for offline serving. The destination is a single directory name beneath the operator-configured export root; traversal and absolute paths are rejected.
 
-The stdio process has no MCP-level authentication or authorization. Trust is inherited from the local launcher and ownership of its stdin/stdout pipes. Protocol messages use stdout; diagnostics are sent to stderr.
+The stdio process has no MCP-level authentication or authorization. Trust is inherited from the local launcher and ownership of its stdin/stdout pipes. Protocol messages use stdout; diagnostics are sent to stderr. In shared-HTTP mode, the HTTP task and stdio service are supervised together: an HTTP shutdown signal drains HTTP connections and then ends the MCP process; if the MCP client disconnects first, the HTTP task is stopped.
 
 Preparation snapshots immutable engine, SPEC, cache, and policy inputs while briefly holding the lifecycle mutex. LLM requests, componentization, and candidate verification happen outside that lock. Componentization and Wasm verification run on Tokio's blocking pool. The lock is reacquired to publish a fully prepared generation. A timed-out caller cannot publish a candidate later, although an already-running blocking task may finish in the background.
 
