@@ -1,4 +1,6 @@
-use crate::engine::http_envelope::{RequestEnvelope, ResponseEnvelope};
+use crate::engine::http_envelope::{
+    RequestEnvelope, ResponseEnvelope, MAX_HANDLER_RESPONSE_BYTES,
+};
 use crate::engine::quickjs::QuickJsHandler;
 use crate::error::EngineError;
 use crate::synthesizer::ContractAssertion;
@@ -111,6 +113,18 @@ fn validate_host_probe_response(response: &ResponseEnvelope) -> Result<(), Strin
             "Response status {} is outside the valid HTTP range",
             response.status
         ));
+    }
+
+    // The ABI permits an omitted/null body, represented as None, or a UTF-8 string.
+    // The serde decode in QuickJsHandler::invoke rejects every other JSON type; keep
+    // the byte-size check explicit here so the host-probe guarantee does not depend
+    // only on that lower-level response-envelope limit.
+    if let Some(body) = &response.body {
+        if body.len() > MAX_HANDLER_RESPONSE_BYTES {
+            return Err(format!(
+                "Response body exceeds the {MAX_HANDLER_RESPONSE_BYTES} byte limit"
+            ));
+        }
     }
 
     for (name, value) in &response.headers {
@@ -295,6 +309,22 @@ mod tests {
             body_contains: body_contains.map(str::to_string),
             header_matches: None,
         }
+    }
+
+    #[test]
+    fn host_probe_response_validation_accepts_an_omitted_body() {
+        let response = ResponseEnvelope::new(204, None);
+        assert!(validate_host_probe_response(&response).is_ok());
+    }
+
+    #[test]
+    fn host_probe_response_validation_rejects_an_oversized_body() {
+        let response = ResponseEnvelope::new(
+            200,
+            Some("x".repeat(MAX_HANDLER_RESPONSE_BYTES + 1)),
+        );
+        let error = validate_host_probe_response(&response).unwrap_err();
+        assert!(error.contains("Response body exceeds the 1048576 byte limit"));
     }
 
     #[tokio::test]
