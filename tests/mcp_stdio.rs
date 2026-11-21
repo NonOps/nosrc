@@ -423,3 +423,59 @@ async fn shared_http_listener_serves_the_generation_activated_over_mcp() {
     child.kill().await.unwrap();
     let _ = child.wait().await;
 }
+
+
+#[cfg(unix)]
+#[tokio::test]
+async fn sigterm_stops_shared_http_and_mcp_process() {
+    let directory = tempfile::tempdir().unwrap();
+    let http_port = free_port();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nosrc"))
+        .arg("mcp")
+        .arg("--http-port")
+        .arg(http_port.to_string())
+        .arg("--shutdown-timeout")
+        .arg("1")
+        .arg("--no-cache")
+        .arg("--export-root")
+        .arg(directory.path().join("exports"))
+        .env_remove("LLM_API_KEY")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("failed to start nosrc MCP server");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if tokio::net::TcpStream::connect(("127.0.0.1", http_port))
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "shared HTTP listener did not start"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let pid = child.id().expect("child process must have a PID") as libc::pid_t;
+    let signal_result = unsafe { libc::kill(pid, libc::SIGTERM) };
+    assert_eq!(signal_result, 0, "failed to send SIGTERM to nosrc");
+
+    let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("nosrc did not exit after SIGTERM")
+        .unwrap();
+    assert!(status.success(), "nosrc exited unsuccessfully: {status}");
+
+    assert!(
+        tokio::net::TcpStream::connect(("127.0.0.1", http_port))
+            .await
+            .is_err(),
+        "shared HTTP listener remained open after process shutdown"
+    );
+}
