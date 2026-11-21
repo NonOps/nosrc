@@ -203,11 +203,7 @@ impl HostCapabilities {
             .prepare(sql)
             .map_err(|e| HostAbiError::DatabaseError(e.to_string()))?;
 
-        let column_names: Vec<String> = stmt
-            .column_names()
-            .into_iter()
-            .map(|s| s.to_string())
-            .collect();
+        let column_names: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
 
         let params_vec = json_to_rusqlite_params(params_json)?;
         let rusqlite_params: Vec<&dyn rusqlite::ToSql> =
