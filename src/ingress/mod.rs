@@ -400,7 +400,9 @@ mod tests {
     #[tokio::test]
     async fn epoch_timeout_releases_execution_permit_for_a_queued_request() {
         let (engine, compiled) = test_support::compiled().await;
-        let handler = engine.instantiate(compiled, DEFAULT_COMPONENT_FUEL).unwrap();
+        let handler = engine
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .unwrap();
 
         let mut ingress_state = IngressState::new();
         ingress_state.execution_timeout = Duration::from_millis(10);
@@ -412,10 +414,7 @@ mod tests {
         });
         let app = build_ingress_router(state.clone());
 
-        let loop_request = Request::builder()
-            .uri("/loop")
-            .body(Body::empty())
-            .unwrap();
+        let loop_request = Request::builder().uri("/loop").body(Body::empty()).unwrap();
         let loop_app = app.clone();
         let loop_task = tokio::spawn(async move { loop_app.oneshot(loop_request).await.unwrap() });
 
@@ -472,10 +471,7 @@ mod tests {
         });
         let app = build_ingress_router(state.clone());
 
-        let request = Request::builder()
-            .uri("/loop")
-            .body(Body::empty())
-            .unwrap();
+        let request = Request::builder().uri("/loop").body(Body::empty()).unwrap();
         let request_task = tokio::spawn(app.oneshot(request));
         tokio::time::sleep(Duration::from_millis(2)).await;
         assert_eq!(state.execution.available_permits(), 0);
