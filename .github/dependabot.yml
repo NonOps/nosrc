@@ -10,6 +10,8 @@ updates:
       wasmtime:
         patterns:
           - "wasmtime*"
+          - "cranelift*"
+          - "pulley*"
           - "componentize-qjs*"
       cargo-minor-and-patch:
         update-types:
