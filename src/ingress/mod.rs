@@ -255,7 +255,12 @@ async fn handle_http_request(
 
     // Wasmtime epoch checks run on a periodic ticker. Allow one second beyond the
     // guest deadline for the interrupt trap to unwind and release the execution permit.
-    match tokio::time::timeout(execution_timeout + EXECUTION_TASK_JOIN_GRACE, &mut execution).await {
+    match tokio::time::timeout(
+        execution_timeout + EXECUTION_TASK_JOIN_GRACE,
+        &mut execution,
+    )
+    .await
+    {
         Err(_) => {
             tracing::error!("Handler execution exceeded the HTTP response deadline");
             ErrorEnvelope {
@@ -443,7 +448,7 @@ mod tests {
         let body = axum::body::to_bytes(health_response.into_body(), 1024)
             .await
             .unwrap();
-        assert_eq!(body, "healthy");
+        assert_eq!(body.as_ref(), b"healthy");
     }
 
     #[tokio::test]
