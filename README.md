@@ -24,6 +24,7 @@ The current implementation is a single-process prototype, not a production-ready
 The long-term goal is a verified runtime for AI-agent-built services: agents should be able to synthesize, test, and deploy custom endpoints through MCP while remaining inside a tightly constrained execution boundary. This is the intended direction, not a claim that the complete workflow is production-ready today.
 
 - **Sandboxed Execution for AI Agents (MCP):** Allow an LLM agent to synthesize, test, and deploy custom HTTP endpoints via Model Context Protocol without granting host filesystem, network, or process access. Every generated handler runs inside an isolated Wasmtime sandbox with strict fuel and linear-memory ceilings.
+- **Zero-Boilerplate Microservices & Webhooks:** Replace Dockerfiles, Node/Python dependency trees, and Kubernetes manifests for small stateless services (webhook receivers, JSON transformers, mock APIs, internal glue endpoints) with a single `SPEC.md` and an offline-servable Wasm bundle.
 
 ## Use Cases
 
@@ -32,11 +33,6 @@ The long-term goal is a verified runtime for AI-agent-built services: agents sho
 - **Operator-gated code generation:** Agents can prepare direct-JavaScript candidates or draft SPECs, but preparation never activates a candidate. A draft SPEC must be reviewed and supplied as the operator SPEC on restart before activation.
 - **Offline artifact handoff:** Export the handler, Wasm component, assertion suites, and manifest for review and version control, then run the bundle with `nosrc serve --bundle` without model-provider credentials or requests.
 
-## Not suitable for
-
-- Production traffic or untrusted public users without a separate security review and deployment-specific controls.
-- Multi-tenant hosting or isolation between independent applications.
-- Services requiring durable guest state, filesystem or process access, outbound network access, SQL/KV capabilities, or application orchestration.
 
 ## What is implemented
 
