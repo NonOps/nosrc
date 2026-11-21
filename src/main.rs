@@ -571,8 +571,12 @@ mod tests {
     #[test]
     fn readme_use_cases_do_not_claim_multi_tenant_isolation() {
         assert!(
-            !README.to_ascii_lowercase().contains("multi-tenant"),
-            "README must not claim multi-tenant support before isolation exists"
+            !README.contains("Safe Multi-Tenant"),
+            "README must not claim safe multi-tenant routing"
+        );
+        assert!(
+            README.contains("Multi-tenant hosting or isolation between independent applications."),
+            "README must state that multi-tenant hosting is not a supported use case"
         );
         assert!(
             README.contains("operator-controlled SPEC with trusted verification cases"),
