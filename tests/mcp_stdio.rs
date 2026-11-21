@@ -506,7 +506,6 @@ async fn sigterm_stops_shared_http_and_mcp_process() {
     );
 }
 
-
 #[tokio::test]
 async fn closing_mcp_stdin_stops_shared_http_and_process() {
     let directory = tempfile::tempdir().unwrap();
