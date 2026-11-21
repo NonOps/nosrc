@@ -13,7 +13,7 @@ Current toolchain: Rust 1.97+, Wasmtime 50 component model, and `componentize-qj
 1. **No unverified activation.** HTTP startup and MCP SPEC-driven preparation must pass every operator-authored SPEC verification case and the separate model-generated assertion suite. MCP direct-JavaScript preparation must pass every trusted SPEC case. MCP-first draft-SPEC candidates may be prepared and exported for review. Direct-JavaScript candidates without a startup SPEC are preparation-only and cannot be invoked, activated, or exported. Activation is forbidden until an operator-controlled SPEC with at least one trusted verification case is loaded. Supplemental client assertions are informational only. Never activate a candidate without trusted policy or after a failed check.
 2. **Trusted policy belongs to the operator.** An MCP client cannot replace the startup SPEC, weaken trusted assertions, or raise runtime ceilings.
 3. **Strict guest isolation.** The current QuickJS component world exports only the handler entrypoint. Do not grant filesystem, process, network, SQL, KV, or WASI capabilities without an explicit WIT contract, host implementation, policy gate, bounds, and component-level tests.
-4. **Enforce resource limits.** Fuel, linear memory, component handles/tables/instances/memories, request size, and response size must be enforced by the actual runtime path, not merely reported.
+4. **Enforce resource limits.** Fuel, linear memory, component handles/tables/instances/memories, request size, response size, and a wall-clock guest execution deadline enforced by Wasmtime epochs must be enforced by the actual runtime path, not merely reported. Epoch interruption is coarse-grained and does not replace fuel or memory limits.
 5. **Honest state semantics.** JavaScript module-level state is in-memory and generation-scoped. It is lost on handler replacement or process restart. Do not claim that SQLite/redb prototypes or dependencies provide persistence to the active QuickJS guest.
 6. **Keep verification isolated.** Trusted and model-generated suites use separate disposable instances. Agent-supplied informational assertions use their own disposable instance. Production instances are created only after mandatory checks pass.
 7. **Preserve process-mode boundaries.** The default HTTP mode and `serve --bundle` each run HTTP ingress in their own process. `nosrc mcp` defaults to a local stdio-only control plane. With `--http-port`, MCP also starts HTTP ingress in the same process and shares one lifecycle and active generation; do not describe that configuration as separate processes.
@@ -55,13 +55,14 @@ See `docs/SECURITY.md` for the current threat model and known gaps.
 
 - Do not hold the MCP lifecycle mutex during provider requests, componentization, candidate verification, or guest execution. Snapshot immutable inputs, perform expensive work outside the lock, and lock only to publish a completed candidate.
 - Componentization and Wasm verification belong on Tokio's blocking pool.
+- Guest invocation uses Wasmtime epoch interruption with a 30-second default deadline, independent of fuel. A periodic ticker advances epochs; interruption is observed at instrumented guest checks, so it is not an exact real-time cutoff. A trapped instance must be discarded and recreated; never reuse a trapped store, and fail closed if recovery fails.
 - A preparation timeout must prevent a late worker from publishing a generation. It does not necessarily terminate the already-running blocking task.
 - Rollback is limited to the immediately previous retained generation.
 - The HTTP accept loop must enforce a finite connection limit before spawning per-connection tasks; retain each connection permit for the full task lifetime.
 - Retry transient accept failures with a brief backoff; return only when the listener is unusable.
 - On SIGINT, and on SIGTERM on Unix, stop accepting, drain in-flight HTTP connections up to the configured shutdown deadline (30 seconds by default), then abort remaining connections. Configure it with `--shutdown-timeout SECONDS` or `NOSRC_SHUTDOWN_TIMEOUT_SECS` (default: `30`).
 - In MCP shared-HTTP mode, HTTP shutdown also ends the MCP process; if the stdio client disconnects first, stop the shared HTTP task.
-- Requests to one QuickJS handler instance are serialized to preserve module state.
+- Requests to one QuickJS handler instance are serialized to preserve module state. The execution permit stays with the blocking guest task until it exits, including after client cancellation; epoch interruption must ensure a runaway guest eventually releases it.
 - Do not add hot reload or generation draining without an explicit concurrency/lifecycle design and regression tests.
 
 ## 7. Rust and dependency conventions
