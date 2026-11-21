@@ -550,7 +550,7 @@ mod tests {
     #[test]
     fn agents_document_default_mcp_stdio_and_optional_shared_http_modes() {
         assert!(
-            AGENTS.contains("By default MCP uses stdio and does not open an HTTP listener."),
+            AGENTS.contains("local stdio MCP process by default."),
             "AGENTS.md must describe the default MCP stdio mode"
         );
         assert!(
