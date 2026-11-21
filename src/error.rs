@@ -23,6 +23,9 @@ pub enum SandboxTrap {
     #[error("CPU fuel exhausted (instruction budget exceeded)")]
     FuelExhausted,
 
+    #[error("Guest execution exceeded its wall-clock deadline")]
+    ExecutionTimeout,
+
     #[error("Memory limit exceeded ({0} MB cap)")]
     MemoryExhausted(u32),
 
