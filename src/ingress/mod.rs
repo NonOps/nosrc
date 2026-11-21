@@ -81,7 +81,7 @@ async fn runtime_status(State(state): State<Arc<IngressState>>) -> Json<RuntimeS
             Some(generation.module_hash.clone()),
             generation
                 .handler
-                .lock()
+                .try_lock()
                 .ok()
                 .map(|handler| handler.telemetry_snapshot()),
         ),
