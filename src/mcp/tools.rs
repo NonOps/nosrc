@@ -120,7 +120,8 @@ where
             "model_assertions_passed": generation.map(|item| item.model_assertions_passed).unwrap_or(0),
             "model_assertions_failed": generation.map(|item| item.model_assertions_failed).unwrap_or(0),
             "supplemental_assertions_passed": generation.map(|item| item.supplemental_assertions_passed).unwrap_or(0),
-            "supplemental_assertions_failed": generation.map(|item| item.supplemental_assertions_failed).unwrap_or(0)
+            "supplemental_assertions_failed": generation.map(|item| item.supplemental_assertions_failed).unwrap_or(0),
+            "telemetry": generation.and_then(|item| item.telemetry.as_ref())
         })))
     };
 
@@ -547,7 +548,24 @@ mod tests {
             "prepare_app failed: {:?}",
             prepared.structured_content
         );
-        let generation_id = prepared.structured_content.unwrap()["generation_id"]
+        let prepared_content = prepared.structured_content.unwrap();
+        assert_eq!(prepared_content["telemetry"]["schema_version"], 1);
+        assert!(prepared_content["telemetry"]["last_invocation_fuel_consumed"].is_null());
+        assert!(prepared_content["telemetry"]["generation_fuel_high_water"].is_null());
+        for field in [
+            "instance_memory_high_water_bytes",
+            "generation_memory_high_water_bytes",
+        ] {
+            let value = &prepared_content["telemetry"][field];
+            assert!(
+                value.is_null()
+                    || value
+                        .as_u64()
+                        .is_some_and(|bytes| bytes <= 64 * 1024 * 1024),
+                "memory telemetry must be null or a bounded byte count: {value}"
+            );
+        }
+        let generation_id = prepared_content["generation_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -590,10 +608,23 @@ mod tests {
         assert_eq!(invoked.structured_content.unwrap()["body"], "healthy");
 
         let final_status = server.get_app_status().await;
+        let final_status = final_status.structured_content.unwrap();
         assert_eq!(
-            final_status.structured_content.unwrap()["active_generation"].as_str(),
+            final_status["active_generation"].as_str(),
             Some(generation_id.as_str())
         );
+        let telemetry = &final_status["generations"][0]["telemetry"];
+        assert_eq!(telemetry["schema_version"], 1);
+        assert!(telemetry["last_invocation_fuel_consumed"]
+            .as_u64()
+            .is_some());
+        assert!(telemetry["generation_fuel_high_water"].as_u64().is_some());
+        assert!(telemetry["instance_memory_high_water_bytes"]
+            .as_u64()
+            .is_some());
+        assert!(telemetry["generation_memory_high_water_bytes"]
+            .as_u64()
+            .is_some());
 
         let echoed = server
             .invoke_app(Parameters(InvokeAppParams {

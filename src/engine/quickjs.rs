@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use std::thread;
 use std::time::Duration;
 use wasmtime::component::{Component, Linker, TypedFunc};
-use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
+use wasmtime::{Config, Engine, ResourceLimiter, Store, StoreLimits, StoreLimitsBuilder};
 
 use crate::engine::http_envelope::{RequestEnvelope, ResponseEnvelope, MAX_HANDLER_RESPONSE_BYTES};
 use crate::error::{EngineError, SandboxTrap};
@@ -27,6 +27,92 @@ world handler {
 
 struct ComponentStoreState {
     limits: StoreLimits,
+    memory_high_water_bytes: Option<usize>,
+    pending_memory_growth: Option<(usize, usize)>,
+}
+
+impl ComponentStoreState {
+    fn commit_pending_memory_growth(&mut self) {
+        // Wasmtime reports failed growth synchronously during the guest call. Once that
+        // call returns, any remaining permitted growth is committed telemetry.
+        self.pending_memory_growth = None;
+    }
+}
+
+impl ResourceLimiter for ComponentStoreState {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        let allowed = self.limits.memory_growing(current, desired, maximum)?;
+        if allowed {
+            let previous_peak = self.memory_high_water_bytes.unwrap_or(current).max(current);
+            self.pending_memory_growth = Some((previous_peak, desired));
+            self.memory_high_water_bytes = Some(previous_peak.max(desired));
+        }
+        Ok(allowed)
+    }
+
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        self.limits.table_growing(current, desired, maximum)
+    }
+
+    fn memory_grow_failed(&mut self, error: wasmtime::Error) -> wasmtime::Result<()> {
+        if let Some((previous_peak, desired)) = self.pending_memory_growth.take() {
+            if self.memory_high_water_bytes == Some(desired) {
+                self.memory_high_water_bytes = Some(previous_peak);
+            }
+        }
+        self.limits.memory_grow_failed(error)
+    }
+
+    fn table_grow_failed(&mut self, error: wasmtime::Error) -> wasmtime::Result<()> {
+        self.limits.table_grow_failed(error)
+    }
+
+    fn instances(&self) -> usize {
+        self.limits.instances()
+    }
+
+    fn tables(&self) -> usize {
+        self.limits.tables()
+    }
+
+    fn memories(&self) -> usize {
+        self.limits.memories()
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct RuntimeTelemetry {
+    pub schema_version: u8,
+    /// Fuel consumed by the most recent invocation; absent when Wasmtime could not report it.
+    pub last_invocation_fuel_consumed: Option<u64>,
+    /// Largest fuel consumption observed by this handler generation.
+    pub generation_fuel_high_water: Option<u64>,
+    /// Largest linear-memory size observed by the current Wasmtime instance.
+    pub instance_memory_high_water_bytes: Option<usize>,
+    /// Largest linear-memory size observed across this handler generation, including replaced instances.
+    pub generation_memory_high_water_bytes: Option<usize>,
+}
+
+impl Default for RuntimeTelemetry {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            last_invocation_fuel_consumed: None,
+            generation_fuel_high_water: None,
+            instance_memory_high_water_bytes: None,
+            generation_memory_high_water_bytes: None,
+        }
+    }
 }
 
 type ComponentHandle = TypedFunc<(String,), (String,)>;
@@ -79,6 +165,7 @@ pub struct QuickJsHandler {
     response_limit_bytes: usize,
     memory_limit_bytes: usize,
     poisoned: bool,
+    telemetry: RuntimeTelemetry,
 }
 
 impl QuickJsEngine {
@@ -203,6 +290,7 @@ impl QuickJsEngine {
             response_limit_bytes,
             memory_limit_bytes,
             poisoned: false,
+            telemetry: RuntimeTelemetry::default(),
         })
     }
 }
@@ -221,11 +309,18 @@ fn instantiate_component(
         .memories(4)
         .build();
 
-    let mut store = Store::new(engine, ComponentStoreState { limits });
+    let mut store = Store::new(
+        engine,
+        ComponentStoreState {
+            limits,
+            memory_high_water_bytes: None,
+            pending_memory_growth: None,
+        },
+    );
     store
         .set_fuel(fuel_budget)
         .map_err(|error| EngineError::Internal(format!("Failed to set component fuel: {error}")))?;
-    store.limiter(|state| &mut state.limits);
+    store.limiter(|state| state);
     store.set_max_component_handles(1_024);
     store.set_epoch_deadline(epoch_deadline_ticks(COMPONENT_STARTUP_TIMEOUT));
 
@@ -244,11 +339,54 @@ fn instantiate_component(
     store
         .set_fuel(fuel_budget)
         .map_err(|error| EngineError::Internal(format!("Failed to set component fuel: {error}")))?;
+    // Component startup allocations are part of the instance high-water baseline.
+    store.data_mut().pending_memory_growth = None;
 
     Ok((store, handle))
 }
 
 impl QuickJsHandler {
+    /// Return bounded resource measurements without exposing guest data.
+    pub fn telemetry_snapshot(&self) -> RuntimeTelemetry {
+        let mut telemetry = self.telemetry.clone();
+        telemetry.instance_memory_high_water_bytes = self.store.data().memory_high_water_bytes;
+        telemetry.generation_memory_high_water_bytes = match (
+            telemetry.generation_memory_high_water_bytes,
+            telemetry.instance_memory_high_water_bytes,
+        ) {
+            (Some(generation), Some(instance)) => Some(generation.max(instance)),
+            (generation, instance) => generation.or(instance),
+        };
+        telemetry
+    }
+
+    fn record_invocation_telemetry(&mut self) {
+        // A permitted growth that did not report a failure is treated as successful
+        // once the guest call returns. Failed growth callbacks roll the estimate back.
+        self.store.data_mut().commit_pending_memory_growth();
+        self.telemetry.last_invocation_fuel_consumed = self
+            .store
+            .get_fuel()
+            .ok()
+            .map(|remaining| self.fuel_budget.saturating_sub(remaining));
+        if let Some(consumed) = self.telemetry.last_invocation_fuel_consumed {
+            self.telemetry.generation_fuel_high_water = Some(
+                self.telemetry
+                    .generation_fuel_high_water
+                    .unwrap_or_default()
+                    .max(consumed),
+            );
+        }
+        if let Some(memory) = self.store.data().memory_high_water_bytes {
+            self.telemetry.generation_memory_high_water_bytes = Some(
+                self.telemetry
+                    .generation_memory_high_water_bytes
+                    .unwrap_or_default()
+                    .max(memory),
+            );
+        }
+    }
+
     /// Invoke the handler with the default wall-clock deadline.
     pub fn invoke(&mut self, request: &RequestEnvelope) -> Result<ResponseEnvelope, EngineError> {
         self.invoke_with_timeout(request, DEFAULT_GUEST_EXECUTION_TIMEOUT)
@@ -267,6 +405,7 @@ impl QuickJsHandler {
             ));
         }
 
+        self.telemetry.last_invocation_fuel_consumed = None;
         let request_json = serde_json::to_string(request).map_err(|error| {
             EngineError::Internal(format!("Failed to serialize request envelope: {error}"))
         })?;
@@ -279,6 +418,7 @@ impl QuickJsHandler {
         let response_json = match self.handle.call(&mut self.store, (request_json,)) {
             Ok((response_json,)) => response_json,
             Err(error) => {
+                self.record_invocation_telemetry();
                 let trap = classify_component_error(error);
                 // A trapped component instance is not reusable. Recreate it from the
                 // compiled component; if recovery fails, permanently reject later calls
@@ -303,6 +443,8 @@ impl QuickJsHandler {
                 return Err(trap);
             }
         };
+
+        self.record_invocation_telemetry();
 
         if response_json.len() > self.response_limit_bytes {
             return Err(EngineError::Internal(format!(
@@ -434,6 +576,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn committed_memory_growth_cannot_be_rolled_back_by_a_later_failure_callback() {
+        let mut state = ComponentStoreState {
+            limits: StoreLimitsBuilder::new()
+                .memory_size(DEFAULT_COMPONENT_MEMORY_BYTES)
+                .build(),
+            memory_high_water_bytes: Some(8),
+            pending_memory_growth: None,
+        };
+
+        assert!(state.memory_growing(8, 16, None).unwrap());
+        assert_eq!(state.memory_high_water_bytes, Some(16));
+        assert_eq!(state.pending_memory_growth, Some((8, 16)));
+
+        state.commit_pending_memory_growth();
+        assert_eq!(state.pending_memory_growth, None);
+
+        state
+            .memory_grow_failed(wasmtime::Error::msg("late failure callback"))
+            .unwrap();
+        assert_eq!(
+            state.memory_high_water_bytes,
+            Some(16),
+            "a callback without a matching pending growth must not roll back committed telemetry"
+        );
+    }
+
     #[tokio::test]
     async fn javascript_module_state_survives_multiple_requests() {
         let (engine, compiled) = test_support::compiled().await;
@@ -457,6 +626,11 @@ mod tests {
                 .as_deref(),
             Some("2")
         );
+        let telemetry = handler.telemetry_snapshot();
+        assert!(telemetry.last_invocation_fuel_consumed.is_some());
+        assert!(telemetry.generation_fuel_high_water.is_some());
+        assert!(telemetry.instance_memory_high_water_bytes.is_some());
+        assert_eq!(telemetry.schema_version, 1);
     }
 
     #[tokio::test]
@@ -498,6 +672,20 @@ mod tests {
             matches!(result, Err(EngineError::Trap(SandboxTrap::GuestPanic(_)))),
             "Expected the guest allocation to fail under the 64 MiB memory cap, got: {result:?}"
         );
+        let telemetry = handler.telemetry_snapshot();
+        assert!(telemetry.last_invocation_fuel_consumed.is_some());
+        assert!(
+            telemetry
+                .instance_memory_high_water_bytes
+                .is_some_and(|bytes| bytes <= DEFAULT_COMPONENT_MEMORY_BYTES),
+            "memory high-water must reflect an observed allocation within the hard limit: {telemetry:?}"
+        );
+        assert!(
+            telemetry
+                .generation_memory_high_water_bytes
+                .is_some_and(|bytes| bytes <= DEFAULT_COMPONENT_MEMORY_BYTES),
+            "generation memory high-water must retain the trapped instance measurement: {telemetry:?}"
+        );
     }
 
     /// Small enough that the infinite loop stops within milliseconds, but comfortably above
@@ -514,6 +702,13 @@ mod tests {
             matches!(error, EngineError::Trap(SandboxTrap::FuelExhausted)),
             "Expected fuel exhaustion, got: {error}"
         );
+        let telemetry = handler.telemetry_snapshot();
+        assert!(telemetry.last_invocation_fuel_consumed.is_some());
+        assert_eq!(
+            telemetry.last_invocation_fuel_consumed,
+            Some(LOOP_TEST_FUEL)
+        );
+        assert_eq!(telemetry.generation_fuel_high_water, Some(LOOP_TEST_FUEL));
     }
 
     #[tokio::test]
@@ -527,11 +722,25 @@ mod tests {
             "Expected fuel exhaustion, got: {error}"
         );
 
+        let generation_memory_before = handler
+            .telemetry_snapshot()
+            .generation_memory_high_water_bytes;
         let response = handler
             .invoke(&request("/health"))
             .expect("same handler should accept a healthy request after a guest trap");
         assert_eq!(response.status, 200);
         assert_eq!(response.body.as_deref(), Some("healthy"));
+        let telemetry = handler.telemetry_snapshot();
+        assert!(telemetry.generation_fuel_high_water.is_some());
+        assert!(telemetry.instance_memory_high_water_bytes.is_some());
+        if let Some(before) = generation_memory_before {
+            assert!(
+                telemetry
+                    .generation_memory_high_water_bytes
+                    .unwrap_or_default()
+                    >= before
+            );
+        }
     }
 
     #[tokio::test]
