@@ -76,6 +76,8 @@ The synthesizer calls an OpenAI-compatible chat-completions endpoint. `LLM_API_K
 
 Generated code is untrusted input. It must satisfy the expected schema, componentize successfully, and pass the required verification suites before activation.
 
+When a synthesized candidate has an invalid artifact shape, fails componentization, or fails trusted/generated verification, preparation may request at most two additional candidates. Repair feedback is host-authored and limited to a failure category, suite category, and failed-check count; it never includes operator assertion names, request inputs, expected values, response bodies, or assertion definitions. Each replacement candidate starts the complete componentization and verification path again. The operator suite and host-owned ABI probes remain unchanged and mandatory. Provider transport retries are a separate mechanism; provider/transport failures do not consume or trigger candidate-repair attempts.
+
 ### Componentization and execution
 
 `src/engine/quickjs.rs` uses `componentize-qjs` to compile a self-contained ES module against the fixed WIT world:

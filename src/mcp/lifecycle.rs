@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -9,6 +9,7 @@ use crate::artifact_cache::ArtifactCache;
 use crate::engine::http_envelope::{RequestEnvelope, ResponseEnvelope};
 use crate::engine::quickjs::{CompiledHandler, QuickJsEngine, QuickJsHandler, RuntimeTelemetry};
 use crate::error::EngineError;
+use crate::export::RepairSummary;
 use crate::ingress::{ActiveGeneration, IngressState};
 use crate::spec::ServiceSpec;
 use crate::synthesizer::{ContractAssertion, LlmConfig, SynthesisOutput, Synthesizer};
@@ -25,6 +26,7 @@ const MAX_ASSERTION_BODY_BYTES: usize = 1024 * 1024;
 const MAX_ASSERTION_HEADER_COUNT: usize = 100;
 const MAX_ASSERTION_HEADER_BYTES: usize = 64 * 1024;
 const MAX_ASSERTION_QUERY_COUNT: usize = 100;
+const MAX_REPLACEMENT_ATTEMPTS: usize = 2;
 
 /// Opaque identifier for one prepared application generation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -73,6 +75,7 @@ pub struct GenerationExport {
     pub component_bytes: Vec<u8>,
     pub trusted_assertions: Vec<ContractAssertion>,
     pub policy_mode: String,
+    pub repair_summary: RepairSummary,
 }
 
 /// A SPEC generation prepared for export. The separate type guarantees that
@@ -251,6 +254,93 @@ fn compile_handler_with_artifact_on_blocking_thread(
     runtime.block_on(engine.compile_handler_with_artifact(&source))
 }
 
+fn unique_failed_check_count(results: &[AssertionResult]) -> usize {
+    let mut failed_checks = HashSet::new();
+    for result in results.iter().filter(|result| !result.passed) {
+        failed_checks.insert((result.name.as_str(), result.case_index));
+    }
+    failed_checks.len()
+}
+
+fn build_repair_feedback(error: &PreparationError) -> Option<String> {
+    match error {
+        PreparationError::Verification { suite, results } => {
+            let suite = match suite {
+                VerificationSuite::Operator => "operator-owned verification",
+                VerificationSuite::Generated => "candidate-generated verification",
+            };
+            Some(format!(
+                "Failure category: verification_failed\nSuite: {suite}\nFailed checks: {}\nDetails and assertion definitions are intentionally withheld. Correct the implementation against the visible SPEC only.",
+                unique_failed_check_count(results)
+            ))
+        }
+        PreparationError::Runtime(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod repair_feedback_tests {
+    use super::*;
+
+    #[test]
+    fn repair_feedback_counts_unique_failed_assertion_cases() {
+        let results = vec![
+            AssertionResult {
+                name: "same assertion".into(),
+                case_index: 0,
+                passed: false,
+                actual_status: Some(500),
+                expected_status: 200,
+                actual_headers: None,
+                actual_body: None,
+                failure_kind: None,
+                error_message: None,
+            },
+            AssertionResult {
+                name: "same assertion".into(),
+                case_index: 0,
+                passed: false,
+                actual_status: Some(502),
+                expected_status: 200,
+                actual_headers: None,
+                actual_body: None,
+                failure_kind: None,
+                error_message: None,
+            },
+            AssertionResult {
+                name: "same assertion".into(),
+                case_index: 1,
+                passed: false,
+                actual_status: Some(500),
+                expected_status: 200,
+                actual_headers: None,
+                actual_body: None,
+                failure_kind: None,
+                error_message: None,
+            },
+            AssertionResult {
+                name: "passed assertion".into(),
+                case_index: 0,
+                passed: true,
+                actual_status: Some(200),
+                expected_status: 200,
+                actual_headers: None,
+                actual_body: None,
+                failure_kind: None,
+                error_message: None,
+            },
+        ];
+        assert_eq!(unique_failed_check_count(&results), 2);
+        let feedback = build_repair_feedback(&PreparationError::Verification {
+            suite: VerificationSuite::Generated,
+            results,
+        })
+        .unwrap();
+        assert!(feedback.contains("Failed checks: 2"));
+        assert!(!feedback.contains("same assertion"));
+    }
+}
+
 fn validate_synthesis_output(output: &SynthesisOutput) -> Result<(), EngineError> {
     if output.code_format != "javascript" || output.handler_code.trim().is_empty() {
         return Err(EngineError::Internal(
@@ -391,6 +481,7 @@ impl PreparationContext {
                 component_bytes,
                 trusted_assertions,
                 policy_mode: "operator".to_string(),
+                repair_summary: RepairSummary::default(),
             });
         }
         Ok(prepared)
@@ -493,91 +584,253 @@ impl PreparationContext {
             None => None,
         };
 
-        let (output, compiled, component_bytes, cache_hit) = match cached {
+        // A cached candidate is still untrusted: it enters the same immutable
+        // verification gate as every live synthesis candidate.
+        let mut repair_summary = RepairSummary::default();
+        let mut cached_candidate = match cached {
             Some(cached) => {
-                // Cache metadata is untrusted input just like a live model response.
-                // Enforce source and assertion limits before compiling cached bytes.
-                validate_synthesis_output(&cached.synthesis)?;
-                let engine = self.engine.clone();
-                let component_bytes = cached.component_bytes;
-                let compile_bytes = component_bytes.clone();
-                let compiled =
-                    tokio::task::spawn_blocking(move || engine.compile_component(&compile_bytes))
-                        .await
-                        .map_err(|error| {
-                            EngineError::Internal(format!(
-                                "Cached component compile worker failed: {error}"
-                            ))
-                        })?;
-                match compiled {
-                    Ok(compiled) => (cached.synthesis, compiled, component_bytes, true),
-                    Err(error) => {
-                        tracing::warn!(%error, "Cached MCP artifact failed compilation; synthesizing again");
-                        let output = synthesizer.synthesize(&spec, &[]).await?;
-                        validate_synthesis_output(&output)?;
-                        let engine = self.engine.clone();
-                        let source = output.handler_code.clone();
-                        let (compiled, bytes) = tokio::task::spawn_blocking(move || {
-                            compile_handler_with_artifact_on_blocking_thread(engine, source)
-                        })
-                        .await
-                        .map_err(|error| {
-                            EngineError::Internal(format!(
-                                "Componentization worker failed: {error}"
-                            ))
-                        })??;
-                        (output, compiled, bytes, false)
+                if let Err(error) = validate_synthesis_output(&cached.synthesis) {
+                    repair_summary
+                        .failure_categories
+                        .push("cached_artifact_invalid".into());
+                    tracing::warn!(
+                        failure_category = "cached_artifact_invalid",
+                        "Cached synthesis artifact was rejected; synthesizing a fresh candidate"
+                    );
+                    tracing::debug!(%error, "Cached artifact validation failure");
+                    None
+                } else {
+                    let engine = self.engine.clone();
+                    let component_bytes = cached.component_bytes;
+                    let compile_bytes = component_bytes.clone();
+                    let compiled = tokio::task::spawn_blocking(move || {
+                        engine.compile_component(&compile_bytes)
+                    })
+                    .await
+                    .map_err(|error| {
+                        EngineError::Internal(format!(
+                            "Cached component compile worker failed: {error}"
+                        ))
+                    })?;
+                    match compiled {
+                        Ok(compiled) => Some((cached.synthesis, compiled, component_bytes)),
+                        Err(error) => {
+                            repair_summary
+                                .failure_categories
+                                .push("cached_componentization_failed".into());
+                            tracing::warn!(
+                                failure_category = "cached_componentization_failed",
+                                "Cached component failed componentization; synthesizing a fresh candidate"
+                            );
+                            tracing::debug!(%error, "Cached componentization failure");
+                            None
+                        }
                     }
                 }
             }
-            None => {
-                let output = synthesizer.synthesize(&spec, &[]).await?;
-                validate_synthesis_output(&output)?;
-                let engine = self.engine.clone();
-                let source = output.handler_code.clone();
-                let (compiled, bytes) = tokio::task::spawn_blocking(move || {
-                    compile_handler_with_artifact_on_blocking_thread(engine, source)
-                })
-                .await
-                .map_err(|error| {
-                    EngineError::Internal(format!("Componentization worker failed: {error}"))
-                })??;
-                (output, compiled, bytes, false)
-            }
+            None => None,
         };
 
-        let cache_output = output.clone();
-        let mut output = output;
-        output.assertions.extend(self.draft_assertions.clone());
-        validate_synthesis_output(&output)?;
-        let engine = self.engine.clone();
-        let policy = self.policy.clone();
-        let model_assertions = output.assertions.clone();
-        let js_source = output.handler_code.clone();
         let source_type = if self.draft_spec {
             SourceType::DraftSpec
         } else {
             SourceType::Spec
         };
-        let prepared = tokio::task::spawn_blocking(move || {
-            prepare_compiled(
-                engine,
-                policy,
-                compiled,
-                js_source,
-                source_type,
-                model_assertions,
-                supplemental_assertions,
-            )
-        })
-        .await
-        .map_err(|error| {
-            PreparationError::Runtime(EngineError::Internal(format!(
-                "Candidate verification worker failed: {error}"
-            )))
-        })??;
+        let mut repair_feedback = None;
+        let mut accepted = None;
+        let mut synthesis_candidate_number = 0usize;
 
-        let mut prepared = prepared;
+        // attempt is the zero-based replacement index: 0 is the initial candidate,
+        // 1 and 2 are the two permitted replacement candidates.
+        for attempt in 0..=MAX_REPLACEMENT_ATTEMPTS {
+            if cached_candidate.is_some() {
+                repair_summary.cached_candidates += 1;
+            }
+            let (candidate_output, compiled, component_bytes, cache_hit) = if let Some((
+                output,
+                compiled,
+                bytes,
+            )) =
+                cached_candidate.take()
+            {
+                (output, compiled, bytes, true)
+            } else {
+                // Provider transport retries are internal to synthesize and do not
+                // consume this candidate-repair budget.
+                synthesis_candidate_number += 1;
+                repair_summary.synthesis_candidates = synthesis_candidate_number;
+                if attempt > 0 {
+                    repair_summary.replacement_attempts += 1;
+                }
+                let output = synthesizer
+                    .synthesize_with_feedback(&spec, &[], repair_feedback.as_deref())
+                    .await?;
+                if let Err(error) = validate_synthesis_output(&output) {
+                    if !repair_summary
+                        .failure_categories
+                        .iter()
+                        .any(|item| item == "invalid_candidate_output")
+                    {
+                        repair_summary
+                            .failure_categories
+                            .push("invalid_candidate_output".into());
+                    }
+                    tracing::warn!(
+                        candidate_number = attempt + 1,
+                        is_replacement = attempt > 0,
+                        failure_category = "invalid_candidate_output",
+                        "Candidate output failed validation; requesting bounded replacement"
+                    );
+                    tracing::debug!(%error, "Candidate output validation failure");
+                    if attempt < MAX_REPLACEMENT_ATTEMPTS {
+                        repair_feedback = Some(
+                            "Failure category: invalid_candidate_output\nThe response did not satisfy the required JavaScript artifact and assertion schema. Return a complete valid candidate.".to_string(),
+                        );
+                        continue;
+                    }
+                    return Err(error.into());
+                }
+
+                let engine = self.engine.clone();
+                let source = output.handler_code.clone();
+                let compiled = tokio::task::spawn_blocking(move || {
+                    compile_handler_with_artifact_on_blocking_thread(engine, source)
+                })
+                .await
+                .map_err(|error| {
+                    PreparationError::Runtime(EngineError::Internal(format!(
+                        "Componentization worker failed: {error}"
+                    )))
+                })?;
+                match compiled {
+                    Ok((compiled, bytes)) => (output, compiled, bytes, false),
+                    Err(error) => {
+                        if !repair_summary
+                            .failure_categories
+                            .iter()
+                            .any(|item| item == "componentization_failed")
+                        {
+                            repair_summary
+                                .failure_categories
+                                .push("componentization_failed".into());
+                        }
+                        tracing::warn!(
+                            candidate_number = attempt + 1,
+                            is_replacement = attempt > 0,
+                            failure_category = "componentization_failed",
+                            "Candidate failed componentization"
+                        );
+                        tracing::debug!(%error, "Candidate componentization failure");
+                        if attempt < MAX_REPLACEMENT_ATTEMPTS {
+                            repair_feedback = Some(
+                                "Failure category: componentization_failed\nThe generated JavaScript could not be componentized into the required handler module. Correct syntax and module structure; return the complete artifact.".to_string(),
+                            );
+                            continue;
+                        }
+                        return Err(PreparationError::Runtime(error));
+                    }
+                }
+            };
+
+            let cache_output = candidate_output.clone();
+            let mut prepared_output = candidate_output;
+            prepared_output
+                .assertions
+                .extend(self.draft_assertions.clone());
+            if let Err(error) = validate_synthesis_output(&prepared_output) {
+                if !repair_summary
+                    .failure_categories
+                    .iter()
+                    .any(|item| item == "invalid_candidate_output")
+                {
+                    repair_summary
+                        .failure_categories
+                        .push("invalid_candidate_output".into());
+                }
+                tracing::warn!(
+                    candidate_number = attempt + 1,
+                    is_replacement = attempt > 0,
+                    failure_category = "invalid_candidate_output",
+                    "Candidate failed final artifact validation"
+                );
+                tracing::debug!(%error, "Final candidate validation failure");
+                if attempt < MAX_REPLACEMENT_ATTEMPTS {
+                    repair_feedback = Some(
+                        "Failure category: invalid_candidate_output\nThe candidate plus draft checks exceeds the accepted artifact limits. Return a valid bounded artifact.".to_string(),
+                    );
+                    continue;
+                }
+                return Err(error.into());
+            }
+
+            let engine = self.engine.clone();
+            let policy = self.policy.clone();
+            let model_assertions = prepared_output.assertions.clone();
+            let js_source = prepared_output.handler_code.clone();
+            let supplemental = supplemental_assertions.clone();
+            let verification = tokio::task::spawn_blocking(move || {
+                prepare_compiled(
+                    engine,
+                    policy,
+                    compiled,
+                    js_source,
+                    source_type,
+                    model_assertions,
+                    supplemental,
+                )
+            })
+            .await
+            .map_err(|error| {
+                PreparationError::Runtime(EngineError::Internal(format!(
+                    "Candidate verification worker failed: {error}"
+                )))
+            })?;
+
+            match verification {
+                Ok(prepared) => {
+                    accepted = Some((
+                        prepared,
+                        prepared_output,
+                        cache_output,
+                        component_bytes,
+                        cache_hit,
+                    ));
+                    break;
+                }
+                Err(error) => {
+                    if let Some(feedback) = build_repair_feedback(&error) {
+                        if !repair_summary
+                            .failure_categories
+                            .iter()
+                            .any(|item| item == "verification_failed")
+                        {
+                            repair_summary
+                                .failure_categories
+                                .push("verification_failed".into());
+                        }
+                        tracing::warn!(
+                            candidate_number = attempt + 1,
+                            is_replacement = attempt > 0,
+                            failure_category = "verification_failed",
+                            "Candidate failed verification"
+                        );
+                        if attempt < MAX_REPLACEMENT_ATTEMPTS {
+                            repair_feedback = Some(feedback);
+                            continue;
+                        }
+                    }
+                    return Err(error);
+                }
+            }
+        }
+
+        let (mut prepared, output, cache_output, component_bytes, cache_hit) = accepted
+            .ok_or_else(|| {
+                PreparationError::Runtime(EngineError::Internal(
+                    "Synthesis repair attempts were exhausted without an accepted candidate".into(),
+                ))
+            })?;
+
         // A draft SPEC may be used as synthesis input while an operator SPEC
         // remains the immutable acceptance policy. The current bundle format has
         // one SPEC.md, so exporting that combination would misattribute the
@@ -598,6 +851,7 @@ impl PreparationContext {
                 } else {
                     "operator".to_string()
                 },
+                repair_summary: repair_summary.clone(),
             });
         }
 
@@ -1143,6 +1397,452 @@ mod tests {
     }
 
     #[test]
+    fn repair_feedback_never_exposes_operator_assertion_details() {
+        let error = PreparationError::Verification {
+            suite: VerificationSuite::Operator,
+            results: vec![AssertionResult {
+                name: "private operator assertion".into(),
+                case_index: 7,
+                passed: false,
+                actual_status: Some(418),
+                expected_status: 200,
+                actual_headers: Some(HashMap::from([(
+                    "x-private".into(),
+                    "secret-header-value".into(),
+                )])),
+                actual_body: Some("secret expected response".into()),
+                failure_kind: Some("body_mismatch"),
+                error_message: Some("private diagnostic".into()),
+            }],
+        };
+
+        let feedback = build_repair_feedback(&error).unwrap();
+        assert!(feedback.contains("operator-owned verification"));
+        assert!(feedback.contains("Failed checks: 1"));
+        for private_value in [
+            "private operator assertion",
+            "secret-header-value",
+            "secret expected response",
+            "private diagnostic",
+            "418",
+            "body_mismatch",
+        ] {
+            assert!(!feedback.contains(private_value));
+        }
+    }
+
+    async fn spawn_lifecycle_provider(
+        handler: impl Fn(usize) -> (u16, String) + Send + Sync + 'static,
+    ) -> (
+        String,
+        Arc<std::sync::atomic::AtomicUsize>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use axum::http::StatusCode;
+        use axum::routing::post;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let handler = Arc::new(handler);
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            post({
+                let requests = requests.clone();
+                move || {
+                    let requests = requests.clone();
+                    let handler = handler.clone();
+                    async move {
+                        let index = requests.fetch_add(1, Ordering::SeqCst);
+                        let (status, body) = handler(index);
+                        (StatusCode::from_u16(status).unwrap(), body)
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (format!("http://{address}/v1"), requests, task)
+    }
+
+    fn provider_completion(handler_code: &str) -> String {
+        let synthesis = serde_json::json!({
+            "handler_code": handler_code,
+            "code_format": "javascript",
+            "assertions": [{
+                "name": "generated health regression",
+                "request": { "method": "GET", "path": "/health", "query": {}, "headers": {} },
+                "expected_status": 200,
+                "body_contains": "healthy"
+            }],
+            "rationale": "lifecycle repair test"
+        });
+        serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": serde_json::to_string(&synthesis).unwrap()
+                }
+            }]
+        })
+        .to_string()
+    }
+
+    async fn assert_three_synthesis_candidates_are_requested(
+        completion: String,
+        model: &str,
+    ) -> PreparationError {
+        let (url, requests, provider) =
+            spawn_lifecycle_provider(move |_| (200, completion.clone())).await;
+        let spec = test_spec();
+        let context = PreparationContext {
+            engine: QuickJsEngine::new().unwrap(),
+            spec: Some(spec.clone()),
+            spec_text: None,
+            draft_spec: false,
+            draft_assertions: Vec::new(),
+            cache: None,
+            policy: AcceptancePolicy::from_spec(&spec).unwrap(),
+        };
+        let synthesizer = Synthesizer::new(LlmConfig {
+            api_key: "test-key".into(),
+            base_url: url,
+            model: model.into(),
+            temperature: 0.0,
+        });
+        let result = context
+            .prepare_from_spec_with_synthesizer(Vec::new(), &synthesizer)
+            .await;
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 3);
+        provider.abort();
+        match result {
+            Err(error) => error,
+            Ok(_) => panic!("expected all three synthesis candidates to be rejected"),
+        }
+    }
+
+    fn provider_completion_with_empty_assertions() -> String {
+        let synthesis = serde_json::json!({
+            "handler_code": HANDLER_SOURCE,
+            "code_format": "javascript",
+            "assertions": [],
+            "rationale": "intentionally invalid assertion suite"
+        });
+        serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": serde_json::to_string(&synthesis).unwrap()
+                }
+            }]
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn invalid_candidate_output_exhausts_initial_plus_two_replacements() {
+        let error = assert_three_synthesis_candidates_are_requested(
+            provider_completion_with_empty_assertions(),
+            "invalid-output-exhaustion-test",
+        )
+        .await;
+        assert!(matches!(error, PreparationError::Runtime(_)));
+    }
+
+    #[tokio::test]
+    async fn componentization_failure_exhausts_initial_plus_two_replacements() {
+        let error = assert_three_synthesis_candidates_are_requested(
+            provider_completion("export function handle(_requestJson) {"),
+            "componentization-exhaustion-test",
+        )
+        .await;
+        assert!(matches!(error, PreparationError::Runtime(_)));
+    }
+
+    #[tokio::test]
+    async fn exhausted_candidate_replacements_stop_after_initial_plus_two_replacements() {
+        let (url, requests, provider) = spawn_lifecycle_provider(|_| {
+            (
+                200,
+                provider_completion(
+                    r#"export function handle(_requestJson) {
+                        return JSON.stringify({
+                            status: 500,
+                            headers: { "content-type": "text/plain" },
+                            body: "candidate rejected"
+                        });
+                    }"#,
+                ),
+            )
+        })
+        .await;
+        let spec = test_spec();
+        let engine = QuickJsEngine::new().unwrap();
+        let context = PreparationContext {
+            engine,
+            spec: Some(spec.clone()),
+            spec_text: None,
+            draft_spec: false,
+            draft_assertions: Vec::new(),
+            cache: None,
+            policy: AcceptancePolicy::from_spec(&spec).unwrap(),
+        };
+        let synthesizer = Synthesizer::new(LlmConfig {
+            api_key: "test-key".into(),
+            base_url: url,
+            model: "exhausted-repair-test".into(),
+            temperature: 0.0,
+        });
+
+        let error = match context
+            .prepare_from_spec_with_synthesizer(Vec::new(), &synthesizer)
+            .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("expected candidate preparation to fail"),
+        };
+        assert!(matches!(error, PreparationError::Verification { .. }));
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 3);
+        provider.abort();
+    }
+
+    #[tokio::test]
+    async fn provider_failure_does_not_start_candidate_repair_attempts() {
+        let (url, requests, provider) =
+            spawn_lifecycle_provider(|_| (401, r#"{"error":"unauthorized"}"#.into())).await;
+        let spec = test_spec();
+        let engine = QuickJsEngine::new().unwrap();
+        let context = PreparationContext {
+            engine,
+            spec: Some(spec.clone()),
+            spec_text: None,
+            draft_spec: false,
+            draft_assertions: Vec::new(),
+            cache: None,
+            policy: AcceptancePolicy::from_spec(&spec).unwrap(),
+        };
+        let synthesizer = Synthesizer::new(LlmConfig {
+            api_key: "test-key".into(),
+            base_url: url,
+            model: "provider-failure-repair-test".into(),
+            temperature: 0.0,
+        });
+
+        let error = match context
+            .prepare_from_spec_with_synthesizer(Vec::new(), &synthesizer)
+            .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("expected candidate preparation to fail"),
+        };
+        assert!(matches!(error, PreparationError::Runtime(_)));
+        // A 401 is not retryable by Synthesizer (only 429 and 5xx are), and
+        // provider failures terminate before the candidate-repair loop can retry.
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 1);
+        provider.abort();
+    }
+
+    #[tokio::test]
+    async fn cached_candidate_verification_failure_is_repaired_before_cache_replacement() {
+        let spec = test_spec();
+        let engine = QuickJsEngine::new().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache = ArtifactCache::new(cache_dir.path());
+        let (provider_url, requests, provider) =
+            spawn_lifecycle_provider(|_| (200, provider_completion(HANDLER_SOURCE))).await;
+        let synthesizer = Synthesizer::new(LlmConfig {
+            api_key: "test-key".into(),
+            base_url: provider_url.clone(),
+            model: "cached-repair-test".into(),
+            temperature: 0.0,
+        });
+        let rejected_source = r#"export function handle(_requestJson) {
+            return JSON.stringify({
+                status: 500,
+                headers: { "content-type": "text/plain" },
+                body: "cached candidate rejected"
+            });
+        }"#;
+        let (_, rejected_component) = engine
+            .compile_handler_with_artifact(rejected_source)
+            .await
+            .unwrap();
+        let rejected_output = SynthesisOutput {
+            handler_code: rejected_source.into(),
+            code_format: "javascript".into(),
+            assertions: vec![ContractAssertion {
+                name: "cached candidate health regression".into(),
+                request: request("/health"),
+                expected_status: 200,
+                body_contains: Some("healthy".into()),
+                header_matches: None,
+            }],
+            rationale: Some("intentionally failing cached candidate".into()),
+        };
+        let cache_key = synthesizer.artifact_cache_key(&spec);
+        cache
+            .store(&cache_key, &rejected_output, &rejected_component)
+            .unwrap();
+
+        let context = PreparationContext {
+            engine,
+            spec: Some(spec.clone()),
+            spec_text: Some("test SPEC provenance".into()),
+            draft_spec: false,
+            draft_assertions: Vec::new(),
+            cache: Some(cache.clone()),
+            policy: AcceptancePolicy::from_spec(&spec).unwrap(),
+        };
+
+        let prepared = context
+            .prepare_from_spec_with_synthesizer(Vec::new(), &synthesizer)
+            .await
+            .unwrap();
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(prepared.trusted_results.iter().all(|result| result.passed));
+        let repair_summary = &prepared.export_data.as_ref().unwrap().repair_summary;
+        assert_eq!(repair_summary.cached_candidates, 1);
+        assert_eq!(repair_summary.synthesis_candidates, 1);
+        assert_eq!(repair_summary.replacement_attempts, 1);
+        assert_eq!(
+            repair_summary.failure_categories,
+            vec!["verification_failed".to_string()]
+        );
+
+        let cached = cache.load(&synthesizer.artifact_cache_key(&spec)).unwrap();
+        assert_eq!(cached.synthesis.handler_code, HANDLER_SOURCE);
+        assert!(!cached
+            .synthesis
+            .handler_code
+            .contains("cached candidate rejected"));
+        provider.abort();
+    }
+
+    #[tokio::test]
+    async fn rejected_cached_component_falls_back_to_initial_synthesis_candidate() {
+        let spec = test_spec();
+        let engine = QuickJsEngine::new().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache = ArtifactCache::new(cache_dir.path());
+        let (provider_url, requests, provider) =
+            spawn_lifecycle_provider(|_| (200, provider_completion(HANDLER_SOURCE))).await;
+        let synthesizer = Synthesizer::new(LlmConfig {
+            api_key: "test-key".into(),
+            base_url: provider_url,
+            model: "cached-component-fallback-test".into(),
+            temperature: 0.0,
+        });
+        let cached_output = SynthesisOutput {
+            handler_code: HANDLER_SOURCE.into(),
+            code_format: "javascript".into(),
+            assertions: vec![ContractAssertion {
+                name: "cached assertion".into(),
+                request: request("/health"),
+                expected_status: 200,
+                body_contains: Some("healthy".into()),
+                header_matches: None,
+            }],
+            rationale: Some("invalid cached component fixture".into()),
+        };
+        let cache_key = synthesizer.artifact_cache_key(&spec);
+        cache
+            .store(&cache_key, &cached_output, b"not a valid component")
+            .unwrap();
+
+        let context = PreparationContext {
+            engine,
+            spec: Some(spec.clone()),
+            spec_text: Some("test SPEC provenance".into()),
+            draft_spec: false,
+            draft_assertions: Vec::new(),
+            cache: Some(cache),
+            policy: AcceptancePolicy::from_spec(&spec).unwrap(),
+        };
+        let prepared = context
+            .prepare_from_spec_with_synthesizer(Vec::new(), &synthesizer)
+            .await
+            .unwrap();
+
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(prepared.trusted_results.iter().all(|result| result.passed));
+        let summary = &prepared.export_data.as_ref().unwrap().repair_summary;
+        assert_eq!(summary.cached_candidates, 0);
+        assert_eq!(summary.synthesis_candidates, 1);
+        assert_eq!(summary.replacement_attempts, 0);
+        assert_eq!(
+            summary.failure_categories,
+            vec!["cached_componentization_failed".to_string()]
+        );
+        provider.abort();
+    }
+
+    #[tokio::test]
+    async fn rejected_cached_candidate_is_not_replaced_when_all_replacements_fail() {
+        let spec = test_spec();
+        let engine = QuickJsEngine::new().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache = ArtifactCache::new(cache_dir.path());
+        let rejected_source = r#"export function handle(_requestJson) {
+            return JSON.stringify({
+                status: 500,
+                headers: { "content-type": "text/plain" },
+                body: "cached candidate rejected"
+            });
+        }"#;
+        let (_, rejected_component) = engine
+            .compile_handler_with_artifact(rejected_source)
+            .await
+            .unwrap();
+        let rejected_output = SynthesisOutput {
+            handler_code: rejected_source.into(),
+            code_format: "javascript".into(),
+            assertions: vec![ContractAssertion {
+                name: "cached candidate health regression".into(),
+                request: request("/health"),
+                expected_status: 200,
+                body_contains: Some("healthy".into()),
+                header_matches: None,
+            }],
+            rationale: Some("intentionally failing cached candidate".into()),
+        };
+        let (provider_url, requests, provider) =
+            spawn_lifecycle_provider(|_| (200, provider_completion(rejected_source))).await;
+        let synthesizer = Synthesizer::new(LlmConfig {
+            api_key: "test-key".into(),
+            base_url: provider_url,
+            model: "cached-exhaustion-test".into(),
+            temperature: 0.0,
+        });
+        let cache_key = synthesizer.artifact_cache_key(&spec);
+        cache
+            .store(&cache_key, &rejected_output, &rejected_component)
+            .unwrap();
+        let context = PreparationContext {
+            engine,
+            spec: Some(spec.clone()),
+            spec_text: None,
+            draft_spec: false,
+            draft_assertions: Vec::new(),
+            cache: Some(cache.clone()),
+            policy: AcceptancePolicy::from_spec(&spec).unwrap(),
+        };
+
+        let error = match context
+            .prepare_from_spec_with_synthesizer(Vec::new(), &synthesizer)
+            .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("expected candidate preparation to fail"),
+        };
+        assert!(matches!(error, PreparationError::Verification { .. }));
+        // The cache hit is candidate one; only two replacement candidates are requested.
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let still_cached = cache.load(&cache_key).unwrap();
+        assert_eq!(still_cached.synthesis.handler_code, rejected_source);
+        provider.abort();
+    }
+
+    #[test]
     fn synthesized_handler_size_limit_is_enforced_by_shared_validation() {
         let output = SynthesisOutput {
             handler_code: "x".repeat(MAX_JS_SOURCE_BYTES + 1),
@@ -1162,7 +1862,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oversized_cached_synthesis_is_rejected_before_component_compilation() {
+    async fn oversized_cached_synthesis_is_rejected_and_falls_back_to_provider() {
         let spec = test_spec();
         let engine = QuickJsEngine::new().unwrap();
         let cache_dir = tempfile::tempdir().unwrap();
@@ -1209,7 +1909,10 @@ mod tests {
             Ok(_) => panic!("oversized cached synthesis metadata must be rejected"),
         };
 
-        assert!(format!("{error:?}").contains("2 MiB source limit"));
+        // The invalid cached synthesis must be rejected, then preparation must
+        // attempt fresh synthesis. With no API key configured, that fallback fails
+        // before making a provider request.
+        assert!(format!("{error:?}").contains("LLM_API_KEY"));
     }
 
     #[test]

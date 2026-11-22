@@ -468,6 +468,20 @@ impl NosrcMcpServer {
         params: PrepareAppParams,
         draft_synthesizer: Option<crate::synthesizer::Synthesizer>,
     ) -> CallToolResult {
+        self.prepare_app_with_synthesizer_timeout(
+            params,
+            draft_synthesizer,
+            Duration::from_secs(120),
+        )
+        .await
+    }
+
+    async fn prepare_app_with_synthesizer_timeout(
+        &self,
+        params: PrepareAppParams,
+        draft_synthesizer: Option<crate::synthesizer::Synthesizer>,
+        timeout_duration: Duration,
+    ) -> CallToolResult {
         let source = params.source;
         let js_code = params.js_code;
         let draft_spec = params.draft_spec;
@@ -545,12 +559,7 @@ impl NosrcMcpServer {
                 },
             }
         };
-        prepare_and_publish(
-            self.lifecycle.clone(),
-            Duration::from_secs(120),
-            preparation,
-        )
-        .await
+        prepare_and_publish(self.lifecycle.clone(), timeout_duration, preparation).await
     }
 
     #[tool(
@@ -612,6 +621,7 @@ impl NosrcMcpServer {
                 crate::export::ExportPolicy {
                     trusted_assertions: &export.trusted_assertions,
                     mode: &export.policy_mode,
+                    repair_summary: &export.repair_summary,
                 },
             )
         })
@@ -1467,15 +1477,38 @@ mod tests {
         use axum::routing::post;
         use axum::{Json, Router};
         use serde_json::{json, Value};
-        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use std::sync::Arc;
 
         async fn mock_draft_synthesis(
-            State(request_count): State<Arc<AtomicUsize>>,
+            State((request_count, repair_feedback_seen)): State<(
+                Arc<AtomicUsize>,
+                Arc<AtomicBool>,
+            )>,
+            Json(request): Json<Value>,
         ) -> Json<Value> {
-            request_count.fetch_add(1, Ordering::SeqCst);
-            let synthesis = json!({
-                "handler_code": r#"
+            let request_index = request_count.fetch_add(1, Ordering::SeqCst);
+            let user_prompt = request["messages"][1]["content"]
+                .as_str()
+                .unwrap_or_default();
+            if request_index > 0
+                && user_prompt.contains("candidate-generated verification")
+                && user_prompt.contains("assertion definitions are intentionally withheld")
+            {
+                repair_feedback_seen.store(true, Ordering::SeqCst);
+            }
+            let handler_code = if request_index == 0 {
+                r#"
+                    export function handle(_requestJson) {
+                        return JSON.stringify({
+                            status: 500,
+                            headers: { "content-type": "text/plain" },
+                            body: "first candidate fails"
+                        });
+                    }
+                "#
+            } else {
+                r#"
                     export function handle(requestJson) {
                         const request = JSON.parse(requestJson);
                         if (request.method === "GET" && request.path === "/hello") {
@@ -1491,7 +1524,10 @@ mod tests {
                             body: "not found"
                         });
                     }
-                "#,
+                "#
+            };
+            let synthesis = json!({
+                "handler_code": handler_code,
                 "code_format": "javascript",
                 "assertions": [{
                     "name": "generated hello response",
@@ -1530,9 +1566,10 @@ mod tests {
         }
 
         let request_count = Arc::new(AtomicUsize::new(0));
+        let repair_feedback_seen = Arc::new(AtomicBool::new(false));
         let mock_provider = Router::new()
             .route("/v1/chat/completions", post(mock_draft_synthesis))
-            .with_state(request_count.clone());
+            .with_state((request_count.clone(), repair_feedback_seen.clone()));
         let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let provider_address = provider_listener.local_addr().unwrap();
         let (provider_shutdown_tx, provider_shutdown_rx) = tokio::sync::oneshot::channel();
@@ -1561,7 +1598,7 @@ mod tests {
         // Exercise the same validation, preparation, and publication path as the MCP tool,
         // injecting only the local mock provider instead of reading process credentials.
         let prepared = server
-            .prepare_app_with_synthesizer(
+            .prepare_app_with_synthesizer_timeout(
                 PrepareAppParams {
                     source: PrepareSource::DraftSpec,
                     js_code: None,
@@ -1569,6 +1606,7 @@ mod tests {
                     supplemental_assertions: None,
                 },
                 Some(synthesizer),
+                Duration::from_secs(300),
             )
             .await;
         assert_eq!(
@@ -1581,7 +1619,8 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
-        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+        assert_eq!(request_count.load(Ordering::SeqCst), 2);
+        assert!(repair_feedback_seen.load(Ordering::SeqCst));
 
         // Agent-authored draft policy is exportable for review, but cannot activate.
         let activation = server
@@ -1655,7 +1694,7 @@ mod tests {
         assert_eq!(offline_response.text().await.unwrap(), "hello from nosrc");
 
         // Offline serving must not synthesize again or contact the mock provider.
-        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+        assert_eq!(request_count.load(Ordering::SeqCst), 2);
 
         // Process-local MCP state is intentionally empty after a restart.
         let restarted = AppLifecycle::new_mcp_first(None).unwrap();

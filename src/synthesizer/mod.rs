@@ -446,6 +446,20 @@ Assertions must cover every endpoint's documented success response and at least 
         spec: &ServiceSpec,
         historical_regressions: &[ContractAssertion],
     ) -> Result<SynthesisOutput, EngineError> {
+        self.synthesize_with_feedback(spec, historical_regressions, None)
+            .await
+    }
+
+    /// Synthesize a candidate with bounded, host-generated repair feedback.
+    ///
+    /// Feedback is deliberately separate from historical regressions: callers must
+    /// never pass operator assertion definitions or their request/expected values.
+    pub(crate) async fn synthesize_with_feedback(
+        &self,
+        spec: &ServiceSpec,
+        historical_regressions: &[ContractAssertion],
+        repair_feedback: Option<&str>,
+    ) -> Result<SynthesisOutput, EngineError> {
         if self.config.api_key.trim().is_empty() {
             return Err(missing_api_key_error());
         }
@@ -467,6 +481,13 @@ Assertions must cover every endpoint's documented success response and at least 
                 "\nCRITICAL: The updated implementation MUST ALSO satisfy these historical regression test cases without failing:\n```json\n{}\n```\n",
                 regressions_json
             ));
+        }
+
+        if let Some(feedback) = repair_feedback {
+            // Lifecycle code supplies only short, host-authored category/count summaries.
+            user_prompt.push_str("\nThe previous candidate did not pass host verification. Repair the implementation while preserving the SPEC contract. Do not weaken or remove assertions.\n");
+            user_prompt.push_str(feedback);
+            user_prompt.push('\n');
         }
 
         let body = serde_json::json!({

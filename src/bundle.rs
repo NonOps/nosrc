@@ -306,6 +306,7 @@ mod tests {
             generated_assertions_count: 1,
             rationale: Some("test bundle".into()),
             policy_mode: "operator".into(),
+            repair_summary: crate::export::RepairSummary::default(),
         };
         let assertions = ExportAssertions {
             trusted_assertions: vec![assertion("trusted")],
