@@ -7,6 +7,20 @@ use tempfile::Builder;
 use crate::spec::ServiceSpec;
 use crate::synthesizer::{ContractAssertion, SynthesisOutput};
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RepairSummary {
+    /// Number of live candidates returned by the synthesis provider.
+    #[serde(default)]
+    pub synthesis_candidates: usize,
+    /// Number of cached candidates evaluated by the verification gate.
+    #[serde(default)]
+    pub cached_candidates: usize,
+    #[serde(default)]
+    pub replacement_attempts: usize,
+    #[serde(default)]
+    pub failure_categories: Vec<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ExportManifest {
     pub service_name: String,
@@ -18,6 +32,8 @@ pub struct ExportManifest {
     pub rationale: Option<String>,
     #[serde(default = "default_policy_mode")]
     pub policy_mode: String,
+    #[serde(default)]
+    pub repair_summary: RepairSummary,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -33,6 +49,7 @@ fn default_policy_mode() -> String {
 pub struct ExportPolicy<'a> {
     pub trusted_assertions: &'a [ContractAssertion],
     pub mode: &'a str,
+    pub repair_summary: &'a RepairSummary,
 }
 
 /// Export verified artifacts as one directory publication.
@@ -58,6 +75,7 @@ pub fn export_artifacts(
         ExportPolicy {
             trusted_assertions,
             mode: "operator",
+            repair_summary: &RepairSummary::default(),
         },
     )
 }
@@ -139,6 +157,7 @@ pub fn export_artifacts_with_policy(
         generated_assertions_count: output.assertions.len(),
         rationale: output.rationale.clone(),
         policy_mode: policy.mode.to_string(),
+        repair_summary: policy.repair_summary.clone(),
     };
     let manifest_json = serde_json::to_vec_pretty(&manifest)?;
     write_artifact(staging_path, "manifest.json", &manifest_json)?;

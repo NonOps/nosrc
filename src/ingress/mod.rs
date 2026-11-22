@@ -542,7 +542,9 @@ mod tests {
 
         let request = Request::builder().uri("/loop").body(Body::empty()).unwrap();
         let request_task = tokio::spawn(app.oneshot(request));
-        tokio::time::timeout(Duration::from_secs(1), async {
+        // Windows runners can be heavily loaded while the full test suite runs;
+        // allow the request task time to reach the execution gate.
+        tokio::time::timeout(Duration::from_secs(10), async {
             while state.execution.available_permits() != 0 {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
