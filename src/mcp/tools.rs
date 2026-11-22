@@ -1117,8 +1117,37 @@ mod tests {
         assert_eq!(result.is_error, Some(true));
         assert_eq!(
             result.structured_content.unwrap()["error"],
-            "preparation_failed"
+            "compilation_failed"
         );
+    }
+
+    #[tokio::test]
+    async fn prepare_app_reports_resource_exhaustion_category() {
+        use crate::spec::ServiceSpec;
+
+        let spec = ServiceSpec::parse(
+            "# Service: mcp-resource-test\n\n## Capabilities\n- state: volatile\n- egress: []\n\n## Endpoints\n### `GET /loop`\n- Response `200`\n\n## Verification\n### `GET /loop`\n- Response `200`\n",
+        ).unwrap();
+        let server = NosrcMcpServer {
+            export_root: std::env::temp_dir().join("nosrc-mcp-test-exports"),
+            lifecycle: Arc::new(Mutex::new(AppLifecycle::new(&spec, None).unwrap())),
+        };
+        let result = server
+            .prepare_app(Parameters(PrepareAppParams {
+                source: PrepareSource::DirectJs,
+                js_code: Some("export function handle(_requestJson) { while (true) {} }".into()),
+                draft_spec: None,
+                supplemental_assertions: None,
+            }))
+            .await;
+
+        assert_eq!(result.is_error, Some(true));
+        let error = result.structured_content.unwrap();
+        assert_eq!(error["error"], "verification_failed");
+        assert_eq!(error["suite"], "operator");
+        assert_eq!(error["failed_assertions"][0]["id"], "operator-0001");
+        assert_eq!(error["failed_assertions"][0]["resource"], "fuel");
+        assert_eq!(error["failed_assertions"][0]["failure"], "fuel_exhausted");
     }
 
     #[tokio::test]
@@ -1169,13 +1198,61 @@ mod tests {
         assert_eq!(result.is_error, Some(true));
         let error = result.structured_content.unwrap();
         assert_eq!(error["error"], "verification_failed");
+        assert_eq!(error["suite"], "operator");
+        assert_eq!(error["failed_assertions"][0]["id"], "operator-0001");
+        assert_eq!(error["failed_assertions"][0]["failure"], "status_mismatch");
         assert_eq!(error["failed_assertions"][0]["expected_status"], 200);
         assert_eq!(error["failed_assertions"][0]["actual_status"], 404);
+        assert!(error["failed_assertions"][0].get("name").is_none());
         let status = server.get_app_status().await;
         assert!(status.structured_content.unwrap()["generations"]
             .as_array()
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn verification_diagnostics_include_redacted_json_body_preview_and_safe_headers() {
+        use crate::spec::ServiceSpec;
+
+        let spec = ServiceSpec::parse(
+            "# Service: mcp-body-diagnostic\n\n## Capabilities\n- state: volatile\n- egress: []\n\n## Endpoints\n### `GET /health`\n- Response `200`\n\n## Verification\n### `GET /health`\n- Response `200`\n- Body contains: `expected-value`\n",
+        ).unwrap();
+        let server = NosrcMcpServer {
+            export_root: std::env::temp_dir().join("nosrc-mcp-test-exports"),
+            lifecycle: Arc::new(Mutex::new(AppLifecycle::new(&spec, None).unwrap())),
+        };
+        let handler = r#"
+            export function handle(_requestJson) {
+                return JSON.stringify({
+                    status: 200,
+                    headers: {
+                        "content-type": "application/json",
+                        "set-cookie": "session=private"
+                    },
+                    body: JSON.stringify({
+                        message: "actual-value",
+                        api_key: "must-not-leak"
+                    })
+                });
+            }
+        "#;
+        let result = server.prepare_app(Parameters(PrepareAppParams {
+            source: PrepareSource::DirectJs,
+            js_code: Some(handler.into()),
+            draft_spec: None,
+            supplemental_assertions: None,
+        })).await;
+
+        assert_eq!(result.is_error, Some(true));
+        let error = result.structured_content.unwrap();
+        let diagnostic = &error["failed_assertions"][0];
+        assert_eq!(diagnostic["failure"], "body_mismatch");
+        assert_eq!(diagnostic["response_headers"]["content-type"], "application/json");
+        assert!(diagnostic["response_headers"].get("set-cookie").is_none());
+        let preview = diagnostic["body_preview"].as_str().unwrap();
+        assert!(preview.contains("[REDACTED]"));
+        assert!(!preview.contains("must-not-leak"));
     }
 
     #[test]
