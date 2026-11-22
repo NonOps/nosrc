@@ -115,10 +115,15 @@ fn redact_text(value: &str) -> String {
     let mut output = value.to_string();
     for marker in ["Bearer ", "api_key=", "api-key=", "password=", "secret=", "token="] {
         let mut search_from = 0;
-        while let Some(relative) = output[search_from..].to_ascii_lowercase().find(&marker.to_ascii_lowercase()) {
+        while let Some(relative) = output[search_from..]
+            .to_ascii_lowercase()
+            .find(&marker.to_ascii_lowercase())
+        {
             let start = search_from + relative + marker.len();
             let end = output[start..]
-                .find(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ';' | '"' | '\'' ))
+                .find(|ch: char| {
+                    ch.is_whitespace() || matches!(ch, ',' | ';' | '"' | '\'')
+                })
                 .map(|offset| start + offset)
                 .unwrap_or(output.len());
             if end > start {
@@ -140,9 +145,20 @@ fn redact_json_value(value: &mut serde_json::Value) {
         serde_json::Value::Object(object) => {
             for (key, value) in object.iter_mut() {
                 let key = key.to_ascii_lowercase().replace('-', "_");
-                if ["authorization", "cookie", "set_cookie", "password", "passwd", "secret", "token", "api_key", "apikey", "credential", "credentials"]
-                    .iter()
-                    .any(|sensitive| key.contains(sensitive))
+                let sensitive_keys = [
+                    "authorization",
+                    "cookie",
+                    "set_cookie",
+                    "password",
+                    "passwd",
+                    "secret",
+                    "token",
+                    "api_key",
+                    "apikey",
+                    "credential",
+                    "credentials",
+                ];
+                if sensitive_keys.iter().any(|sensitive| key.contains(sensitive))
                 {
                     *value = serde_json::Value::String("[REDACTED]".into());
                 } else {
@@ -326,7 +342,7 @@ where
 #[tool_router]
 impl NosrcMcpServer {
     #[tool(
-        description = "Compile and verify a JavaScript handler against the operator-controlled SPEC without activating it. Preparation never activates a generation."
+        description = "Compile and verify a JavaScript handler against the operator-controlled SPEC without activating it. Preparation never activates a generation. Failures return bounded diagnostics without exposing trusted assertion contents."
     )]
     async fn prepare_app(
         &self,
