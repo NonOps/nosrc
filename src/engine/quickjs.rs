@@ -101,6 +101,8 @@ pub struct RuntimeTelemetry {
     pub instance_memory_high_water_bytes: Option<usize>,
     /// Largest linear-memory size observed across this handler generation, including replaced instances.
     pub generation_memory_high_water_bytes: Option<usize>,
+    /// Number of successfully recreated component instances after guest traps in this generation.
+    pub instance_recreations: u64,
 }
 
 impl Default for RuntimeTelemetry {
@@ -111,6 +113,7 @@ impl Default for RuntimeTelemetry {
             generation_fuel_high_water: None,
             instance_memory_high_water_bytes: None,
             generation_memory_high_water_bytes: None,
+            instance_recreations: 0,
         }
     }
 }
@@ -420,6 +423,18 @@ impl QuickJsHandler {
             Err(error) => {
                 self.record_invocation_telemetry();
                 let trap = classify_component_error(error);
+                let failure_kind = match &trap {
+                    EngineError::Trap(SandboxTrap::FuelExhausted) => "fuel_exhausted",
+                    EngineError::Trap(SandboxTrap::ExecutionTimeout) => "execution_timeout",
+                    EngineError::Trap(SandboxTrap::MemoryExhausted(_)) => "memory_exhausted",
+                    EngineError::Trap(SandboxTrap::GuestPanic(_)) => "guest_panic",
+                    EngineError::Trap(SandboxTrap::Unreachable) => "unreachable",
+                    _ => "execution_error",
+                };
+                tracing::warn!(
+                    failure_kind,
+                    "Guest handler trapped; discarding and recreating its component instance"
+                );
                 // A trapped component instance is not reusable. Recreate it from the
                 // compiled component; if recovery fails, permanently reject later calls
                 // rather than attempting to reuse the trapped store.
@@ -432,6 +447,8 @@ impl QuickJsHandler {
                     Ok((store, handle)) => {
                         self.store = store;
                         self.handle = handle;
+                        self.telemetry.instance_recreations =
+                            self.telemetry.instance_recreations.saturating_add(1);
                     }
                     Err(recovery_error) => {
                         self.poisoned = true;
@@ -741,6 +758,39 @@ mod tests {
                     >= before
             );
         }
+    }
+
+    #[tokio::test]
+    async fn guest_state_resets_and_recreation_counter_increments_after_trap() {
+        let (engine, compiled) = test_support::compiled().await;
+        let mut handler = engine.instantiate(compiled, LOOP_TEST_FUEL).unwrap();
+
+        assert_eq!(
+            handler
+                .invoke(&request("/counter"))
+                .unwrap()
+                .body
+                .as_deref(),
+            Some("1")
+        );
+
+        let error = handler.invoke(&request("/loop")).unwrap_err();
+        assert!(
+            matches!(error, EngineError::Trap(SandboxTrap::FuelExhausted)),
+            "Expected fuel exhaustion, got: {error}"
+        );
+        assert_eq!(handler.telemetry_snapshot().instance_recreations, 1);
+
+        // The replacement is a fresh component instance, so module-level state starts over.
+        assert_eq!(
+            handler
+                .invoke(&request("/counter"))
+                .unwrap()
+                .body
+                .as_deref(),
+            Some("1")
+        );
+        assert_eq!(handler.telemetry_snapshot().instance_recreations, 1);
     }
 
     #[tokio::test]
