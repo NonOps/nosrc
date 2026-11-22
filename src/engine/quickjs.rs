@@ -762,6 +762,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn guest_state_resets_and_recreation_counter_increments_after_trap() {
+        let (engine, compiled) = test_support::compiled().await;
+        let mut handler = engine.instantiate(compiled, LOOP_TEST_FUEL).unwrap();
+
+        assert_eq!(
+            handler
+                .invoke(&request("/counter"))
+                .unwrap()
+                .body
+                .as_deref(),
+            Some("1")
+        );
+
+        let error = handler.invoke(&request("/loop")).unwrap_err();
+        assert!(
+            matches!(error, EngineError::Trap(SandboxTrap::FuelExhausted)),
+            "Expected fuel exhaustion, got: {error}"
+        );
+        assert_eq!(handler.telemetry_snapshot().instance_recreations, 1);
+
+        // The replacement is a fresh component instance, so module-level state starts over.
+        assert_eq!(
+            handler
+                .invoke(&request("/counter"))
+                .unwrap()
+                .body
+                .as_deref(),
+            Some("1")
+        );
+        assert_eq!(handler.telemetry_snapshot().instance_recreations, 1);
+    }
+
+    #[tokio::test]
     async fn epoch_deadline_interrupts_guest_independently_of_fuel_and_recovers() {
         let (engine, compiled) = test_support::compiled().await;
         let mut handler = engine
