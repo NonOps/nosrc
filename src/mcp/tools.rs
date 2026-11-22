@@ -13,7 +13,8 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 use crate::engine::http_envelope::RequestEnvelope;
-use crate::mcp::lifecycle::{AppLifecycle, GenerationId, PreparationError, PreparedGeneration};
+use crate::error::{EngineError, SandboxTrap};
+use crate::mcp::lifecycle::{\n    AppLifecycle, GenerationId, PreparationError, PreparedGeneration, VerificationSuite,\n};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -94,6 +95,147 @@ fn resolve_export_destination(root: &Path, name: &Path) -> anyhow::Result<PathBu
     Ok(destination)
 }
 
+const MAX_DIAGNOSTIC_BYTES: usize = 4 * 1024;
+const MAX_BODY_PREVIEW_BYTES: usize = 768;
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &value[..end])
+}
+
+fn redact_text(value: &str) -> String {
+    let mut output = value.to_string();
+    for marker in ["Bearer ", "api_key=", "api-key=", "password=", "secret=", "token="] {
+        let mut search_from = 0;
+        while let Some(relative) = output[search_from..].to_ascii_lowercase().find(&marker.to_ascii_lowercase()) {
+            let start = search_from + relative + marker.len();
+            let end = output[start..]
+                .find(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ';' | '"' | '\'' ))
+                .map(|offset| start + offset)
+                .unwrap_or(output.len());
+            if end > start {
+                output.replace_range(start..end, "[REDACTED]");
+                search_from = start + "[REDACTED]".len();
+            } else {
+                search_from = start;
+            }
+            if search_from >= output.len() {
+                break;
+            }
+        }
+    }
+    output
+}
+
+fn redact_json_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, value) in object.iter_mut() {
+                let key = key.to_ascii_lowercase().replace('-', "_");
+                if ["authorization", "cookie", "set_cookie", "password", "passwd", "secret", "token", "api_key", "apikey", "credential", "credentials"]
+                    .iter()
+                    .any(|sensitive| key.contains(sensitive))
+                {
+                    *value = serde_json::Value::String("[REDACTED]".into());
+                } else {
+                    redact_json_value(value);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                redact_json_value(item);
+            }
+        }
+        serde_json::Value::String(text) => *text = redact_text(text),
+        _ => {}
+    }
+}
+
+fn safe_body_preview(body: Option<&str>) -> Option<String> {
+    let body = body?;
+    let mut value = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    redact_json_value(&mut value);
+    let serialized = serde_json::to_string(&value).ok()?;
+    Some(truncate_utf8(&serialized, MAX_BODY_PREVIEW_BYTES))
+}
+
+fn safe_response_headers(
+    headers: Option<&std::collections::HashMap<String, String>>,
+) -> serde_json::Value {
+    let Some(headers) = headers else {
+        return serde_json::json!({});
+    };
+    let mut safe = serde_json::Map::new();
+    let mut total_bytes = 0usize;
+    for (name, value) in headers {
+        let normalized = name.to_ascii_lowercase();
+        if !matches!(
+            normalized.as_str(),
+            "content-type"
+                | "content-length"
+                | "cache-control"
+                | "etag"
+                | "vary"
+                | "x-content-type-options"
+                | "x-frame-options"
+        ) {
+            continue;
+        }
+        if safe.len() >= 16 || total_bytes.saturating_add(value.len()) > 2048 {
+            break;
+        }
+        total_bytes = total_bytes.saturating_add(value.len());
+        safe.insert(
+            normalized,
+            serde_json::Value::String(truncate_utf8(&redact_text(value), 512)),
+        );
+    }
+    serde_json::Value::Object(safe)
+}
+
+fn resource_limit(error: &EngineError) -> Option<&'static str> {
+    match error {
+        EngineError::Trap(SandboxTrap::FuelExhausted) => Some("fuel"),
+        EngineError::Trap(SandboxTrap::MemoryExhausted(_)) => Some("linear_memory"),
+        EngineError::Trap(SandboxTrap::ExecutionTimeout) => Some("wall_clock"),
+        _ => None,
+    }
+}
+
+fn runtime_diagnostic(error: EngineError) -> serde_json::Value {
+    if let Some(resource) = resource_limit(&error) {
+        return serde_json::json!({
+            "error": "resource_limit_exceeded",
+            "resource": resource,
+            "message": truncate_utf8(&redact_text(&error.to_string()), 1024)
+        });
+    }
+
+    let message = error.to_string();
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("componentization")
+        || lower.contains("invalid handler component")
+        || lower.contains("wasm compilation")
+    {
+        return serde_json::json!({
+            "error": "compilation_failed",
+            "diagnostics": truncate_utf8(&redact_text(&message), MAX_DIAGNOSTIC_BYTES)
+        });
+    }
+
+    serde_json::json!({
+        "error": "preparation_failed",
+        "message": truncate_utf8(&redact_text(&message), 1024)
+    })
+}
+
 async fn prepare_and_publish<F>(
     lifecycle: Arc<Mutex<AppLifecycle>>,
     timeout_duration: Duration,
@@ -127,27 +269,48 @@ where
 
     match tokio::time::timeout(timeout_duration, operation).await {
         Ok(Ok(result)) => result,
-        Ok(Err(PreparationError::Verification(results))) => {
+        Ok(Err(PreparationError::Verification { suite, results })) => {
+            let suite_name = match suite {
+                VerificationSuite::Operator => "operator",
+                VerificationSuite::Generated => "generated",
+            };
             let failed_assertions: Vec<_> = results
                 .iter()
                 .map(|result| {
-                    json!({
-                        "name": result.name.as_str(),
+                    let mut diagnostic = json!({
+                        "id": format!("{suite_name}-{:04}", result.case_index + 1),
+                        "failure": result.failure_kind.unwrap_or("assertion_failed"),
                         "expected_status": result.expected_status,
                         "actual_status": result.actual_status,
-                        "error": result.error_message.as_deref()
-                    })
+                        "response_headers": safe_response_headers(result.actual_headers.as_ref())
+                    });
+                    if let Some(preview) = safe_body_preview(result.actual_body.as_deref()) {
+                        diagnostic["body_preview"] = json!(preview);
+                    } else if result.actual_body.is_some() {
+                        diagnostic["body_preview_omitted"] =
+                            json!("Non-JSON response bodies are omitted from MCP diagnostics");
+                    }
+                    if let Some(resource) = result.failure_kind.and_then(|kind| match kind {
+                        "fuel_exhausted" => Some("fuel"),
+                        "memory_exhausted" => Some("linear_memory"),
+                        "execution_timeout" => Some("wall_clock"),
+                        _ => None,
+                    }) {
+                        diagnostic["resource"] = json!(resource);
+                    }
+                    diagnostic
                 })
                 .collect();
             CallToolResult::structured_error(json!({
                 "error": "verification_failed",
-                "failed_assertions": failed_assertions
+                "suite": suite_name,
+                "failed_assertions": failed_assertions,
+                "policy_note": "Verification policy is operator-controlled and is not included in diagnostics."
             }))
         }
-        Ok(Err(PreparationError::Runtime(error))) => CallToolResult::structured_error(json!({
-            "error": "preparation_failed",
-            "message": error.to_string()
-        })),
+        Ok(Err(PreparationError::Runtime(error))) => {
+            CallToolResult::structured_error(runtime_diagnostic(error))
+        },
         Err(_) => CallToolResult::structured_error(json!({
             "error": "preparation_timeout",
             "message": format!(
