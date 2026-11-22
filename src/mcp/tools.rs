@@ -14,7 +14,9 @@ use tokio::sync::Mutex;
 
 use crate::engine::http_envelope::RequestEnvelope;
 use crate::error::{EngineError, SandboxTrap};
-use crate::mcp::lifecycle::{\n    AppLifecycle, GenerationId, PreparationError, PreparedGeneration, VerificationSuite,\n};
+use crate::mcp::lifecycle::{
+    AppLifecycle, GenerationId, PreparationError, PreparedGeneration, VerificationSuite,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
