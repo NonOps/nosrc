@@ -676,7 +676,10 @@ pub(super) fn prepare_compiled(
         drop(trusted_candidate);
         let failed_trusted = failed_results(&results);
         if !failed_trusted.is_empty() {
-            return Err(PreparationError::Verification {\n                suite: VerificationSuite::Operator,\n                results: failed_trusted,\n            });
+            return Err(PreparationError::Verification {
+                suite: VerificationSuite::Operator,
+                results: failed_trusted,
+            });
         }
         results
     };
@@ -715,7 +718,10 @@ pub(super) fn prepare_compiled(
         drop(model_candidate);
         let failed_model = failed_results(&model_results);
         if !failed_model.is_empty() {
-            return Err(PreparationError::Verification {\n                suite: VerificationSuite::Generated,\n                results: failed_model,\n            });
+            return Err(PreparationError::Verification {
+                suite: VerificationSuite::Generated,
+                results: failed_model,
+            });
         }
     }
 
