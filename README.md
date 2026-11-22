@@ -83,7 +83,7 @@ export LLM_API_KEY="your-api-key" # required for source: "spec"
 cargo run -- mcp --spec ./examples/minimal/SPEC.md
 ```
 
-The default MCP mode uses stdio and does not open an HTTP listener. It exposes six tools: `prepare_app`, `activate_app`, `invoke_app`, `get_app_status`, `rollback_app`, and `export_app`. Exports are confined to the configured `--export-root` (default `./.nosrc-exports`). Rollback is limited to the immediately previous retained generation. Generation state and rollback history are process-local and disappear when the MCP process exits.
+The default MCP mode uses stdio and does not open an HTTP listener. It exposes six tools: `prepare_app`, `activate_app`, `invoke_app`, `get_app_status`, `rollback_app`, and `export_app`. Exports are confined to the configured `--export-root` (default `./.nosrc-exports`). Rollback is limited to the immediately previous retained generation. Generation state and rollback history are process-local and disappear when the MCP process exits. Failed `prepare_app` calls return bounded structured diagnostics: stable verification-case IDs, expected/actual status, allowlisted response headers, redacted JSON body previews where safe, compiler details, and resource-limit categories. Trusted verification policy, request inputs, and arbitrary non-JSON response bodies are not returned.
 
 MCP can also start without an operator SPEC:
 

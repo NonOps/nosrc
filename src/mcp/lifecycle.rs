@@ -139,10 +139,19 @@ pub struct AppStatus {
     pub runtime_limits: RuntimeLimits,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerificationSuite {
+    Operator,
+    Generated,
+}
+
 #[derive(Debug)]
 pub enum PreparationError {
     Runtime(EngineError),
-    Verification(Vec<AssertionResult>),
+    Verification {
+        suite: VerificationSuite,
+        results: Vec<AssertionResult>,
+    },
 }
 
 impl From<EngineError> for PreparationError {
@@ -667,7 +676,10 @@ pub(super) fn prepare_compiled(
         drop(trusted_candidate);
         let failed_trusted = failed_results(&results);
         if !failed_trusted.is_empty() {
-            return Err(PreparationError::Verification(failed_trusted));
+            return Err(PreparationError::Verification {
+                suite: VerificationSuite::Operator,
+                results: failed_trusted,
+            });
         }
         results
     };
@@ -706,7 +718,10 @@ pub(super) fn prepare_compiled(
         drop(model_candidate);
         let failed_model = failed_results(&model_results);
         if !failed_model.is_empty() {
-            return Err(PreparationError::Verification(failed_model));
+            return Err(PreparationError::Verification {
+                suite: VerificationSuite::Generated,
+                results: failed_model,
+            });
         }
     }
 
@@ -722,9 +737,13 @@ pub(super) fn prepare_compiled(
                 Ok(mut results) => supplemental_results.append(&mut results),
                 Err(error) => supplemental_results.push(AssertionResult {
                     name: assertion.name.clone(),
+                    case_index: supplemental_results.len(),
                     passed: false,
                     actual_status: None,
                     expected_status: assertion.expected_status,
+                    actual_headers: None,
+                    actual_body: None,
+                    failure_kind: Some("execution_error"),
                     error_message: Some(error.to_string()),
                 }),
             }
@@ -1322,7 +1341,7 @@ mod tests {
             .await
             .unwrap_err();
         match error {
-            PreparationError::Verification(results) => {
+            PreparationError::Verification { results, .. } => {
                 assert_eq!(results.len(), 1);
                 assert!(results[0].actual_status.is_none());
                 assert!(results[0]
@@ -1481,7 +1500,7 @@ mod tests {
         .await;
 
         match result {
-            Err(PreparationError::Verification(results)) => {
+            Err(PreparationError::Verification { results, .. }) => {
                 assert_eq!(results.len(), 1);
                 assert_eq!(results[0].expected_status, 404);
                 assert_eq!(results[0].actual_status, Some(200));

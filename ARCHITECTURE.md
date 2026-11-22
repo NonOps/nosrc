@@ -120,7 +120,7 @@ Incoming HTTP request bodies and serialized guest response envelopes are limited
 
 `nosrc mcp --spec ./SPEC.md` starts a local MCP server over stdio and does not start an HTTP listener. The six tools are:
 
-- `prepare_app` — prepare a candidate from the operator SPEC or direct JavaScript; does not activate it. The structured result includes the same versioned resource telemetry snapshot for the prepared generation.
+- `prepare_app` — prepare a candidate from the operator SPEC or direct JavaScript; does not activate it. Successful results include the versioned resource telemetry snapshot. Failures return structured diagnostics with deterministic suite-scoped case IDs, expected/actual status, a small allowlist of response headers, redacted JSON-only body previews, compiler diagnostics, and fuel/memory/deadline categories. Trusted case names, request inputs, expected body/header values, and arbitrary non-JSON response bodies are not returned.
 - `activate_app` — activate a retained ready generation.
 - `invoke_app` — invoke the active generation through the QuickJS handler.
 - `get_app_status` — inspect active, previous, and retained generations, verification summaries, and effective resource limits.
