@@ -429,7 +429,6 @@ impl QuickJsHandler {
                     EngineError::Trap(SandboxTrap::MemoryExhausted(_)) => "memory_exhausted",
                     EngineError::Trap(SandboxTrap::GuestPanic(_)) => "guest_panic",
                     EngineError::Trap(SandboxTrap::Unreachable) => "unreachable",
-                    EngineError::Trap(_) => "guest_trap",
                     _ => "execution_error",
                 };
                 tracing::warn!(
