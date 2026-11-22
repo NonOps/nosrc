@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 
 use crate::engine::http_envelope::{ErrorEnvelope, RequestEnvelope};
-use crate::engine::quickjs::{QuickJsHandler, DEFAULT_GUEST_EXECUTION_TIMEOUT};
+use crate::engine::quickjs::{QuickJsHandler, RuntimeTelemetry, DEFAULT_GUEST_EXECUTION_TIMEOUT};
 use crate::error::EngineError;
 
 const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
@@ -68,6 +68,7 @@ struct RuntimeStatus {
     status: &'static str,
     active_generation: Option<u64>,
     module_hash: Option<String>,
+    telemetry: Option<RuntimeTelemetry>,
 }
 
 async fn healthz() -> StatusCode {
@@ -76,18 +77,24 @@ async fn healthz() -> StatusCode {
 
 async fn runtime_status(State(state): State<Arc<IngressState>>) -> Json<RuntimeStatus> {
     let active = state.active_generation.load();
-    let (active_generation, module_hash) = match active.as_ref() {
+    let (active_generation, module_hash, telemetry) = match active.as_ref() {
         Some(generation) => (
             Some(generation.generation_id),
             Some(generation.module_hash.clone()),
+            generation
+                .handler
+                .try_lock()
+                .ok()
+                .map(|handler| handler.telemetry_snapshot()),
         ),
-        None => (None, None),
+        None => (None, None, None),
     };
 
     Json(RuntimeStatus {
         status: "running",
         active_generation,
         module_hash,
+        telemetry,
     })
 }
 
@@ -323,6 +330,54 @@ mod tests {
         assert_eq!(status["status"], "running");
         assert!(status["active_generation"].is_null());
         assert!(status["module_hash"].is_null());
+        assert!(status["telemetry"].is_null());
+    }
+
+    #[tokio::test]
+    async fn status_endpoint_does_not_block_when_handler_is_executing() {
+        use crate::engine::quickjs::test_support;
+
+        let (engine, compiled) = test_support::compiled().await;
+        let handler = Arc::new(Mutex::new(
+            engine
+                .instantiate(compiled, crate::engine::quickjs::DEFAULT_COMPONENT_FUEL)
+                .unwrap(),
+        ));
+        let state = Arc::new(IngressState::new());
+        state.hot_swap(ActiveGeneration {
+            generation_id: 1,
+            module_hash: "test".to_string(),
+            handler: handler.clone(),
+        });
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let locked_handler = handler.clone();
+        let lock_thread = std::thread::spawn(move || {
+            let _guard = locked_handler.lock().unwrap();
+            locked_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+        });
+        locked_rx.recv().unwrap();
+
+        let app = build_ingress_router(state);
+        let request = Request::builder()
+            .uri("/_nosrc/status")
+            .body(Body::empty())
+            .unwrap();
+        let response = tokio::time::timeout(Duration::from_millis(100), app.oneshot(request))
+            .await
+            .expect("status probe must not wait for the guest execution lock")
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let status: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status["active_generation"], 1);
+        assert!(status["telemetry"].is_null());
+
+        release_tx.send(()).unwrap();
+        lock_thread.join().unwrap();
     }
 
     #[tokio::test]
