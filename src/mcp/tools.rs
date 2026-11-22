@@ -843,6 +843,7 @@ mod tests {
         );
         let prepared_content = prepared.structured_content.unwrap();
         assert_eq!(prepared_content["telemetry"]["schema_version"], 1);
+        assert_eq!(prepared_content["telemetry"]["instance_recreations"], 0);
         assert!(prepared_content["telemetry"]["last_invocation_fuel_consumed"].is_null());
         assert!(prepared_content["telemetry"]["generation_fuel_high_water"].is_null());
         for field in [
