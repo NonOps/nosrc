@@ -139,6 +139,14 @@ fn validate_host_probe_response(response: &ResponseEnvelope) -> Result<(), Strin
     Ok(())
 }
 
+fn is_memory_limit_failure(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("memory limit")
+        || message.contains("failed to grow memory")
+        || message.contains("memory growth")
+        || message.contains("growth operation limited")
+}
+
 /// Runs the complete assertion suite against one isolated candidate instance.
 ///
 /// All assertions share the candidate instance so module-scoped JavaScript state
@@ -192,6 +200,14 @@ impl ShadowVerifier {
                         EngineError::Trap(crate::error::SandboxTrap::FuelExhausted) => "fuel_exhausted",
                         EngineError::Trap(crate::error::SandboxTrap::MemoryExhausted(_)) => "memory_exhausted",
                         EngineError::Trap(crate::error::SandboxTrap::ExecutionTimeout) => "execution_timeout",
+                        EngineError::Trap(crate::error::SandboxTrap::GuestPanic(message))
+                            if is_memory_limit_failure(message) =>
+                        {
+                            "memory_exhausted"
+                        }
+                        EngineError::Instantiation(message) if is_memory_limit_failure(message) => {
+                            "memory_exhausted"
+                        }
                         _ => "execution_error",
                     }),
                     error_message: Some(format!("Candidate execution failed: {error}")),
