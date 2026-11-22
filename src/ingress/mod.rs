@@ -12,14 +12,14 @@ use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 
 use crate::engine::http_envelope::{ErrorEnvelope, RequestEnvelope};
-use crate::engine::quickjs::QuickJsHandler;
+use crate::engine::quickjs::{QuickJsHandler, DEFAULT_GUEST_EXECUTION_TIMEOUT};
 use crate::error::EngineError;
 
 const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 const MAX_ADMITTED_REQUESTS: usize = 32;
 const EXECUTION_QUEUE_TIMEOUT: Duration = Duration::from_secs(5);
-const EXECUTION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
-const INGRESS_REQUEST_TIMEOUT: Duration = Duration::from_secs(40);
+const EXECUTION_TASK_JOIN_GRACE: Duration = Duration::from_secs(6);
+const INGRESS_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Active generation representing a compiled and contract-verified JavaScript handler.
 pub struct ActiveGeneration {
@@ -33,6 +33,7 @@ pub struct IngressState {
     pub active_generation: ArcSwap<Option<ActiveGeneration>>,
     admission: Arc<Semaphore>,
     execution: Arc<Semaphore>,
+    execution_timeout: Duration,
 }
 
 impl IngressState {
@@ -41,6 +42,7 @@ impl IngressState {
             active_generation: ArcSwap::from_pointee(None),
             admission: Arc::new(Semaphore::new(MAX_ADMITTED_REQUESTS)),
             execution: Arc::new(Semaphore::new(1)),
+            execution_timeout: DEFAULT_GUEST_EXECUTION_TIMEOUT,
         }
     }
 
@@ -240,17 +242,25 @@ async fn handle_http_request(
     };
 
     let handler = active.handler.clone();
+    let execution_timeout = state.execution_timeout;
     let mut execution = tokio::task::spawn_blocking(move || {
-        // A response timeout cannot preempt spawn_blocking work. Keep the permit inside
-        // the task so timed-out work continues to occupy the serialized execution slot.
+        // Keep the permit inside the blocking task until the epoch trap is handled and
+        // bounded instance recovery completes, even if the HTTP future is cancelled.
         let _execution_permit = execution_permit;
         let mut handler = handler
             .lock()
             .map_err(|_| EngineError::Internal("Handler execution lock was poisoned".into()))?;
-        handler.invoke(&envelope)
+        handler.invoke_with_timeout(&envelope, execution_timeout)
     });
 
-    match tokio::time::timeout(EXECUTION_RESPONSE_TIMEOUT, &mut execution).await {
+    // Wasmtime epoch checks run on a periodic ticker. Allow time beyond the guest
+    // deadline for the trap to unwind and bounded instance recovery to complete.
+    match tokio::time::timeout(
+        execution_timeout + EXECUTION_TASK_JOIN_GRACE,
+        &mut execution,
+    )
+    .await
+    {
         Err(_) => {
             tracing::error!("Handler execution exceeded the HTTP response deadline");
             ErrorEnvelope {
@@ -276,9 +286,13 @@ async fn handle_http_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::quickjs::test_support::{EPOCH_TEST_FUEL, EPOCH_TEST_TIMEOUT};
     use crate::engine::quickjs::{test_support, DEFAULT_COMPONENT_FUEL};
     use axum::body::Body;
     use axum::http::Request;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::oneshot;
     use tower::ServiceExt;
 
     #[tokio::test]
@@ -385,6 +399,163 @@ mod tests {
             .unwrap();
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn epoch_timeout_releases_execution_permit_for_a_queued_request() {
+        let (engine, compiled) = test_support::compiled().await;
+        let handler = engine.instantiate(compiled, EPOCH_TEST_FUEL).unwrap();
+
+        let mut ingress_state = IngressState::new();
+        ingress_state.execution_timeout = EPOCH_TEST_TIMEOUT;
+        let state = Arc::new(ingress_state);
+        state.hot_swap(ActiveGeneration {
+            generation_id: 1,
+            module_hash: "epoch-timeout-test".to_string(),
+            handler: Arc::new(Mutex::new(handler)),
+        });
+        let app = build_ingress_router(state.clone());
+
+        let loop_request = Request::builder().uri("/loop").body(Body::empty()).unwrap();
+        let loop_app = app.clone();
+        let loop_task = tokio::spawn(async move { loop_app.oneshot(loop_request).await.unwrap() });
+
+        // Wait until the first request owns the serialized execution permit before
+        // queuing a second request behind it.
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while state.execution.available_permits() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first request should acquire the execution permit");
+        let health_request = Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+        let health_app = app.clone();
+        let health_task =
+            tokio::spawn(async move { health_app.oneshot(health_request).await.unwrap() });
+
+        let loop_response = tokio::time::timeout(Duration::from_secs(2), loop_task)
+            .await
+            .expect("epoch deadline should stop the infinite guest loop")
+            .unwrap();
+        assert_eq!(loop_response.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(
+            loop_response.headers().get("x-nosrc-error").unwrap(),
+            "ExecutionTimeout"
+        );
+
+        let health_response = tokio::time::timeout(Duration::from_secs(2), health_task)
+            .await
+            .expect("queued request should acquire the released execution permit")
+            .unwrap();
+        assert_eq!(health_response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(health_response.into_body(), 1024)
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), b"healthy");
+    }
+
+    #[tokio::test]
+    async fn cancelled_http_request_does_not_leave_guest_execution_running() {
+        let (engine, compiled) = test_support::compiled().await;
+        let handler = engine.instantiate(compiled, EPOCH_TEST_FUEL).unwrap();
+
+        let mut ingress_state = IngressState::new();
+        ingress_state.execution_timeout = EPOCH_TEST_TIMEOUT;
+        let state = Arc::new(ingress_state);
+        state.hot_swap(ActiveGeneration {
+            generation_id: 1,
+            module_hash: "cancelled-epoch-test".to_string(),
+            handler: Arc::new(Mutex::new(handler)),
+        });
+        let app = build_ingress_router(state.clone());
+
+        let request = Request::builder().uri("/loop").body(Body::empty()).unwrap();
+        let request_task = tokio::spawn(app.oneshot(request));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while state.execution.available_permits() != 0 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("request should acquire the execution permit");
+
+        // Dropping the HTTP future cannot cancel spawn_blocking. The Wasmtime
+        // epoch deadline must still stop the guest and release its owned permit.
+        request_task.abort();
+        let released = tokio::time::timeout(Duration::from_secs(2), async {
+            while state.execution.available_permits() == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+
+        assert!(
+            released.is_ok(),
+            "cancelled request left its blocking guest execution holding the permit"
+        );
+    }
+
+    #[tokio::test]
+    async fn graceful_shutdown_drains_epoch_interrupted_guest_execution() {
+        let (engine, compiled) = test_support::compiled().await;
+        let handler = engine.instantiate(compiled, EPOCH_TEST_FUEL).unwrap();
+
+        let mut ingress_state = IngressState::new();
+        ingress_state.execution_timeout = EPOCH_TEST_TIMEOUT;
+        let state = Arc::new(ingress_state);
+        state.hot_swap(ActiveGeneration {
+            generation_id: 1,
+            module_hash: "shutdown-epoch-test".to_string(),
+            handler: Arc::new(Mutex::new(handler)),
+        });
+        let app = build_ingress_router(state.clone());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let server = tokio::spawn(crate::server::serve_with_shutdown(
+            listener,
+            app,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            Duration::from_secs(2),
+        ));
+
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        stream
+            .write_all(b"GET /loop HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while state.execution.available_permits() != 0 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("guest request should enter execution before shutdown");
+
+        shutdown_tx.send(()).unwrap();
+
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), stream.read_to_end(&mut response))
+            .await
+            .expect("epoch interruption should let the in-flight response drain")
+            .unwrap();
+        let response = String::from_utf8(response).unwrap().to_ascii_lowercase();
+        assert!(response.starts_with("http/1.1 504 gateway timeout"));
+        assert!(response.contains("x-nosrc-error: executiontimeout"));
+
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("server should finish draining the interrupted request")
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]
