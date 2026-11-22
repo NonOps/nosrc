@@ -1,0 +1,10 @@
+package nosrc:abi-v2-spike;
+
+interface host {
+    greet: func(name: string) -> string;
+}
+
+world host-import {
+    import host;
+    export roundtrip: func(input: string) -> string;
+}
