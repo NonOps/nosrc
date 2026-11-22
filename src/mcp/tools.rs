@@ -199,20 +199,33 @@ fn safe_response_headers(
     let Some(headers) = headers else {
         return serde_json::json!({});
     };
+
+    // Sort before normalizing so mixed-case duplicate names resolve deterministically.
+    let mut candidates: Vec<_> = headers
+        .iter()
+        .filter_map(|(name, value)| {
+            let normalized = name.to_ascii_lowercase();
+            matches!(
+                normalized.as_str(),
+                "content-type"
+                    | "content-length"
+                    | "cache-control"
+                    | "etag"
+                    | "vary"
+                    | "x-content-type-options"
+                    | "x-frame-options"
+            )
+            .then(|| (normalized, name, value))
+        })
+        .collect();
+    candidates.sort_by(|left, right| {
+        (&left.0, left.1, left.2).cmp(&(&right.0, right.1, right.2))
+    });
+
     let mut safe = serde_json::Map::new();
     let mut total_bytes = 0usize;
-    for (name, value) in headers {
-        let normalized = name.to_ascii_lowercase();
-        if !matches!(
-            normalized.as_str(),
-            "content-type"
-                | "content-length"
-                | "cache-control"
-                | "etag"
-                | "vary"
-                | "x-content-type-options"
-                | "x-frame-options"
-        ) {
+    for (normalized, _, value) in candidates {
+        if safe.contains_key(&normalized) {
             continue;
         }
         if safe.len() >= 16 || total_bytes.saturating_add(value.len()) > 2048 {
@@ -225,6 +238,40 @@ fn safe_response_headers(
         );
     }
     serde_json::Value::Object(safe)
+}
+
+fn bound_verification_diagnostic(mut diagnostic: serde_json::Value) -> serde_json::Value {
+    let original_count = diagnostic["failed_assertions"]
+        .as_array()
+        .map_or(0, Vec::len);
+    let mut omitted_count = 0usize;
+
+    loop {
+        diagnostic["omitted_assertions"] = serde_json::json!(omitted_count);
+        if serde_json::to_vec(&diagnostic)
+            .is_ok_and(|serialized| serialized.len() <= MAX_DIAGNOSTIC_BYTES)
+        {
+            return diagnostic;
+        }
+
+        let Some(assertions) = diagnostic["failed_assertions"].as_array_mut() else {
+            break;
+        };
+        if assertions.pop().is_none() {
+            break;
+        }
+        omitted_count += 1;
+    }
+
+    // The fallback is deliberately small and still reports how many cases were omitted.
+    serde_json::json!({
+        "diagnostics_version": 1,
+        "error": "verification_failed",
+        "suite": diagnostic["suite"],
+        "failed_assertions": [],
+        "omitted_assertions": original_count,
+        "message": "Diagnostic details omitted to satisfy the response size limit"
+    })
 }
 
 fn resource_limit(error: &EngineError) -> Option<&'static str> {
@@ -384,13 +431,13 @@ where
                     diagnostic
                 })
                 .collect();
-            CallToolResult::structured_error(json!({
+            CallToolResult::structured_error(bound_verification_diagnostic(json!({
                 "diagnostics_version": 1,
                 "error": "verification_failed",
                 "suite": suite_name,
                 "failed_assertions": failed_assertions,
                 "policy_note": "Verification policy is operator-controlled and is not included in diagnostics."
-            }))
+            })))
         }
         Ok(Err(PreparationError::Runtime(error))) => {
             CallToolResult::structured_error(runtime_diagnostic(error))
@@ -1173,6 +1220,48 @@ mod tests {
 
         client.cancel().await.unwrap();
         server_task.await.unwrap();
+    }
+
+    #[test]
+    fn verification_diagnostics_are_bounded_after_serialization() {
+        let diagnostic = json!({
+            "diagnostics_version": 1,
+            "error": "verification_failed",
+            "suite": "operator",
+            "failed_assertions": (0..100).map(|index| json!({
+                "id": format!("operator-{index:04}"),
+                "failure": "body_mismatch",
+                "expected_status": 200,
+                "actual_status": 200,
+                "response_headers": {"content-type": "application/json"},
+                "body_preview": "x".repeat(MAX_BODY_PREVIEW_BYTES)
+            })).collect::<Vec<_>>(),
+            "policy_note": "Verification policy is operator-controlled and is not included in diagnostics."
+        });
+
+        let bounded = bound_verification_diagnostic(diagnostic);
+        assert!(serde_json::to_vec(&bounded).unwrap().len() <= MAX_DIAGNOSTIC_BYTES);
+        assert!(bounded["omitted_assertions"].as_u64().unwrap() > 0);
+        assert_eq!(bounded["error"], "verification_failed");
+    }
+
+    #[test]
+    fn body_preview_is_omitted_when_body_is_absent_or_non_json() {
+        assert!(safe_body_preview(None).is_none());
+        assert!(safe_body_preview(Some("plain text response")).is_none());
+        assert!(safe_body_preview(Some("<html>not json</html>")).is_none());
+    }
+
+    #[test]
+    fn response_header_allowlist_normalizes_case_and_resolves_duplicates_deterministically() {
+        let headers = HashMap::from([
+            ("Content-Type".to_string(), "text/plain".to_string()),
+            ("content-type".to_string(), "application/json".to_string()),
+            ("Set-Cookie".to_string(), "secret=value".to_string()),
+        ]);
+        let safe = safe_response_headers(Some(&headers));
+        assert_eq!(safe["content-type"], "text/plain");
+        assert!(safe.get("set-cookie").is_none());
     }
 
     #[test]
