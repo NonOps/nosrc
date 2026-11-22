@@ -7,9 +7,13 @@ use crate::synthesizer::ContractAssertion;
 #[derive(Debug, Clone)]
 pub struct AssertionResult {
     pub name: String,
+    pub case_index: usize,
     pub passed: bool,
     pub actual_status: Option<u16>,
     pub expected_status: u16,
+    pub actual_headers: Option<std::collections::HashMap<String, String>>,
+    pub actual_body: Option<String>,
+    pub failure_kind: Option<&'static str>,
     pub error_message: Option<String>,
 }
 
@@ -159,23 +163,37 @@ impl ShadowVerifier {
         }
 
         let mut results = Vec::with_capacity(assertions.len());
-        for assertion in assertions {
+        for (case_index, assertion) in assertions.iter().enumerate() {
             match candidate.invoke(&assertion.request) {
                 Ok(response) => {
-                    let (passed, error_message) = evaluate_response(&response, assertion);
+                    let (passed, error_message, failure_kind) =
+                        evaluate_response(&response, assertion);
                     results.push(AssertionResult {
                         name: assertion.name.clone(),
+                        case_index,
                         passed,
                         actual_status: Some(response.status),
                         expected_status: assertion.expected_status,
+                        actual_headers: Some(response.headers.clone()),
+                        actual_body: response.body.clone(),
+                        failure_kind,
                         error_message,
                     });
                 }
                 Err(error) => results.push(AssertionResult {
                     name: assertion.name.clone(),
+                    case_index,
                     passed: false,
                     actual_status: None,
                     expected_status: assertion.expected_status,
+                    actual_headers: None,
+                    actual_body: None,
+                    failure_kind: Some(match &error {
+                        EngineError::Trap(crate::error::SandboxTrap::FuelExhausted) => "fuel_exhausted",
+                        EngineError::Trap(crate::error::SandboxTrap::MemoryExhausted(_)) => "memory_exhausted",
+                        EngineError::Trap(crate::error::SandboxTrap::ExecutionTimeout) => "execution_timeout",
+                        _ => "execution_error",
+                    }),
                     error_message: Some(format!("Candidate execution failed: {error}")),
                 }),
             }
@@ -233,7 +251,7 @@ impl Default for ShadowVerifier {
 fn evaluate_response(
     response: &ResponseEnvelope,
     assertion: &ContractAssertion,
-) -> (bool, Option<String>) {
+) -> (bool, Option<String>, Option<&'static str>) {
     if response.status != assertion.expected_status {
         return (
             false,
@@ -241,6 +259,7 @@ fn evaluate_response(
                 "Expected status {}, got {}",
                 assertion.expected_status, response.status
             )),
+            Some("status_mismatch"),
         );
     }
 
@@ -249,9 +268,8 @@ fn evaluate_response(
         if !body.contains(expected_substring) {
             return (
                 false,
-                Some(format!(
-                    "Body does not contain expected substring '{expected_substring}'. Actual: '{body}'"
-                )),
+                Some("Response body did not satisfy the configured body assertion".into()),
+                Some("body_mismatch"),
             );
         }
     }
@@ -265,25 +283,25 @@ fn evaluate_response(
                 .map(|(_, value)| value);
             match actual {
                 Some(actual_value) if actual_value == expected_value => {}
-                Some(actual_value) => {
+                Some(_) => {
                     return (
                         false,
-                        Some(format!(
-                            "Header '{name}' value mismatch: expected '{expected_value}', got '{actual_value}'"
-                        )),
+                        Some("Response header did not match the configured value".into()),
+                        Some("header_mismatch"),
                     );
                 }
                 None => {
                     return (
                         false,
-                        Some(format!("Missing expected header '{name}' in response")),
+                        Some("A configured response header was missing".into()),
+                        Some("header_missing"),
                     );
                 }
             }
         }
     }
 
-    (true, None)
+    (true, None, None)
 }
 
 #[cfg(test)]
