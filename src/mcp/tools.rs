@@ -113,7 +113,14 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
 
 fn redact_text(value: &str) -> String {
     let mut output = value.to_string();
-    for marker in ["Bearer ", "api_key=", "api-key=", "password=", "secret=", "token="] {
+    for marker in [
+        "Bearer ",
+        "api_key=",
+        "api-key=",
+        "password=",
+        "secret=",
+        "token=",
+    ] {
         let mut search_from = 0;
         while let Some(relative) = output[search_from..]
             .to_ascii_lowercase()
@@ -121,9 +128,7 @@ fn redact_text(value: &str) -> String {
         {
             let start = search_from + relative + marker.len();
             let end = output[start..]
-                .find(|ch: char| {
-                    ch.is_whitespace() || matches!(ch, ',' | ';' | '"' | '\'')
-                })
+                .find(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ';' | '"' | '\''))
                 .map(|offset| start + offset)
                 .unwrap_or(output.len());
             if end > start {
@@ -160,7 +165,9 @@ fn redact_json_value(value: &mut serde_json::Value) {
                     "credential",
                     "credentials",
                 ];
-                if sensitive_keys.iter().any(|sensitive| key.contains(sensitive))
+                if sensitive_keys
+                    .iter()
+                    .any(|sensitive| key.contains(sensitive))
                 {
                     *value = serde_json::Value::String("[REDACTED]".into());
                 } else {
@@ -225,9 +232,7 @@ fn resource_limit(error: &EngineError) -> Option<&'static str> {
         EngineError::Trap(SandboxTrap::FuelExhausted) => Some("fuel"),
         EngineError::Trap(SandboxTrap::MemoryExhausted(_)) => Some("linear_memory"),
         EngineError::Trap(SandboxTrap::ExecutionTimeout) => Some("wall_clock"),
-        EngineError::Trap(SandboxTrap::GuestPanic(message))
-            if is_memory_limit_message(message) =>
-        {
+        EngineError::Trap(SandboxTrap::GuestPanic(message)) if is_memory_limit_message(message) => {
             Some("linear_memory")
         }
         EngineError::Instantiation(message) if is_memory_limit_message(message) => {
@@ -350,7 +355,7 @@ where
         }
         Ok(Err(PreparationError::Runtime(error))) => {
             CallToolResult::structured_error(runtime_diagnostic(error))
-        },
+        }
         Err(_) => CallToolResult::structured_error(json!({
             "diagnostics_version": 1,
             "error": "preparation_timeout",
@@ -1276,18 +1281,23 @@ mod tests {
                 });
             }
         "#;
-        let result = server.prepare_app(Parameters(PrepareAppParams {
-            source: PrepareSource::DirectJs,
-            js_code: Some(handler.into()),
-            draft_spec: None,
-            supplemental_assertions: None,
-        })).await;
+        let result = server
+            .prepare_app(Parameters(PrepareAppParams {
+                source: PrepareSource::DirectJs,
+                js_code: Some(handler.into()),
+                draft_spec: None,
+                supplemental_assertions: None,
+            }))
+            .await;
 
         assert_eq!(result.is_error, Some(true));
         let error = result.structured_content.unwrap();
         let diagnostic = &error["failed_assertions"][0];
         assert_eq!(diagnostic["failure"], "body_mismatch");
-        assert_eq!(diagnostic["response_headers"]["content-type"], "application/json");
+        assert_eq!(
+            diagnostic["response_headers"]["content-type"],
+            "application/json"
+        );
         assert!(diagnostic["response_headers"].get("set-cookie").is_none());
         let preview = diagnostic["body_preview"].as_str().unwrap();
         assert!(preview.contains("[REDACTED]"));
