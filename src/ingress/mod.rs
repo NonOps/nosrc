@@ -511,6 +511,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(body.as_ref(), b"healthy");
+
+        let status_request = Request::builder()
+            .uri("/_nosrc/status")
+            .body(Body::empty())
+            .unwrap();
+        let status_response = app.oneshot(status_request).await.unwrap();
+        assert_eq!(status_response.status(), StatusCode::OK);
+        let status_body = axum::body::to_bytes(status_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let status: serde_json::Value = serde_json::from_slice(&status_body).unwrap();
+        assert_eq!(status["telemetry"]["instance_recreations"], 1);
     }
 
     #[tokio::test]
