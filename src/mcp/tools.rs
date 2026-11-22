@@ -230,6 +230,7 @@ fn resource_limit(error: &EngineError) -> Option<&'static str> {
 fn runtime_diagnostic(error: EngineError) -> serde_json::Value {
     if let Some(resource) = resource_limit(&error) {
         return serde_json::json!({
+            "diagnostics_version": 1,
             "error": "resource_limit_exceeded",
             "resource": resource,
             "message": truncate_utf8(&redact_text(&error.to_string()), 1024)
@@ -243,12 +244,14 @@ fn runtime_diagnostic(error: EngineError) -> serde_json::Value {
         || lower.contains("wasm compilation")
     {
         return serde_json::json!({
+            "diagnostics_version": 1,
             "error": "compilation_failed",
             "diagnostics": truncate_utf8(&redact_text(&message), MAX_DIAGNOSTIC_BYTES)
         });
     }
 
     serde_json::json!({
+        "diagnostics_version": 1,
         "error": "preparation_failed",
         "message": truncate_utf8(&redact_text(&message), 1024)
     })
@@ -320,6 +323,7 @@ where
                 })
                 .collect();
             CallToolResult::structured_error(json!({
+                "diagnostics_version": 1,
                 "error": "verification_failed",
                 "suite": suite_name,
                 "failed_assertions": failed_assertions,
@@ -330,6 +334,7 @@ where
             CallToolResult::structured_error(runtime_diagnostic(error))
         },
         Err(_) => CallToolResult::structured_error(json!({
+            "diagnostics_version": 1,
             "error": "preparation_timeout",
             "message": format!(
                 "prepare_app exceeded its {} second time limit",
