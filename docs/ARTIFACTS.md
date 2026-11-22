@@ -110,7 +110,7 @@ The manifest and assertions are unsigned. Recomputing hashes and rerunning asser
 
 ## Cache and reproducibility
 
-The artifact cache is separate from the export directory. It is content-addressed using inputs and toolchain settings that affect generated artifacts. A cache hit does not skip component compilation or verification.
+The artifact cache is separate from the export directory and has two versioned identities. The synthesis key covers SPEC, provider/model/temperature, and prompt/schema inputs; it excludes `Cargo.lock`. The compiled-component key covers the synthesis-output digest plus `Cargo.toml` feature selection, `Cargo.lock`, component toolchain, WIT/ABI, and relevant resource settings. A lockfile-only change therefore reuses synthesis output but rebuilds component bytes. Legacy or incompatible cache manifests are safe misses. Cache hits never skip current-engine component compilation or either verification suite.
 
 The manifest records SPEC and component digests, but it does not capture every input needed to independently reproduce the build. Provider-side model aliases may be mutable, and the manifest does not record a signed provider transcript or complete toolchain provenance. Do not treat the manifest as a reproducible-build statement.
 

@@ -19,12 +19,15 @@ The project is not production-ready. Security review, broader adversarial testin
 flowchart TD
     SPEC["Operator SPEC.md"] --> PARSE["Parse and validate SPEC"]
     PARSE --> POLICY["Trusted acceptance policy"]
-    PARSE --> KEY["Artifact cache identity"]
-    KEY --> CACHE{"Verified artifact cache hit?"}
-    CACHE -->|No| LLM["OpenAI-compatible synthesis"]
-    LLM --> JS["JavaScript + generated assertions"]
-    JS --> COMPONENTIZE["QuickJS componentization"]
-    CACHE -->|Yes| COMPILE["Compile cached component"]
+    PARSE --> SKEY["Synthesis cache identity"]
+    SKEY --> SCACHE{"Cached synthesis?"}
+    SCACHE -->|No| LLM["OpenAI-compatible synthesis"]
+    SCACHE -->|Yes| JS["JavaScript + generated assertions"]
+    LLM --> JS
+    JS --> CKEY["Compiled-component identity"]
+    CKEY --> CCACHE{"Matching component bytes?"}
+    CCACHE -->|No| COMPONENTIZE["QuickJS componentization"]
+    CCACHE -->|Yes| COMPILE["Compile cached component"]
     COMPONENTIZE --> COMPILE
     COMPILE --> TRUST["Trusted SPEC verification"]
     TRUST --> HOST["Host-owned ABI probes"]
@@ -48,9 +51,9 @@ The HTTP and export CLI paths:
 
 1. Read and parse the selected SPEC.
 2. Validate runtime-supported capabilities and the human-authored verification suite.
-3. Derive a SHA-256 cache identity from the raw SPEC, configured provider URL/model, synthesis prompt, WIT contract, QuickJS fuel and linear-memory limits, componentizer/runtime configuration flags, package version, and `Cargo.lock`. Other execution limits that do not affect artifact generation are not separately represented in the key.
-4. Load a matching local cache entry or request JavaScript and supplemental assertions from the configured OpenAI-compatible endpoint. The model prompt excludes the operator's `## Verification` section; optional `## Examples` content is illustrative only.
-5. Componentize JavaScript when synthesis was required; compile the component with the current Wasmtime component engine even on a cache hit.
+3. Derive a versioned synthesis SHA-256 identity from the raw SPEC, configured provider URL/model/temperature, and synthesis prompt/schema. Compilation dependencies and `Cargo.lock` are excluded from this identity.
+4. Load the synthesis entry by that identity or request JavaScript and supplemental assertions from the configured OpenAI-compatible endpoint. The model prompt excludes the operator's `## Verification` section; optional `## Examples` content is illustrative only.
+5. Derive a separate compiled-component identity from the complete synthesis-output digest plus `Cargo.toml` feature selection, `Cargo.lock`, package/toolchain versions, WIT/ABI, componentizer settings, and the fuel/memory settings that affect execution. Reuse component bytes only when this identity matches; otherwise componentize the cached JavaScript again without another model request.
 6. Run trusted SPEC assertions against an isolated candidate instance.
 7. Run fixed host-generated adversarial ABI probes against a separate disposable candidate instance.
 8. Run generated supplemental assertions against another isolated candidate instance.
@@ -108,9 +111,9 @@ Generated assertions are supplemental regression checks. Passing trusted asserti
 
 ### Artifact cache
 
-The local content-addressed cache defaults to `.nosrc-cache/`. Its key incorporates inputs and toolchain settings that affect generated artifacts, excluding the API key. Cache entries include synthesis metadata and component bytes with SHA-256 digests. Cache files are written through temporary files and atomically published individually; the manifest is written last as the entry commit marker.
+The local content-addressed cache defaults to `.nosrc-cache/` and uses two versioned identities. The synthesis identity covers raw SPEC input, provider URL/model/temperature, and the prompt/schema; it excludes `Cargo.lock` and compilation-only dependencies. The compiled-component identity covers the complete synthesis-output digest plus `Cargo.toml` feature selection, `Cargo.lock`, package/toolchain versions, WIT/ABI, componentizer settings, and relevant resource limits. A lockfile-only change therefore reuses cached JavaScript/assertions and rebuilds only the component. Cache manifests bind both identities and the synthesis/component content digests; legacy or incompatible manifest schemas are safe cache misses. Cache files are written through temporary files and atomically published individually; the manifest is written last as the entry commit marker.
 
-A cache hit can avoid an LLM request and componentization. It does not bypass component compilation with the current Wasmtime engine or either verification suite. The cache is an operator-managed optimization, not a trust boundary. Keep it writable only by the service operator. Use `--no-cache` to bypass cache reads and writes or `--cache-dir` to select another location.
+A matching component hit can avoid componentization, but it never bypasses compilation with the current Wasmtime engine or either verification suite. A synthesis hit with a different component identity reuses the source and assertions, recompiles the component, and stores the new verified component identity. The cache is an operator-managed optimization, not a trust boundary. Keep it writable only by the service operator. Use `--no-cache` to bypass cache reads and writes or `--cache-dir` to select another location.
 
 ### HTTP ingress
 

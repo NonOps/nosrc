@@ -571,10 +571,10 @@ impl PreparationContext {
             .clone();
 
         let spec_text = self.spec_text.clone();
-        let cache_key = synthesizer.artifact_cache_key(&spec);
+        let synthesis_cache_key = synthesizer.synthesis_cache_key(&spec);
         let cached = match self.cache.clone() {
             Some(cache) => {
-                let key = cache_key.clone();
+                let key = synthesis_cache_key.clone();
                 tokio::task::spawn_blocking(move || cache.load(&key))
                     .await
                     .map_err(|error| {
@@ -584,8 +584,8 @@ impl PreparationContext {
             None => None,
         };
 
-        // A cached candidate is still untrusted: it enters the same immutable
-        // verification gate as every live synthesis candidate.
+        // Cached synthesis remains reusable across toolchain changes. Component bytes
+        // are reused only when their independent identity matches the current build.
         let mut repair_summary = RepairSummary::default();
         let mut cached_candidate = match cached {
             Some(cached) => {
@@ -600,30 +600,68 @@ impl PreparationContext {
                     tracing::debug!(%error, "Cached artifact validation failure");
                     None
                 } else {
-                    let engine = self.engine.clone();
+                    let expected_component_key = synthesizer.component_cache_key(&cached.synthesis);
+                    let synthesis = cached.synthesis;
                     let component_bytes = cached.component_bytes;
-                    let compile_bytes = component_bytes.clone();
-                    let compiled = tokio::task::spawn_blocking(move || {
-                        engine.compile_component(&compile_bytes)
-                    })
-                    .await
-                    .map_err(|error| {
-                        EngineError::Internal(format!(
-                            "Cached component compile worker failed: {error}"
-                        ))
-                    })?;
-                    match compiled {
-                        Ok(compiled) => Some((cached.synthesis, compiled, component_bytes)),
-                        Err(error) => {
-                            repair_summary
-                                .failure_categories
-                                .push("cached_componentization_failed".into());
-                            tracing::warn!(
-                                failure_category = "cached_componentization_failed",
-                                "Cached component failed componentization; synthesizing a fresh candidate"
-                            );
-                            tracing::debug!(%error, "Cached componentization failure");
-                            None
+                    let cached_component_key = cached.component_cache_key;
+                    let engine = self.engine.clone();
+
+                    if cached_component_key == expected_component_key {
+                        let compile_bytes = component_bytes.clone();
+                        let compiled = tokio::task::spawn_blocking(move || {
+                            engine.compile_component(&compile_bytes)
+                        })
+                        .await
+                        .map_err(|error| {
+                            EngineError::Internal(format!(
+                                "Cached component compile worker failed: {error}"
+                            ))
+                        })?;
+
+                        match compiled {
+                            Ok(compiled) => Some((synthesis, compiled, component_bytes, true)),
+                            Err(error) => {
+                                repair_summary
+                                    .failure_categories
+                                    .push("cached_componentization_failed".into());
+                                tracing::warn!(
+                                    failure_category = "cached_componentization_failed",
+                                    "Cached component failed componentization; synthesizing a fresh candidate"
+                                );
+                                tracing::debug!(%error, "Cached componentization failure");
+                                None
+                            }
+                        }
+                    } else {
+                        let source = synthesis.handler_code.clone();
+                        let compiled = tokio::task::spawn_blocking(move || {
+                            compile_handler_with_artifact_on_blocking_thread(engine, source)
+                        })
+                        .await
+                        .map_err(|error| {
+                            EngineError::Internal(format!(
+                                "Cached synthesis componentization worker failed: {error}"
+                            ))
+                        })?;
+
+                        match compiled {
+                            Ok((compiled, component_bytes)) => {
+                                tracing::debug!(
+                                    "Reusing cached synthesis and rebuilding its component for the current toolchain"
+                                );
+                                Some((synthesis, compiled, component_bytes, false))
+                            }
+                            Err(error) => {
+                                repair_summary
+                                    .failure_categories
+                                    .push("cached_componentization_failed".into());
+                                tracing::warn!(
+                                    failure_category = "cached_componentization_failed",
+                                    "Cached synthesis could not be componentized with the current toolchain; synthesizing a fresh candidate"
+                                );
+                                tracing::debug!(%error, "Cached synthesis componentization failure");
+                                None
+                            }
                         }
                     }
                 }
@@ -650,10 +688,11 @@ impl PreparationContext {
                 output,
                 compiled,
                 bytes,
+                cache_hit,
             )) =
                 cached_candidate.take()
             {
-                (output, compiled, bytes, true)
+                (output, compiled, bytes, cache_hit)
             } else {
                 // Provider transport retries are internal to synthesize and do not
                 // consume this candidate-repair budget.
@@ -857,10 +896,11 @@ impl PreparationContext {
 
         if !cache_hit {
             if let Some(cache) = self.cache.clone() {
-                let key = cache_key.clone();
+                let key = synthesis_cache_key.clone();
+                let component_key = synthesizer.component_cache_key(&cache_output);
                 let output = cache_output;
                 match tokio::task::spawn_blocking(move || {
-                    cache.store(&key, &output, &component_bytes)
+                    cache.store_with_component_key(&key, &component_key, &output, &component_bytes)
                 })
                 .await
                 {
@@ -1679,7 +1719,7 @@ mod tests {
             }],
             rationale: Some("intentionally failing cached candidate".into()),
         };
-        let cache_key = synthesizer.artifact_cache_key(&spec);
+        let cache_key = synthesizer.synthesis_cache_key(&spec);
         cache
             .store(&cache_key, &rejected_output, &rejected_component)
             .unwrap();
@@ -1709,7 +1749,7 @@ mod tests {
             vec!["verification_failed".to_string()]
         );
 
-        let cached = cache.load(&synthesizer.artifact_cache_key(&spec)).unwrap();
+        let cached = cache.load(&synthesizer.synthesis_cache_key(&spec)).unwrap();
         assert_eq!(cached.synthesis.handler_code, HANDLER_SOURCE);
         assert!(!cached
             .synthesis
@@ -1744,9 +1784,15 @@ mod tests {
             }],
             rationale: Some("invalid cached component fixture".into()),
         };
-        let cache_key = synthesizer.artifact_cache_key(&spec);
+        let cache_key = synthesizer.synthesis_cache_key(&spec);
+        let component_key = synthesizer.component_cache_key(&cached_output);
         cache
-            .store(&cache_key, &cached_output, b"not a valid component")
+            .store_with_component_key(
+                &cache_key,
+                &component_key,
+                &cached_output,
+                b"not a valid component",
+            )
             .unwrap();
 
         let context = PreparationContext {
@@ -1813,7 +1859,7 @@ mod tests {
             model: "cached-exhaustion-test".into(),
             temperature: 0.0,
         });
-        let cache_key = synthesizer.artifact_cache_key(&spec);
+        let cache_key = synthesizer.synthesis_cache_key(&spec);
         cache
             .store(&cache_key, &rejected_output, &rejected_component)
             .unwrap();
@@ -1887,7 +1933,7 @@ mod tests {
         };
         // Invalid component bytes ensure the size check runs before the
         // compile-failure fallback attempts synthesis (which has no API key).
-        let cache_key = synthesizer.artifact_cache_key(&spec);
+        let cache_key = synthesizer.synthesis_cache_key(&spec);
         cache
             .store(&cache_key, &output, b"not a valid component")
             .unwrap();
@@ -2130,6 +2176,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cached_synthesis_is_reused_when_component_toolchain_identity_changes() {
+        let spec = test_spec();
+        let engine = QuickJsEngine::new().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache = ArtifactCache::new(cache_dir.path());
+        let synthesizer = Synthesizer::new(LlmConfig {
+            api_key: String::new(),
+            base_url: "http://127.0.0.1:1/v1".into(),
+            model: "toolchain-cache-test".into(),
+            temperature: 0.0,
+        });
+        let output = SynthesisOutput {
+            handler_code: HANDLER_SOURCE.into(),
+            code_format: "javascript".into(),
+            assertions: vec![ContractAssertion {
+                name: "cached health assertion".into(),
+                request: request("/health"),
+                expected_status: 200,
+                body_contains: Some("healthy".into()),
+                header_matches: None,
+            }],
+            rationale: Some("cached synthesis".into()),
+        };
+        let synthesis_key = synthesizer.synthesis_cache_key(&spec);
+        cache
+            .store_with_component_key(
+                &synthesis_key,
+                &"a".repeat(64),
+                &output,
+                b"component from previous toolchain",
+            )
+            .unwrap();
+
+        let context = PreparationContext {
+            engine,
+            spec: Some(spec.clone()),
+            spec_text: Some("test SPEC provenance".into()),
+            draft_spec: false,
+            draft_assertions: Vec::new(),
+            cache: Some(cache.clone()),
+            policy: AcceptancePolicy::from_spec(&spec).unwrap(),
+        };
+        let prepared = context
+            .prepare_from_spec_with_synthesizer(Vec::new(), &synthesizer)
+            .await
+            .expect("cached synthesis should recompile without an LLM request");
+
+        assert!(prepared.trusted_results.iter().all(|result| result.passed));
+        let refreshed = cache.load(&synthesis_key).unwrap();
+        assert_eq!(
+            refreshed.component_cache_key,
+            synthesizer.component_cache_key(&output)
+        );
+        assert_eq!(refreshed.synthesis.handler_code, HANDLER_SOURCE);
+    }
+
+    #[tokio::test]
     async fn spec_preparation_loads_cached_artifact_and_verifies_model_suite() {
         let spec = test_spec();
         let engine = QuickJsEngine::new().unwrap();
@@ -2145,7 +2248,7 @@ mod tests {
             model: "unused-cache-test".into(),
             temperature: 0.0,
         });
-        let cache_key = synthesizer.artifact_cache_key(&spec);
+        let cache_key = synthesizer.synthesis_cache_key(&spec);
         let output = SynthesisOutput {
             handler_code: HANDLER_SOURCE.to_string(),
             code_format: "javascript".into(),
@@ -2158,7 +2261,10 @@ mod tests {
             }],
             rationale: Some("preseeded cache fixture".into()),
         };
-        cache.store(&cache_key, &output, &component_bytes).unwrap();
+        let component_key = synthesizer.component_cache_key(&output);
+        cache
+            .store_with_component_key(&cache_key, &component_key, &output, &component_bytes)
+            .unwrap();
 
         let policy = AcceptancePolicy::from_spec(&spec).unwrap();
         let context = PreparationContext {
