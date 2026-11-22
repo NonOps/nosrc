@@ -46,6 +46,7 @@ See `docs/CLI.md` for exact flags and environment variables, and `docs/ARTIFACTS
 - Any future outbound HTTP feature must defend against DNS rebinding and redirect-based SSRF, including IPv4/IPv6 private, loopback, link-local, and metadata ranges.
 - Any future database feature must use parameterized operations and enforce query, result, row-count, and execution-time bounds.
 - Never log API keys, authorization headers, prompts, generated source, request/response bodies, or query strings.
+- MCP preparation diagnostics must not expose trusted assertion names, request inputs, expected body/header values, or arbitrary response bodies. Use stable suite-scoped case IDs, status pairs, an explicit safe response-header allowlist, and bounded redacted JSON-only body previews; treat redaction as best-effort.
 - Treat LLM responses, cache contents, exported artifacts, MCP inputs, and guest outputs as untrusted data.
 - MCP stdio has no MCP-level authentication/authorization; trust derives from the local launcher and pipe ownership.
 
