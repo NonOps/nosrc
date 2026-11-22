@@ -218,9 +218,7 @@ fn safe_response_headers(
             .then(|| (normalized, name, value))
         })
         .collect();
-    candidates.sort_by(|left, right| {
-        (&left.0, left.1, left.2).cmp(&(&right.0, right.1, right.2))
-    });
+    candidates.sort_by(|left, right| (&left.0, left.1, left.2).cmp(&(&right.0, right.1, right.2)));
 
     let mut safe = serde_json::Map::new();
     let mut total_bytes = 0usize;
