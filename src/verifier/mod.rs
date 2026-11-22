@@ -197,9 +197,15 @@ impl ShadowVerifier {
                     actual_headers: None,
                     actual_body: None,
                     failure_kind: Some(match &error {
-                        EngineError::Trap(crate::error::SandboxTrap::FuelExhausted) => "fuel_exhausted",
-                        EngineError::Trap(crate::error::SandboxTrap::MemoryExhausted(_)) => "memory_exhausted",
-                        EngineError::Trap(crate::error::SandboxTrap::ExecutionTimeout) => "execution_timeout",
+                        EngineError::Trap(crate::error::SandboxTrap::FuelExhausted) => {
+                            "fuel_exhausted"
+                        }
+                        EngineError::Trap(crate::error::SandboxTrap::MemoryExhausted(_)) => {
+                            "memory_exhausted"
+                        }
+                        EngineError::Trap(crate::error::SandboxTrap::ExecutionTimeout) => {
+                            "execution_timeout"
+                        }
                         EngineError::Trap(crate::error::SandboxTrap::GuestPanic(message))
                             if is_memory_limit_failure(message) =>
                         {
