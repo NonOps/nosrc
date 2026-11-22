@@ -250,6 +250,45 @@ fn is_memory_limit_message(message: &str) -> bool {
         || message.contains("growth operation limited")
 }
 
+fn safe_compiler_diagnostics(message: &str) -> String {
+    let diagnostics = message
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            let lower = trimmed.to_ascii_lowercase();
+            let is_source_context = trimmed.contains(" | ")
+                || trimmed.starts_with('>')
+                || ["export ", "function ", "const ", "let ", "return "]
+                    .iter()
+                    .any(|source| lower.contains(source));
+            let is_diagnostic = [
+                "error",
+                "warning",
+                "syntax",
+                "unexpected",
+                "expected",
+                "invalid",
+                "unsupported",
+                "failed",
+                "line ",
+                "column ",
+                " at ",
+            ]
+            .iter()
+            .any(|marker| lower.contains(marker));
+            (is_diagnostic && !is_source_context).then(|| redact_text(trimmed))
+        })
+        .take(12)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if diagnostics.is_empty() {
+        "JavaScript componentization failed; source context was omitted.".into()
+    } else {
+        truncate_utf8(&diagnostics, MAX_DIAGNOSTIC_BYTES)
+    }
+}
+
 fn runtime_diagnostic(error: EngineError) -> serde_json::Value {
     if let Some(resource) = resource_limit(&error) {
         return serde_json::json!({
@@ -269,7 +308,7 @@ fn runtime_diagnostic(error: EngineError) -> serde_json::Value {
         return serde_json::json!({
             "diagnostics_version": 1,
             "error": "compilation_failed",
-            "diagnostics": truncate_utf8(&redact_text(&message), MAX_DIAGNOSTIC_BYTES)
+            "diagnostics": safe_compiler_diagnostics(&message)
         });
     }
 
@@ -1134,6 +1173,15 @@ mod tests {
 
         client.cancel().await.unwrap();
         server_task.await.unwrap();
+    }
+
+    #[test]
+    fn compiler_diagnostics_omit_source_context() {
+        let message = "QuickJS componentization failed:\nerror: Unexpected token\n  1 | const password = \"must-not-leak\";";
+        let diagnostics = safe_compiler_diagnostics(message);
+        assert!(diagnostics.contains("Unexpected token"));
+        assert!(!diagnostics.contains("must-not-leak"));
+        assert!(!diagnostics.contains("const password"));
     }
 
     #[tokio::test]
