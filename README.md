@@ -49,7 +49,7 @@ These are operating modes of one executable, not separate guest runtimes. MCP ca
 
 - Loads and parses the operator-provided `SPEC.md`.
 - Calls an OpenAI-compatible chat-completions endpoint to synthesize a self-contained JavaScript ES module and supplemental assertions when no matching artifact is cached. The model receives the SPEC with its operator-controlled `## Verification` section removed; an optional `## Examples` section remains illustrative, not authoritative.
-- Uses a content-addressed local cache keyed by the raw SPEC, provider/model configuration, synthesis prompt, WIT contract, resource budgets, componentizer/runtime versions, and `Cargo.lock`.
+- Uses a two-layer content-addressed cache: model-generation inputs key reusable synthesis output, while the synthesis digest plus `Cargo.toml` feature selection, `Cargo.lock`, component toolchain, ABI, and resource settings key compiled component bytes. Toolchain-only changes rebuild the component without another model request.
 - Componentizes JavaScript in-process with `componentize-qjs` and executes it with Wasmtime's component model.
 - Applies Wasm fuel, linear-memory, and coarse-grained epoch-based wall-clock execution limits to the component store.
 - Runs human-authored SPEC verification cases, fixed host-generated adversarial ABI probes, and a separate model-generated assertion suite against distinct disposable candidate instances before activation.

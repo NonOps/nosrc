@@ -344,6 +344,47 @@ fn synthesis_spec_markdown(markdown: &str) -> String {
     visible
 }
 
+fn component_cache_key_for_inputs(
+    synthesis: &SynthesisOutput,
+    lockfile: &[u8],
+    cargo_manifest: &[u8],
+) -> String {
+    use sha2::{Digest, Sha256};
+
+    let synthesis_bytes = serde_json::to_vec(synthesis)
+        .expect("serializing a synthesis output for its cache identity cannot fail");
+    let synthesis_digest = Sha256::digest(&synthesis_bytes);
+    let fuel = crate::engine::quickjs::DEFAULT_COMPONENT_FUEL.to_be_bytes();
+    let memory = (crate::engine::quickjs::DEFAULT_COMPONENT_MEMORY_BYTES as u64).to_be_bytes();
+    let response = (crate::engine::http_envelope::MAX_HANDLER_RESPONSE_BYTES as u64).to_be_bytes();
+    let execution_timeout = crate::engine::quickjs::DEFAULT_GUEST_EXECUTION_TIMEOUT
+        .as_nanos()
+        .to_be_bytes();
+    let fields: [&[u8]; 14] = [
+        b"nosrc-component-cache-v1",
+        synthesis_digest.as_slice(),
+        lockfile,
+        cargo_manifest,
+        crate::engine::quickjs::HANDLER_WIT.as_bytes(),
+        b"componentize-qjs-0.6.0;wasmtime-50;runtime-default-sync;stub-wasi=true;disable-gc=false;component-model=true;consume-fuel=true",
+        env!("CARGO_PKG_VERSION").as_bytes(),
+        &fuel,
+        &memory,
+        &response,
+        &execution_timeout,
+        b"component-runtime-abi-v1",
+        std::env::consts::ARCH.as_bytes(),
+        std::env::consts::OS.as_bytes(),
+    ];
+
+    let mut hasher = Sha256::new();
+    for field in fields {
+        hasher.update((field.len() as u64).to_be_bytes());
+        hasher.update(field);
+    }
+    crate::hex_lower(hasher.finalize())
+}
+
 /// Synthesizer service managing LLM prompt construction and schema enforcement
 pub struct Synthesizer {
     config: LlmConfig,
@@ -367,30 +408,24 @@ impl Synthesizer {
         }
     }
 
-    /// Stable identity for inputs and toolchain settings that affect a generated artifact.
+    /// Identity for inputs that can change model-generated output.
     ///
-    /// The API key is deliberately excluded. The configured provider URL and model name
-    /// are included, but mutable provider-side model aliases cannot guarantee reproducibility.
-    pub fn artifact_cache_key(&self, spec: &ServiceSpec) -> String {
+    /// Compilation dependencies and runtime/toolchain settings are deliberately excluded,
+    /// so a Cargo.lock-only change can reuse the same synthesis result. The API key is
+    /// excluded; provider URL, model, and temperature remain part of the identity.
+    pub fn synthesis_cache_key(&self, spec: &ServiceSpec) -> String {
         use sha2::{Digest, Sha256};
 
         let prompt = self.build_system_prompt();
         let temperature = self.config.temperature.to_bits().to_be_bytes();
-        let fuel = crate::engine::quickjs::DEFAULT_COMPONENT_FUEL.to_be_bytes();
-        let memory = (crate::engine::quickjs::DEFAULT_COMPONENT_MEMORY_BYTES as u64).to_be_bytes();
-        let fields: [&[u8]; 12] = [
-            b"nosrc-artifact-cache-v2",
+        let fields: [&[u8]; 7] = [
+            b"nosrc-synthesis-cache-v1",
+            b"synthesis-output-schema-v1",
             spec.raw_markdown.as_bytes(),
             self.config.base_url.as_bytes(),
             self.config.model.as_bytes(),
             &temperature,
             prompt.as_bytes(),
-            crate::engine::quickjs::HANDLER_WIT.as_bytes(),
-            b"componentize-qjs-0.6.0;wasmtime-50;runtime-default-sync;stub-wasi=true;disable-gc=false;component-model=true;consume-fuel=true",
-            env!("CARGO_PKG_VERSION").as_bytes(),
-            include_bytes!("../../Cargo.lock"),
-            &fuel,
-            &memory,
         ];
 
         let mut hasher = Sha256::new();
@@ -399,6 +434,22 @@ impl Synthesizer {
             hasher.update(field);
         }
         crate::hex_lower(hasher.finalize())
+    }
+
+    /// Identity for compiled bytes: the exact synthesis output plus the component
+    /// toolchain, ABI, and resource settings that affect compilation or execution.
+    pub fn component_cache_key(&self, synthesis: &SynthesisOutput) -> String {
+        component_cache_key_for_inputs(
+            synthesis,
+            include_bytes!("../../Cargo.lock"),
+            include_bytes!("../../Cargo.toml"),
+        )
+    }
+
+    /// Kept as a source-compatible alias; this now identifies synthesis only.
+    #[deprecated(note = "use synthesis_cache_key; compiled components have a separate identity")]
+    pub fn artifact_cache_key(&self, spec: &ServiceSpec) -> String {
+        self.synthesis_cache_key(spec)
     }
 
     /// Build the strict JavaScript handler and contract-assertion prompt.
@@ -632,7 +683,7 @@ mod tests {
     use axum::Router;
 
     #[test]
-    fn artifact_cache_identity_changes_with_spec_and_model() {
+    fn cache_identities_separate_synthesis_inputs_from_component_toolchain() {
         let base_markdown = include_str!("../../examples/minimal/SPEC.md");
         let spec = ServiceSpec::parse(base_markdown).unwrap();
         let changed_spec = ServiceSpec::parse(&format!("{base_markdown}\n")).unwrap();
@@ -647,10 +698,38 @@ mod tests {
             model: "model-b".into(),
             ..config
         });
+        let output = SynthesisOutput {
+            handler_code: "export function handle() { return '{}'; }".into(),
+            code_format: "javascript".into(),
+            assertions: Vec::new(),
+            rationale: Some("test".into()),
+        };
 
-        let original_key = synthesizer.artifact_cache_key(&spec);
-        assert_ne!(original_key, synthesizer.artifact_cache_key(&changed_spec));
-        assert_ne!(original_key, changed_model.artifact_cache_key(&spec));
+        let original_key = synthesizer.synthesis_cache_key(&spec);
+        assert_ne!(original_key, synthesizer.synthesis_cache_key(&changed_spec));
+        assert_ne!(original_key, changed_model.synthesis_cache_key(&spec));
+
+        // Lockfile-only changes leave synthesis identity stable but invalidate component identity.
+        assert_eq!(original_key, synthesizer.synthesis_cache_key(&spec));
+        assert_ne!(
+            component_cache_key_for_inputs(&output, b"lockfile-v1", b"cargo-manifest"),
+            component_cache_key_for_inputs(&output, b"lockfile-v2", b"cargo-manifest")
+        );
+        assert_ne!(
+            component_cache_key_for_inputs(&output, b"lockfile-v1", b"cargo-manifest-v2"),
+            component_cache_key_for_inputs(&output, b"lockfile-v1", b"cargo-manifest-v3")
+        );
+        assert_ne!(
+            component_cache_key_for_inputs(&output, b"lockfile-v1", b"cargo-manifest"),
+            component_cache_key_for_inputs(
+                &SynthesisOutput {
+                    handler_code: "export function handle() { return 'changed'; }".into(),
+                    ..output
+                },
+                b"lockfile-v1",
+                b"cargo-manifest",
+            )
+        );
     }
 
     #[test]
