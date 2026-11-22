@@ -152,6 +152,8 @@ fn redact_json_value(value: &mut serde_json::Value) {
                     "password",
                     "passwd",
                     "secret",
+                    "private_key",
+                    "signing_key",
                     "token",
                     "api_key",
                     "apikey",
@@ -223,8 +225,24 @@ fn resource_limit(error: &EngineError) -> Option<&'static str> {
         EngineError::Trap(SandboxTrap::FuelExhausted) => Some("fuel"),
         EngineError::Trap(SandboxTrap::MemoryExhausted(_)) => Some("linear_memory"),
         EngineError::Trap(SandboxTrap::ExecutionTimeout) => Some("wall_clock"),
+        EngineError::Trap(SandboxTrap::GuestPanic(message))
+            if is_memory_limit_message(message) =>
+        {
+            Some("linear_memory")
+        }
+        EngineError::Instantiation(message) if is_memory_limit_message(message) => {
+            Some("linear_memory")
+        }
         _ => None,
     }
+}
+
+fn is_memory_limit_message(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("memory limit")
+        || message.contains("failed to grow memory")
+        || message.contains("memory growth")
+        || message.contains("growth operation limited")
 }
 
 fn runtime_diagnostic(error: EngineError) -> serde_json::Value {
