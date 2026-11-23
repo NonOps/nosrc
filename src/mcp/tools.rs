@@ -277,9 +277,6 @@ fn resource_limit(error: &EngineError) -> Option<&'static str> {
         EngineError::Trap(SandboxTrap::FuelExhausted) => Some("fuel"),
         EngineError::Trap(SandboxTrap::MemoryExhausted(_)) => Some("linear_memory"),
         EngineError::Trap(SandboxTrap::ExecutionTimeout) => Some("wall_clock"),
-        EngineError::Trap(SandboxTrap::GuestPanic(message)) if is_memory_limit_message(message) => {
-            Some("linear_memory")
-        }
         EngineError::Instantiation(message) if is_memory_limit_message(message) => {
             Some("linear_memory")
         }

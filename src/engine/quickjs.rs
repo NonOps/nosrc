@@ -11,10 +11,10 @@ use crate::error::{EngineError, SandboxTrap};
 pub const DEFAULT_COMPONENT_FUEL: u64 = 50_000_000;
 pub const DEFAULT_COMPONENT_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 pub const DEFAULT_GUEST_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
-#[cfg(not(test))]
+// Keep the epoch cadence above Windows' default timer granularity. A 1 ms
+// thread sleep can take 10-16 ms there, stretching tick-count deadlines by an
+// order of magnitude and making epoch-timeout tests fail nondeterministically.
 const EPOCH_TICK_INTERVAL: Duration = Duration::from_millis(10);
-#[cfg(test)]
-const EPOCH_TICK_INTERVAL: Duration = Duration::from_micros(100);
 const COMPONENT_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub const HANDLER_WIT: &str = r#"
@@ -29,6 +29,7 @@ struct ComponentStoreState {
     limits: StoreLimits,
     memory_high_water_bytes: Option<usize>,
     pending_memory_growth: Option<(usize, usize)>,
+    memory_growth_failed: bool,
 }
 
 impl ComponentStoreState {
@@ -51,6 +52,10 @@ impl ResourceLimiter for ComponentStoreState {
             let previous_peak = self.memory_high_water_bytes.unwrap_or(current).max(current);
             self.pending_memory_growth = Some((previous_peak, desired));
             self.memory_high_water_bytes = Some(previous_peak.max(desired));
+        } else {
+            // A denied growth request is a memory-limit failure even when Wasmtime
+            // does not invoke memory_grow_failed for a limiter rejection.
+            self.memory_growth_failed = true;
         }
         Ok(allowed)
     }
@@ -65,6 +70,7 @@ impl ResourceLimiter for ComponentStoreState {
     }
 
     fn memory_grow_failed(&mut self, error: wasmtime::Error) -> wasmtime::Result<()> {
+        self.memory_growth_failed = true;
         if let Some((previous_peak, desired)) = self.pending_memory_growth.take() {
             if self.memory_high_water_bytes == Some(desired) {
                 self.memory_high_water_bytes = Some(previous_peak);
@@ -318,6 +324,7 @@ fn instantiate_component(
             limits,
             memory_high_water_bytes: None,
             pending_memory_growth: None,
+            memory_growth_failed: false,
         },
     );
     store
@@ -328,9 +335,17 @@ fn instantiate_component(
     store.set_epoch_deadline(epoch_deadline_ticks(COMPONENT_STARTUP_TIMEOUT));
 
     let linker = Linker::<ComponentStoreState>::new(engine);
-    let instance = linker
-        .instantiate(&mut store, component)
-        .map_err(classify_component_error)?;
+    let instance = match linker.instantiate(&mut store, component) {
+        Ok(instance) => instance,
+        Err(error) => {
+            let memory_growth_failed = store.data().memory_growth_failed;
+            return Err(classify_component_error(
+                error,
+                memory_limit_bytes,
+                memory_growth_failed,
+            ));
+        }
+    };
     let handle = instance
         .get_typed_func::<(String,), (String,)>(&mut store, "handle")
         .map_err(|error| {
@@ -409,6 +424,7 @@ impl QuickJsHandler {
         }
 
         self.telemetry.last_invocation_fuel_consumed = None;
+        self.store.data_mut().memory_growth_failed = false;
         let request_json = serde_json::to_string(request).map_err(|error| {
             EngineError::Internal(format!("Failed to serialize request envelope: {error}"))
         })?;
@@ -421,13 +437,15 @@ impl QuickJsHandler {
         let response_json = match self.handle.call(&mut self.store, (request_json,)) {
             Ok((response_json,)) => response_json,
             Err(error) => {
+                let memory_growth_failed = self.store.data().memory_growth_failed;
                 self.record_invocation_telemetry();
-                let trap = classify_component_error(error);
+                let trap =
+                    classify_component_error(error, self.memory_limit_bytes, memory_growth_failed);
                 let failure_kind = match &trap {
                     EngineError::Trap(SandboxTrap::FuelExhausted) => "fuel_exhausted",
                     EngineError::Trap(SandboxTrap::ExecutionTimeout) => "execution_timeout",
                     EngineError::Trap(SandboxTrap::MemoryExhausted(_)) => "memory_exhausted",
-                    EngineError::Trap(SandboxTrap::GuestPanic(_)) => "guest_panic",
+                    EngineError::Trap(SandboxTrap::GuestTrap) => "guest_trap",
                     EngineError::Trap(SandboxTrap::Unreachable) => "unreachable",
                     _ => "execution_error",
                 };
@@ -478,16 +496,54 @@ impl QuickJsHandler {
     }
 }
 
-fn classify_component_error(error: wasmtime::Error) -> EngineError {
-    if let Some(trap) = error.downcast_ref::<wasmtime::Trap>() {
-        match trap {
-            wasmtime::Trap::OutOfFuel => EngineError::Trap(SandboxTrap::FuelExhausted),
-            wasmtime::Trap::Interrupt => EngineError::Trap(SandboxTrap::ExecutionTimeout),
-            _ => EngineError::Trap(SandboxTrap::GuestPanic(error.to_string())),
-        }
+fn classify_component_error(
+    error: wasmtime::Error,
+    memory_limit_bytes: usize,
+    memory_growth_failed: bool,
+) -> EngineError {
+    if error.downcast_ref::<wasmtime::Trap>().is_some() {
+        EngineError::Trap(classify_guest_trap(
+            &error,
+            memory_limit_bytes,
+            memory_growth_failed,
+        ))
     } else {
         EngineError::Instantiation(error.to_string())
     }
+}
+
+fn classify_guest_trap(
+    error: &wasmtime::Error,
+    memory_limit_bytes: usize,
+    memory_growth_failed: bool,
+) -> SandboxTrap {
+    // Preserve the typed execution-limit traps even if an earlier, caught allocation
+    // failure set the limiter signal during the same guest invocation.
+    if let Some(trap) = error.downcast_ref::<wasmtime::Trap>() {
+        match trap {
+            wasmtime::Trap::OutOfFuel => return SandboxTrap::FuelExhausted,
+            wasmtime::Trap::Interrupt => return SandboxTrap::ExecutionTimeout,
+            _ => {}
+        }
+    }
+
+    if memory_growth_failed {
+        return SandboxTrap::MemoryExhausted(
+            memory_limit_bytes
+                .div_ceil(1024 * 1024)
+                .min(u32::MAX as usize) as u32,
+        );
+    }
+
+    if let Some(trap) = error.downcast_ref::<wasmtime::Trap>() {
+        // QuickJS can lower an uncaught JavaScript exception to Wasm unreachable.
+        // Keep this stable across targets instead of exposing that implementation detail.
+        if matches!(trap, wasmtime::Trap::UnreachableCodeReached) {
+            return SandboxTrap::GuestTrap;
+        }
+    }
+
+    SandboxTrap::GuestTrap
 }
 
 #[cfg(test)]
@@ -495,10 +551,15 @@ pub(crate) mod test_support {
     use super::*;
     use tokio::sync::OnceCell;
 
-    // Give epoch tests a larger test-only fuel budget so fuel exhaustion cannot win
-    // the race against the accelerated test ticker. Production limits remain unchanged.
-    pub const EPOCH_TEST_FUEL: u64 = 5_000_000_000;
-    pub const EPOCH_TEST_TIMEOUT: Duration = Duration::from_millis(1);
+    // Epoch tests exercise epoch interruption, not fuel exhaustion. Use the largest
+    // representable fuel budget so host scheduling cannot make the busy-loop guest hit
+    // the fuel limit before the background epoch ticker runs. Production limits remain
+    // unchanged.
+    pub const EPOCH_TEST_FUEL: u64 = u64::MAX;
+    // Keep a realistic window for recovery requests in ingress tests, which reuse the
+    // same timeout after the looping guest is interrupted. The effectively unbounded
+    // test fuel budget keeps ticker scheduling from changing the trap classification.
+    pub const EPOCH_TEST_TIMEOUT: Duration = Duration::from_millis(250);
 
     pub const HANDLER_SOURCE: &str = r#"
         let count = 0;
@@ -516,8 +577,30 @@ pub(crate) mod test_support {
                 return JSON.stringify({ status: 200, headers: {}, body: "unexpected allocation success" });
             }
 
+            if (request.path === "/catch-memory") {
+                try {
+                    new Uint8Array(128 * 1024 * 1024);
+                } catch (error) {
+                    return JSON.stringify({ status: 200, headers: {}, body: "allocation caught" });
+                }
+                return JSON.stringify({ status: 200, headers: {}, body: "unexpected allocation success" });
+            }
+
+            if (request.path === "/caught-memory-then-throw") {
+                try {
+                    new Uint8Array(128 * 1024 * 1024);
+                } catch (error) {
+                    throw new Error("unrelated guest failure after caught allocation");
+                }
+                throw new Error("allocation unexpectedly succeeded");
+            }
+
             if (request.path === "/error") {
                 return JSON.stringify({ status: 500, headers: {}, body: "failed" });
+            }
+
+            if (request.path === "/throw") {
+                throw new Error("guest-controlled secret detail");
             }
 
             if (request.path === "/small-oversized") {
@@ -594,6 +677,58 @@ mod tests {
     }
 
     #[test]
+    fn guest_trap_classification_uses_typed_traps_and_limiter_state_only() {
+        let memory_limit_bytes = 64 * 1024 * 1024;
+
+        assert!(matches!(
+            classify_guest_trap(&wasmtime::Trap::OutOfFuel.into(), memory_limit_bytes, false),
+            SandboxTrap::FuelExhausted
+        ));
+        assert!(matches!(
+            classify_guest_trap(&wasmtime::Trap::Interrupt.into(), memory_limit_bytes, false),
+            SandboxTrap::ExecutionTimeout
+        ));
+        assert!(matches!(
+            classify_guest_trap(&wasmtime::Trap::OutOfFuel.into(), memory_limit_bytes, true),
+            SandboxTrap::FuelExhausted
+        ));
+        assert!(matches!(
+            classify_guest_trap(&wasmtime::Trap::Interrupt.into(), memory_limit_bytes, true),
+            SandboxTrap::ExecutionTimeout
+        ));
+        assert!(matches!(
+            classify_guest_trap(
+                &wasmtime::Trap::UnreachableCodeReached.into(),
+                memory_limit_bytes,
+                false
+            ),
+            SandboxTrap::GuestTrap
+        ));
+        assert!(
+            matches!(
+                classify_guest_trap(
+                    &wasmtime::Trap::MemoryOutOfBounds.into(),
+                    memory_limit_bytes,
+                    false
+                ),
+                SandboxTrap::GuestTrap
+            ),
+            "unclassified Wasmtime traps must not be inferred from engine message text"
+        );
+        assert!(
+            matches!(
+                classify_guest_trap(
+                    &wasmtime::Trap::MemoryOutOfBounds.into(),
+                    memory_limit_bytes,
+                    true
+                ),
+                SandboxTrap::MemoryExhausted(64)
+            ),
+            "the resource limiter's explicit signal identifies memory-limit failures"
+        );
+    }
+
+    #[test]
     fn committed_memory_growth_cannot_be_rolled_back_by_a_later_failure_callback() {
         let mut state = ComponentStoreState {
             limits: StoreLimitsBuilder::new()
@@ -601,6 +736,7 @@ mod tests {
                 .build(),
             memory_high_water_bytes: Some(8),
             pending_memory_growth: None,
+            memory_growth_failed: false,
         };
 
         assert!(state.memory_growing(8, 16, None).unwrap());
@@ -613,6 +749,15 @@ mod tests {
         state
             .memory_grow_failed(wasmtime::Error::msg("late failure callback"))
             .unwrap();
+        assert!(state.memory_growth_failed);
+        assert!(matches!(
+            classify_guest_trap(
+                &wasmtime::Trap::MemoryOutOfBounds.into(),
+                DEFAULT_COMPONENT_MEMORY_BYTES,
+                state.memory_growth_failed
+            ),
+            SandboxTrap::MemoryExhausted(64)
+        ));
         assert_eq!(
             state.memory_high_water_bytes,
             Some(16),
@@ -686,8 +831,11 @@ mod tests {
 
         let result = handler.invoke(&request("/memory"));
         assert!(
-            matches!(result, Err(EngineError::Trap(SandboxTrap::GuestPanic(_)))),
-            "Expected the guest allocation to fail under the 64 MiB memory cap, got: {result:?}"
+            matches!(
+                result,
+                Err(EngineError::Trap(SandboxTrap::MemoryExhausted(64)))
+            ),
+            "Expected a stable memory-limit category for allocation failure, got: {result:?}"
         );
         let telemetry = handler.telemetry_snapshot();
         assert!(telemetry.last_invocation_fuel_consumed.is_some());
@@ -703,6 +851,71 @@ mod tests {
                 .is_some_and(|bytes| bytes <= DEFAULT_COMPONENT_MEMORY_BYTES),
             "generation memory high-water must retain the trapped instance measurement: {telemetry:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn caught_memory_failure_then_unrelated_guest_exception_keeps_limiter_category() {
+        let (engine, compiled) = test_support::compiled().await;
+        let mut handler = engine
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .unwrap();
+
+        let caught = handler.invoke(&request("/catch-memory")).unwrap();
+        assert_eq!(caught.body.as_deref(), Some("allocation caught"));
+
+        let error = handler
+            .invoke(&request("/caught-memory-then-throw"))
+            .unwrap_err();
+        assert!(
+            matches!(error, EngineError::Trap(SandboxTrap::MemoryExhausted(64))),
+            "the limiter signal is invocation-scoped and currently takes precedence over a later guest exception: {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn poisoned_handler_fails_closed_without_reusing_the_guest_instance() {
+        let (engine, compiled) = test_support::compiled().await;
+        let mut handler = engine
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .unwrap();
+
+        // Model the terminal state after instance recreation has failed.
+        handler.poisoned = true;
+        let error = handler.invoke(&request("/health")).unwrap_err();
+
+        assert!(
+            matches!(error, EngineError::Internal(_)),
+            "A poisoned handler must reject later invocations, got: {error:?}"
+        );
+        assert!(error
+            .to_string()
+            .contains("Handler instance is unavailable after a failed recovery attempt"));
+        assert_eq!(handler.telemetry_snapshot().instance_recreations, 0);
+    }
+
+    #[tokio::test]
+    async fn javascript_exception_is_a_stable_guest_trap_and_handler_recovers() {
+        let (engine, compiled) = test_support::compiled().await;
+        let mut handler = engine
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .unwrap();
+
+        let error = handler.invoke(&request("/throw")).unwrap_err();
+        assert!(
+            matches!(&error, EngineError::Trap(SandboxTrap::GuestTrap)),
+            "Expected a stable guest-trap category, got: {error:?}"
+        );
+        assert!(
+            !error.to_string().contains("guest-controlled secret detail"),
+            "Guest-controlled exception text must not enter the public error value"
+        );
+        assert_eq!(handler.telemetry_snapshot().instance_recreations, 1);
+
+        let response = handler
+            .invoke(&request("/health"))
+            .expect("handler should recover after an arbitrary guest trap");
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body.as_deref(), Some("healthy"));
     }
 
     /// Small enough that the infinite loop stops within milliseconds, but comfortably above

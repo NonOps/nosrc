@@ -183,6 +183,8 @@ Every declared endpoint must have at least one matching case under `## Verificat
 
 Pass `--verbose` (or `-v`) for nosrc DEBUG diagnostics covering generation stages, provider request timing and sizes, assertion results, component compilation, and HTTP request metadata. Diagnostics are written to stderr and omit API keys, authorization headers, prompts, generated source, request/response bodies, and query strings. `RUST_LOG` overrides the scoped default and can enable noisy dependency logs. Review logs before sharing them; bounded provider errors and assertion mismatch details may still contain sensitive context.
 
+Release builds use `panic = "abort"`: an unexpected Rust host panic terminates the nosrc process rather than becoming a recoverable request error. Run the process under an external supervisor configured to restart it after an unexpected exit. Guest Wasm traps are handled separately and do not require a process restart when instance recovery succeeds.
+
 See [CLI reference](docs/CLI.md) for all commands, options, and environment variables.
 
 ## Current limitations and roadmap

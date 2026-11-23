@@ -194,6 +194,7 @@ impl ErrorEnvelope {
             EngineError::Trap(crate::error::SandboxTrap::MemoryExhausted(_)) => {
                 (500, "MemoryExhausted")
             }
+            EngineError::Trap(crate::error::SandboxTrap::GuestTrap) => (500, "GuestTrap"),
             EngineError::Trap(_) => (500, "SandboxTrap"),
             EngineError::HostAbi(crate::error::HostAbiError::CapabilityDisabled(_)) => {
                 (501, "CapabilityDisabled")
@@ -212,7 +213,7 @@ impl ErrorEnvelope {
         let error = match err_type {
             "FuelExhausted" => "Handler execution exceeded its resource budget",
             "MemoryExhausted" => "Handler exceeded its memory limit",
-            "SandboxTrap" => "Handler execution failed",
+            "GuestTrap" | "SandboxTrap" => "Handler execution failed",
             "CapabilityDisabled" => "Requested capability is unavailable",
             "EgressForbidden" | "SsrfBlocked" => "Requested network access is forbidden",
             _ => "Internal runtime error",
@@ -282,16 +283,13 @@ mod tests {
     }
 
     #[test]
-    fn guest_panic_details_are_not_exposed_to_http_clients() {
-        let error = EngineError::Trap(crate::error::SandboxTrap::GuestPanic(
-            "sensitive guest detail".into(),
-        ));
+    fn guest_traps_have_a_stable_sanitized_http_envelope() {
+        let error = EngineError::Trap(crate::error::SandboxTrap::GuestTrap);
         let envelope = ErrorEnvelope::from_engine_error(&error);
 
         assert_eq!(envelope.error, "Handler execution failed");
-        assert!(!serde_json::to_string(&envelope)
-            .unwrap()
-            .contains("sensitive guest detail"));
+        assert_eq!(envelope.error_type, "GuestTrap");
+        assert_eq!(envelope.status, 500);
     }
 
     #[test]

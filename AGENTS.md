@@ -56,7 +56,8 @@ See `docs/SECURITY.md` for the current threat model and known gaps.
 
 - Do not hold the MCP lifecycle mutex during provider requests, componentization, candidate verification, or guest execution. Snapshot immutable inputs, perform expensive work outside the lock, and lock only to publish a completed candidate.
 - Componentization and Wasm verification belong on Tokio's blocking pool.
-- Guest invocation uses Wasmtime epoch interruption with a 30-second default deadline, independent of fuel. A periodic ticker advances epochs; interruption is observed at instrumented guest checks, so it is not an exact real-time cutoff. A trapped instance must be discarded and recreated; never reuse a trapped store, and fail closed if recovery fails.
+- Guest invocation uses Wasmtime epoch interruption with a 30-second default deadline, independent of fuel. A periodic ticker advances epochs; interruption is observed at instrumented guest checks, so it is not an exact real-time cutoff. A trapped instance must be discarded and recreated; never reuse a trapped store, and fail closed if recovery fails. Classify guest traps with stable categories and never log or return raw guest-controlled trap text.
+- Release builds use `panic = "abort"`: host panics terminate the process. Do not add broad `catch_unwind` recovery; document and rely on external process supervision/restart for deployments.
 - A preparation timeout must prevent a late worker from publishing a generation. It does not necessarily terminate the already-running blocking task.
 - Rollback is limited to the immediately previous retained generation.
 - The HTTP accept loop must enforce a finite connection limit before spawning per-connection tasks; retain each connection permit for the full task lifetime.
