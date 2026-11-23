@@ -206,11 +206,6 @@ impl ShadowVerifier {
                         EngineError::Trap(crate::error::SandboxTrap::ExecutionTimeout) => {
                             "execution_timeout"
                         }
-                        EngineError::Trap(crate::error::SandboxTrap::GuestPanic(message))
-                            if is_memory_limit_failure(message) =>
-                        {
-                            "memory_exhausted"
-                        }
                         EngineError::Instantiation(message) if is_memory_limit_failure(message) => {
                             "memory_exhausted"
                         }

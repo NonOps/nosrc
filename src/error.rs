@@ -32,8 +32,8 @@ pub enum SandboxTrap {
     #[error("Unreachable code reached")]
     Unreachable,
 
-    #[error("Guest panic: {0}")]
-    GuestPanic(String),
+    #[error("Guest trapped during execution")]
+    GuestTrap,
 }
 
 #[derive(Error, Debug)]

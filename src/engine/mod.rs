@@ -172,7 +172,7 @@ impl WasmEngine {
                         return EngineError::Trap(crate::error::SandboxTrap::FuelExhausted);
                     }
                 }
-                EngineError::Trap(crate::error::SandboxTrap::GuestPanic(err.to_string()))
+                EngineError::Trap(crate::error::SandboxTrap::GuestTrap)
             })?;
 
         // If resp_code < 0, it represents an error code

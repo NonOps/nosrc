@@ -34,6 +34,8 @@ pub struct IngressState {
     admission: Arc<Semaphore>,
     execution: Arc<Semaphore>,
     execution_timeout: Duration,
+    #[cfg(test)]
+    execution_started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
 impl IngressState {
@@ -43,6 +45,8 @@ impl IngressState {
             admission: Arc::new(Semaphore::new(MAX_ADMITTED_REQUESTS)),
             execution: Arc::new(Semaphore::new(1)),
             execution_timeout: DEFAULT_GUEST_EXECUTION_TIMEOUT,
+            #[cfg(test)]
+            execution_started: Mutex::new(None),
         }
     }
 
@@ -250,6 +254,8 @@ async fn handle_http_request(
 
     let handler = active.handler.clone();
     let execution_timeout = state.execution_timeout;
+    #[cfg(test)]
+    let execution_started = state.execution_started.lock().unwrap().take();
     let mut execution = tokio::task::spawn_blocking(move || {
         // Keep the permit inside the blocking task until the epoch trap is handled and
         // bounded instance recovery completes, even if the HTTP future is cancelled.
@@ -257,6 +263,11 @@ async fn handle_http_request(
         let mut handler = handler
             .lock()
             .map_err(|_| EngineError::Internal("Handler execution lock was poisoned".into()))?;
+        #[cfg(test)]
+        if let Some(started) = execution_started {
+            // Signal at the invocation boundary, after the handler lock is acquired.
+            let _ = started.send(());
+        }
         handler.invoke_with_timeout(&envelope, execution_timeout)
     });
 
@@ -279,8 +290,18 @@ async fn handle_http_request(
         }
         Ok(Ok(Ok(response))) => response.into_axum_response(),
         Ok(Ok(Err(error))) => {
-            tracing::warn!(error = %error, "JavaScript handler execution failed");
-            ErrorEnvelope::from_engine_error(&error).into_axum_response()
+            let envelope = ErrorEnvelope::from_engine_error(&error);
+            if matches!(error, EngineError::Trap(_)) {
+                // Wasmtime trap chains may contain guest-controlled exception text.
+                // Log only the stable category, never the formatted trap.
+                tracing::warn!(
+                    error_type = %envelope.error_type,
+                    "JavaScript handler execution failed"
+                );
+            } else {
+                tracing::warn!(error = %error, "JavaScript handler execution failed");
+            }
+            envelope.into_axum_response()
         }
         Ok(Err(error)) => {
             tracing::error!(error = %error, "Handler execution task failed");
@@ -301,6 +322,27 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::oneshot;
     use tower::ServiceExt;
+    use tracing::instrument::WithSubscriber;
+
+    fn watch_execution_start(state: &Arc<IngressState>) -> oneshot::Receiver<()> {
+        let (started_tx, started_rx) = oneshot::channel();
+        *state.execution_started.lock().unwrap() = Some(started_tx);
+        started_rx
+    }
+
+    #[derive(Clone)]
+    struct TestLogWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for TestLogWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
 
     #[tokio::test]
     async fn health_endpoint_reports_process_health() {
@@ -469,21 +511,19 @@ mod tests {
             module_hash: "epoch-timeout-test".to_string(),
             handler: Arc::new(Mutex::new(handler)),
         });
+        let execution_started = watch_execution_start(&state);
         let app = build_ingress_router(state.clone());
 
         let loop_request = Request::builder().uri("/loop").body(Body::empty()).unwrap();
         let loop_app = app.clone();
         let loop_task = tokio::spawn(async move { loop_app.oneshot(loop_request).await.unwrap() });
 
-        // Wait until the first request owns the serialized execution permit before
-        // queuing a second request behind it.
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while state.execution.available_permits() != 0 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("first request should acquire the execution permit");
+        // Observe the blocking execution task starting, rather than polling a permit
+        // that may be released by the short epoch deadline before this test is scheduled.
+        tokio::time::timeout(Duration::from_secs(10), execution_started)
+            .await
+            .expect("first request should enter guest execution")
+            .expect("execution-start signal should be delivered");
         let health_request = Request::builder()
             .uri("/health")
             .body(Body::empty())
@@ -538,19 +578,17 @@ mod tests {
             module_hash: "cancelled-epoch-test".to_string(),
             handler: Arc::new(Mutex::new(handler)),
         });
+        let execution_started = watch_execution_start(&state);
         let app = build_ingress_router(state.clone());
 
         let request = Request::builder().uri("/loop").body(Body::empty()).unwrap();
         let request_task = tokio::spawn(app.oneshot(request));
-        // Windows runners can be heavily loaded while the full test suite runs;
-        // allow the request task time to reach the execution gate.
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while state.execution.available_permits() != 0 {
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
-        })
-        .await
-        .expect("request should acquire the execution permit");
+        // Wait for the blocking task to start the invocation. This signal cannot be
+        // missed if the short guest deadline expires before the async test is polled.
+        tokio::time::timeout(Duration::from_secs(10), execution_started)
+            .await
+            .expect("request should enter guest execution")
+            .expect("execution-start signal should be delivered");
 
         // Dropping the HTTP future cannot cancel spawn_blocking. The Wasmtime
         // epoch deadline must still stop the guest and release its owned permit.
@@ -581,6 +619,7 @@ mod tests {
             module_hash: "shutdown-epoch-test".to_string(),
             handler: Arc::new(Mutex::new(handler)),
         });
+        let execution_started = watch_execution_start(&state);
         let app = build_ingress_router(state.clone());
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -601,13 +640,12 @@ mod tests {
             .await
             .unwrap();
 
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while state.execution.available_permits() != 0 {
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
-        })
-        .await
-        .expect("guest request should enter execution before shutdown");
+        // Wait for the blocking task to begin the invocation before requesting shutdown.
+        // A channel records the event even if the guest reaches its deadline immediately.
+        tokio::time::timeout(Duration::from_secs(10), execution_started)
+            .await
+            .expect("guest request should enter execution before shutdown")
+            .expect("execution-start signal should be delivered");
 
         shutdown_tx.send(()).unwrap();
 
@@ -618,7 +656,10 @@ mod tests {
             .unwrap();
         let response = String::from_utf8(response).unwrap().to_ascii_lowercase();
         assert!(response.starts_with("http/1.1 504 gateway timeout"));
-        assert!(response.contains("x-nosrc-error: executiontimeout"));
+        assert!(
+            response.contains("x-nosrc-error: executiontimeout"),
+            "unexpected response: {response}"
+        );
 
         tokio::time::timeout(Duration::from_secs(2), server)
             .await
@@ -787,6 +828,45 @@ mod tests {
         assert_eq!(echoed["headers"]["x-good"], "ok");
         assert!(echoed["headers"].get("x-binary").is_none());
         assert_eq!(echoed["query"]["q"], "1");
+    }
+
+    #[tokio::test]
+    async fn guest_trap_http_response_and_failure_logs_are_sanitized() {
+        let app = app_with_active_handler().await;
+        let captured_logs = Arc::new(Mutex::new(Vec::new()));
+        let writer_logs = captured_logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || TestLogWriter(writer_logs.clone()))
+            .finish();
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/throw")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .with_subscriber(dispatch)
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.headers()["x-nosrc-error"], "GuestTrap");
+        let body = body_text(response).await;
+        assert!(body.contains("Handler execution failed"));
+        assert!(!body.contains("guest-controlled secret detail"));
+
+        let logs = String::from_utf8(captured_logs.lock().unwrap().clone()).unwrap();
+        assert!(
+            logs.contains("GuestTrap"),
+            "the request-failure log should retain the stable error category: {logs}"
+        );
+        assert!(
+            !logs.contains("guest-controlled secret detail"),
+            "guest-controlled exception text must not enter request-failure logs: {logs}"
+        );
     }
 
     #[tokio::test]
