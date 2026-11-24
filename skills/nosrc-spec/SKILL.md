@@ -41,10 +41,11 @@ Every declared endpoint **must** have at least one verification case under `## V
 - **Never** repeat the same query parameter key in a verification heading (the handler ABI maps each query key to a single string).
 - Allowed bullet assertions per case:
   - `- Header: <name>=<value>` (request header)
+  - `- Request body: \`<JSON or other UTF-8 payload>\`` (request body — at most once per case)
   - `- Response \`<status_code>\`` (scalar — at most once per case)
   - `- Response header: <name>=<value>` (exact match, case-insensitive header name)
-  - `- Body: \`<exact_body>\`` (scalar — at most once per case)
-  - `- Body contains: \`<substring>\`` (scalar — at most once per case)
+  - `- Body contains: \`<substring>\`` (response substring — at most once per case)
+  - Legacy `- Body: <payload>` remains accepted as an alias for `Request body:`; use the explicit label in new specs.
 
 ### Template
 
@@ -56,10 +57,20 @@ Every declared endpoint **must** have at least one verification case under `## V
 ### `GET /search`
 Returns matching items for query `q` with optional `limit`.
 
+### `POST /search`
+Accepts a JSON search request.
+
 ## Verification
 
 ### `GET /search?q=hello%20world&limit=10`
 - Header: accept=application/json
+- Response `200`
+- Response header: content-type=application/json
+- Body contains: `hello`
+
+### `POST /search`
+- Header: content-type=application/json
+- Request body: `{"query":"hello"}`
 - Response `200`
 - Response header: content-type=application/json
 - Body contains: `hello`

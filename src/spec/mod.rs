@@ -302,10 +302,16 @@ impl ServiceSpec {
                     if let Some(case) = current_verification.as_mut() {
                         if let Some(item) = trimmed.strip_prefix("- ") {
                             let item = item.trim();
-                            if let Some(body) = item.strip_prefix("Body:") {
+                            if let Some(body) = item.strip_prefix("Request body:") {
                                 if case.body.is_some() {
-                                    return Err(duplicate_verification_field("Body"));
+                                    return Err(duplicate_verification_field("Request body"));
                                 }
+                                case.body = Some(trim_verification_code_span(body));
+                            } else if let Some(body) = item.strip_prefix("Body:") {
+                                if case.body.is_some() {
+                                    return Err(duplicate_verification_field("Request body"));
+                                }
+                                // Backward-compatible alias; prefer the explicit Request body label.
                                 case.body = Some(body.trim().to_string());
                             } else if let Some(header) = item.strip_prefix("Header:") {
                                 let (name, value) = parse_verification_header(header)?;
@@ -397,6 +403,18 @@ impl ServiceSpec {
 
 fn duplicate_verification_field(field: &str) -> HostAbiError {
     HostAbiError::MalformedJson(format!("duplicate verification field '{field}'"))
+}
+
+/// Remove one optional Markdown inline-code wrapper without altering the payload.
+fn trim_verification_code_span(value: &str) -> String {
+    let value = value.trim();
+    match value
+        .strip_prefix('`')
+        .and_then(|value| value.strip_suffix('`'))
+    {
+        Some(inner) => inner.to_string(),
+        None => value.to_string(),
+    }
 }
 
 fn is_unsupported_bullet(trimmed: &str) -> bool {
@@ -655,6 +673,50 @@ A resilient spec-driven URL shortener.
 "#;
         let error = ServiceSpec::parse(markdown).unwrap_err().to_string();
         assert!(error.contains("duplicate verification query parameter 'q'"));
+    }
+
+    #[test]
+    fn verification_request_body_is_parsed_without_markdown_delimiters() {
+        let markdown = r#"
+# Service: Example
+## Endpoints
+### `POST /items`
+- Response `200`: ok
+## Verification
+### `POST /items`
+- Header: content-type=application/json
+- Request body: `{"name":"hello","count":2}`
+- Response `200`
+"#;
+        let spec = ServiceSpec::parse(markdown).unwrap();
+        assert_eq!(
+            spec.verification[0].body.as_deref(),
+            Some(r#"{"name":"hello","count":2}"#)
+        );
+    }
+
+    #[test]
+    fn empty_verification_request_body_is_preserved() {
+        let markdown = "# Service: Example\n## Endpoints\n### `POST /items`\n- Response `200`: ok\n## Verification\n### `POST /items`\n- Request body: ``\n- Response `200`\n";
+        let spec = ServiceSpec::parse(markdown).unwrap();
+        assert_eq!(spec.verification[0].body.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn duplicate_request_body_fields_are_rejected() {
+        for fields in [
+            "- Request body: first\n- Request body: second",
+            "- Request body: first\n- Body: second",
+        ] {
+            let markdown = format!(
+                "# Service: Example\n## Endpoints\n### `POST /items`\n- Response `200`: ok\n## Verification\n### `POST /items`\n{fields}\n- Response `200`\n"
+            );
+            let error = ServiceSpec::parse(&markdown).unwrap_err().to_string();
+            assert!(
+                error.contains("duplicate verification field"),
+                "got: {error}"
+            );
+        }
     }
 
     #[test]

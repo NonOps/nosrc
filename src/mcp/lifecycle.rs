@@ -855,6 +855,22 @@ impl PreparationContext {
                             failure_category = "verification_failed",
                             "Candidate failed verification"
                         );
+                        if let PreparationError::Verification { suite, results } = &error {
+                            let suite = match suite {
+                                VerificationSuite::Operator => "operator",
+                                VerificationSuite::Generated => "generated",
+                            };
+                            for result in results.iter().filter(|result| !result.passed) {
+                                tracing::warn!(
+                                    suite,
+                                    case = result.case_index + 1,
+                                    expected_status = result.expected_status,
+                                    actual_status = ?result.actual_status,
+                                    failure_kind = result.failure_kind.unwrap_or("assertion_failed"),
+                                    "Verification case failed"
+                                );
+                            }
+                        }
                         if attempt < MAX_REPLACEMENT_ATTEMPTS {
                             repair_feedback = Some(feedback);
                             continue;
