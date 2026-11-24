@@ -11,7 +11,7 @@ const PRODUCTION_MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 
 #[derive(Default)]
 struct Limits {
-    peak_memory_growth_bytes: usize,
+    peak_requested_linear_memory_bytes: usize,
 }
 
 impl ResourceLimiter for Limits {
@@ -21,7 +21,7 @@ impl ResourceLimiter for Limits {
         desired: usize,
         _maximum: Option<usize>,
     ) -> Result<bool, wasmtime::Error> {
-        self.peak_memory_growth_bytes = self.peak_memory_growth_bytes.max(desired);
+        self.peak_requested_linear_memory_bytes = self.peak_requested_linear_memory_bytes.max(desired);
         Ok(desired <= PRODUCTION_MEMORY_LIMIT)
     }
 
@@ -180,9 +180,9 @@ async fn componentize_qjs_maps_nested_wit_values_and_measures_one_mib_binary_bod
         "request body length changed"
     );
     let request_fuel_used = request_fuel_before_call - request_store.get_fuel()?;
-    let request_peak_memory = request_store.data().peak_memory_growth_bytes;
+    let request_peak_memory = request_store.data().peak_requested_linear_memory_bytes;
     println!(
-        "1 MiB request decode: fuel={request_fuel_used}, production_budget={PRODUCTION_FUEL_BUDGET}, peak_memory_growth_bytes={request_peak_memory}"
+        "1 MiB request decode: fuel={request_fuel_used}, production_budget={PRODUCTION_FUEL_BUDGET}, peak_requested_linear_memory_bytes={request_peak_memory}"
     );
 
     // Measure response encoding independently: JavaScript allocates and
@@ -202,9 +202,9 @@ async fn componentize_qjs_maps_nested_wit_values_and_measures_one_mib_binary_bod
         "response body contents changed"
     );
     let response_fuel_used = response_fuel_before_call - response_store.get_fuel()?;
-    let response_peak_memory = response_store.data().peak_memory_growth_bytes;
+    let response_peak_memory = response_store.data().peak_requested_linear_memory_bytes;
     println!(
-        "1 MiB response encode: fuel={response_fuel_used}, production_budget={PRODUCTION_FUEL_BUDGET}, peak_memory_growth_bytes={response_peak_memory}"
+        "1 MiB response encode: fuel={response_fuel_used}, production_budget={PRODUCTION_FUEL_BUDGET}, peak_requested_linear_memory_bytes={response_peak_memory}"
     );
 
     // Keep the larger diagnostic ceiling so an over-budget measurement is
