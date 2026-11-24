@@ -49,6 +49,5 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Run tests
-        # Componentization tests are CPU-heavy; bound parallelism so they do not
-        # starve lifecycle tests with their own runtime deadlines.
-        run: cargo test --all-targets -- --test-threads=2
+        # Keep general componentization tests bounded; SPEC corpus runs in an isolated workflow.
+        run: cargo test --all-targets -- --test-threads=2 --show-output

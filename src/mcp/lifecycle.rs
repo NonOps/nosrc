@@ -94,6 +94,8 @@ pub struct PreparedGeneration {
     pub source_type: SourceType,
     pub trusted_results: Vec<AssertionResult>,
     pub model_results: Vec<AssertionResult>,
+    /// High-water resource measurements across disposable trusted, host-probe, model, and supplemental verification instances.
+    pub verification_telemetry: RuntimeTelemetry,
     pub supplemental_results: Vec<AssertionResult>,
     pub created_at: Instant,
     pub handler: Arc<Mutex<QuickJsHandler>>,
@@ -938,6 +940,37 @@ fn failed_results(results: &[AssertionResult]) -> Vec<AssertionResult> {
         .collect()
 }
 
+/// Merge high-water measurements from independent disposable verification instances.
+fn merge_verification_telemetry(target: &mut RuntimeTelemetry, source: RuntimeTelemetry) {
+    target.generation_fuel_high_water = match (
+        target.generation_fuel_high_water,
+        source.generation_fuel_high_water,
+    ) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (left, right) => left.or(right),
+    };
+    target.generation_memory_high_water_bytes = match (
+        target.generation_memory_high_water_bytes,
+        source.generation_memory_high_water_bytes,
+    ) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (left, right) => left.or(right),
+    };
+    target.instance_memory_high_water_bytes = match (
+        target.instance_memory_high_water_bytes,
+        source.instance_memory_high_water_bytes,
+    ) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (left, right) => left.or(right),
+    };
+    target.last_invocation_fuel_consumed = source
+        .last_invocation_fuel_consumed
+        .or(target.last_invocation_fuel_consumed);
+    target.instance_recreations = target
+        .instance_recreations
+        .saturating_add(source.instance_recreations);
+}
+
 pub(super) fn prepare_compiled(
     engine: QuickJsEngine,
     policy: AcceptancePolicy,
@@ -959,6 +992,10 @@ pub(super) fn prepare_compiled(
         )
     };
 
+    // Capture resource telemetry from the disposable instances that actually run
+    // verification. The fresh production instance below has not handled a request yet.
+    let mut verification_telemetry = RuntimeTelemetry::default();
+
     // Operator-controlled policy is mandatory when configured. MCP-first mode has
     // no trusted application suite yet, but retains the same hard runtime ceilings.
     let trusted_results = if policy.spec_assertions.is_empty() {
@@ -967,6 +1004,10 @@ pub(super) fn prepare_compiled(
         let mut trusted_candidate = instantiate(&engine)?;
         let results = ShadowVerifier::new()
             .evaluate_handler(&mut trusted_candidate, &policy.spec_assertions)?;
+        merge_verification_telemetry(
+            &mut verification_telemetry,
+            trusted_candidate.telemetry_snapshot(),
+        );
         drop(trusted_candidate);
         let failed_trusted = failed_results(&results);
         if !failed_trusted.is_empty() {
@@ -983,6 +1024,10 @@ pub(super) fn prepare_compiled(
     // independent source of application-specific acceptance criteria.
     let mut host_candidate = instantiate(&engine)?;
     let host_results = HostProbeVerifier.evaluate_handler(&mut host_candidate);
+    merge_verification_telemetry(
+        &mut verification_telemetry,
+        host_candidate.telemetry_snapshot(),
+    );
     drop(host_candidate);
     let failed_host_probes: Vec<String> = host_results
         .iter()
@@ -1009,6 +1054,10 @@ pub(super) fn prepare_compiled(
         let mut model_candidate = instantiate(&engine)?;
         model_results =
             ShadowVerifier::new().evaluate_handler(&mut model_candidate, &model_assertions)?;
+        merge_verification_telemetry(
+            &mut verification_telemetry,
+            model_candidate.telemetry_snapshot(),
+        );
         drop(model_candidate);
         let failed_model = failed_results(&model_results);
         if !failed_model.is_empty() {
@@ -1042,6 +1091,10 @@ pub(super) fn prepare_compiled(
                 }),
             }
         }
+        merge_verification_telemetry(
+            &mut verification_telemetry,
+            supplemental_candidate.telemetry_snapshot(),
+        );
     }
 
     // Production receives a fresh instance only after the trusted suite and,
@@ -1056,6 +1109,7 @@ pub(super) fn prepare_compiled(
         source_type,
         trusted_results,
         model_results,
+        verification_telemetry,
         supplemental_results,
         created_at: Instant::now(),
         handler: Arc::new(Mutex::new(handler)),
@@ -2318,3 +2372,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod evaluation_corpus;
