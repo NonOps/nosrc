@@ -148,7 +148,8 @@ impl ServiceSpec {
         let mut current_endpoint: Option<SpecEndpoint> = None;
         let mut current_verification: Option<SpecVerification> = None;
 
-        for line in markdown.lines() {
+        for (line_idx, line) in markdown.lines().enumerate() {
+            let line_num = line_idx + 1;
             let trimmed = line.trim();
 
             if trimmed.is_empty() {
@@ -167,7 +168,7 @@ impl ServiceSpec {
                 continue;
             }
 
-            // Major section header (## Capabilities, ## Schema, ## Endpoints)
+            // Major section header (## Capabilities, ## Schema, ## Endpoints, ## Verification)
             if let Some(section) = trimmed.strip_prefix("## ") {
                 if let Some(ep) = current_endpoint.take() {
                     endpoints.push(ep);
@@ -176,36 +177,34 @@ impl ServiceSpec {
                     verification.push(case);
                 }
                 let sec_lower = section.trim().to_lowercase();
-                if sec_lower.contains("capability") || sec_lower.contains("capabilities") {
-                    current_section = "capabilities";
-                } else if sec_lower.contains("schema") {
-                    current_section = "schema";
-                } else if sec_lower.contains("verification") || sec_lower.contains("verifications")
-                {
-                    current_section = "verification";
-                } else if sec_lower.contains("endpoint") || sec_lower.contains("endpoints") {
-                    current_section = "endpoints";
-                } else {
-                    current_section = "other";
-                }
+                current_section = match sec_lower.as_str() {
+                    "capabilities" => "capabilities",
+                    "schema" => "schema",
+                    "endpoints" => "endpoints",
+                    "verification" => "verification",
+                    _ => "other",
+                };
                 continue;
             }
 
             // Endpoint and verification case headers are scoped to their own sections.
             if let Some(title) = trimmed.strip_prefix("### ") {
                 let cleaned = title.trim().trim_matches('`').trim();
-                let mut parts = cleaned.split_whitespace();
-                let method = parts.next().unwrap_or("GET").to_uppercase();
-                let target = parts.next().unwrap_or("/");
                 match current_section {
                     "endpoints" | "endpoint_detail" => {
-                        let path = target.to_string();
+                        let (method, target) =
+                            parse_heading_method_target(cleaned, line_num, "endpoint")?;
+                        if !target.starts_with('/') {
+                            return Err(HostAbiError::MalformedJson(format!(
+                                "endpoint path must start with '/' on line {line_num}, got '{target}'"
+                            )));
+                        }
                         if let Some(ep) = current_endpoint.take() {
                             endpoints.push(ep);
                         }
                         current_endpoint = Some(SpecEndpoint {
                             method,
-                            path,
+                            path: target.to_string(),
                             description: None,
                             body_schema: None,
                             rules: Vec::new(),
@@ -214,6 +213,8 @@ impl ServiceSpec {
                         current_section = "endpoint_detail";
                     }
                     "verification" | "verification_detail" => {
+                        let (method, target) =
+                            parse_heading_method_target(cleaned, line_num, "verification")?;
                         if let Some(case) = current_verification.take() {
                             verification.push(case);
                         }
@@ -235,13 +236,34 @@ impl ServiceSpec {
                 continue;
             }
 
+            if matches!(
+                current_section,
+                "capabilities"
+                    | "schema"
+                    | "endpoints"
+                    | "endpoint_detail"
+                    | "verification"
+                    | "verification_detail"
+            ) && is_unsupported_bullet(trimmed)
+            {
+                return Err(HostAbiError::MalformedJson(format!(
+                    "unsupported bullet syntax on line {line_num}; use '- ' bullets"
+                )));
+            }
+
             // Parse content within current section
             match current_section {
                 "capabilities" => {
                     if let Some(item) = trimmed.strip_prefix("- ") {
                         let item = item.trim();
                         if let Some(state_val) = item.strip_prefix("state:") {
-                            capabilities.state = state_val.trim().to_string();
+                            let state_val = state_val.trim();
+                            if state_val.is_empty() {
+                                return Err(HostAbiError::MalformedJson(format!(
+                                    "capability 'state:' cannot be empty on line {line_num}"
+                                )));
+                            }
+                            capabilities.state = state_val.to_string();
                         } else if let Some(egress_val) = item.strip_prefix("egress:") {
                             let egress_str =
                                 egress_val.trim().trim_matches(|c| c == '[' || c == ']');
@@ -251,15 +273,29 @@ impl ServiceSpec {
                                     capabilities.egress.insert(d.to_string());
                                 }
                             }
+                        } else {
+                            return Err(HostAbiError::MalformedJson(format!(
+                                "unsupported capability field '{item}' on line {line_num}; expected 'state:' or 'egress:'"
+                            )));
                         }
                     }
                 }
                 "schema" => {
                     if let Some(item) = trimmed.strip_prefix("- ") {
                         let clean_schema = item.trim().trim_matches('`').trim();
-                        if !clean_schema.is_empty() {
-                            schema.push(clean_schema.to_string());
+                        if clean_schema.is_empty() {
+                            return Err(HostAbiError::MalformedJson(format!(
+                                "empty schema entry on line {line_num}"
+                            )));
                         }
+                        schema.push(clean_schema.to_string());
+                    }
+                }
+                "endpoints" | "verification" => {
+                    if trimmed.strip_prefix("- ").is_some() {
+                        return Err(HostAbiError::MalformedJson(format!(
+                            "bullet item outside of a '### <METHOD> <PATH>' heading on line {line_num}"
+                        )));
                     }
                 }
                 "verification_detail" => {
@@ -299,7 +335,7 @@ impl ServiceSpec {
                                     Some(expected.trim().trim_matches('`').to_string());
                             } else {
                                 return Err(HostAbiError::MalformedJson(format!(
-                                    "unsupported verification field '{item}'"
+                                    "unsupported verification field '{item}' on line {line_num}"
                                 )));
                             }
                         }
@@ -361,6 +397,53 @@ impl ServiceSpec {
 
 fn duplicate_verification_field(field: &str) -> HostAbiError {
     HostAbiError::MalformedJson(format!("duplicate verification field '{field}'"))
+}
+
+fn is_unsupported_bullet(trimmed: &str) -> bool {
+    if trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
+        return true;
+    }
+    let digits = trimmed.bytes().take_while(|b| b.is_ascii_digit()).count();
+    if digits > 0 {
+        let rest = &trimmed[digits..];
+        if rest.starts_with(". ") || rest.starts_with(") ") {
+            return true;
+        }
+    }
+    false
+}
+
+fn parse_heading_method_target<'a>(
+    cleaned: &'a str,
+    line_num: usize,
+    kind: &str,
+) -> Result<(String, &'a str), HostAbiError> {
+    let mut parts = cleaned.split_whitespace();
+    let Some(method_raw) = parts.next() else {
+        return Err(HostAbiError::MalformedJson(format!(
+            "malformed {kind} heading on line {line_num}; expected '### <METHOD> <PATH>'"
+        )));
+    };
+    let Some(target) = parts.next() else {
+        return Err(HostAbiError::MalformedJson(format!(
+            "malformed {kind} heading '{cleaned}' on line {line_num}; expected '### <METHOD> <PATH>'"
+        )));
+    };
+    if parts.next().is_some() {
+        return Err(HostAbiError::MalformedJson(format!(
+            "malformed {kind} heading '{cleaned}' on line {line_num}; expected '### <METHOD> <PATH>'"
+        )));
+    }
+    let method = method_raw.to_uppercase();
+    if !matches!(
+        method.as_str(),
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
+    ) {
+        return Err(HostAbiError::MalformedJson(format!(
+            "unsupported HTTP method '{method_raw}' in {kind} heading on line {line_num}"
+        )));
+    }
+    Ok((method, target))
 }
 
 fn parse_verification_header(header: &str) -> Result<(String, String), HostAbiError> {
@@ -836,9 +919,116 @@ A resilient spec-driven URL shortener.
             "\u{0}".repeat(10_000),
             "### `GET /a`\n".repeat(5_000),
             format!("# Service: {}\n", "x".repeat(1_000_000)),
+            "## Endpoints\n* GET /a\n+ POST /b\n1. DELETE /c\n".to_string(),
+            "## Capabilities\n- state: \n".to_string(),
         ];
         for input in inputs {
             let _ = ServiceSpec::parse(&input);
+        }
+    }
+
+    #[test]
+    fn section_headings_match_exactly_not_by_substring() {
+        let md = r#"
+# Service: Exact Sections
+
+## Not Capabilities
+- state: persistent
+- egress: [evil.com]
+
+## My Schema Notes
+- `should_not_be_parsed`
+
+## Example Endpoints
+### `GET /fake`
+- Response `200`: `ok`
+
+## Endpoints
+### `GET /real`
+- Response `200`: `ok`
+
+## Verification
+### `GET /real`
+- Response `200`
+"#;
+        let spec = ServiceSpec::parse(md).expect("valid spec with unknown sections");
+        assert_eq!(spec.capabilities.state, "volatile");
+        assert!(spec.capabilities.egress.is_empty());
+        assert!(spec.schema.is_empty());
+        assert_eq!(spec.endpoints.len(), 1);
+        assert_eq!(spec.endpoints[0].path, "/real");
+        assert!(spec.validate_verification().is_ok());
+    }
+
+    #[test]
+    fn unknown_sections_allow_arbitrary_markdown_including_star_bullets() {
+        let md = r#"
+# Service: Notes
+
+## Examples
+* Illustrative bullet
++ Another bullet
+1. Numbered item
+
+## Endpoints
+### `GET /ping`
+- Response `200`: `pong`
+
+## Verification
+### `GET /ping`
+- Response `200`
+"#;
+        let spec = ServiceSpec::parse(md).expect("unknown sections should be ignored");
+        assert_eq!(spec.endpoints.len(), 1);
+    }
+
+    #[test]
+    fn rejects_unsupported_bullet_syntax_in_structured_sections() {
+        for bad_bullet in [
+            "* state: volatile",
+            "+ state: volatile",
+            "1. state: volatile",
+            "2) state: volatile",
+        ] {
+            let md = format!("## Capabilities\n{bad_bullet}\n");
+            let err = ServiceSpec::parse(&md).unwrap_err().to_string();
+            assert!(err.contains("unsupported bullet syntax"), "got: {err}");
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_headings_and_capability_fields() {
+        let cases = [
+            (
+                "## Capabilities\n- unknown: value\n",
+                "unsupported capability field",
+            ),
+            ("## Capabilities\n- state:\n", "cannot be empty"),
+            ("## Schema\n- ``\n", "empty schema entry"),
+            (
+                "## Endpoints\n- stray bullet\n",
+                "outside of a '### <METHOD> <PATH>'",
+            ),
+            ("## Endpoints\n### `GET`\n", "malformed endpoint heading"),
+            (
+                "## Endpoints\n### `GET /a extra`\n",
+                "malformed endpoint heading",
+            ),
+            ("## Endpoints\n### `BOGUS /a`\n", "unsupported HTTP method"),
+            ("## Endpoints\n### `GET relative`\n", "must start with '/'"),
+            (
+                "## Verification\n### `POST`\n",
+                "malformed verification heading",
+            ),
+        ];
+        for (md, expected_substr) in cases {
+            let err = ServiceSpec::parse(md)
+                .expect_err(&format!("expected error for:\n{md}"))
+                .to_string();
+            assert!(
+                err.contains(expected_substr),
+                "expected '{expected_substr}' in '{err}' for:\n{md}"
+            );
         }
     }
 }

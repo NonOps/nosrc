@@ -197,11 +197,8 @@ mod tests {
 - Response `200`: text/plain
 
 ## Verification
-- case: test
-  method: GET
-  path: /test
-  response:
-    status: 200
+### `GET /test`
+- Response `200`
 "#;
 
     fn fixture() -> (ServiceSpec, SynthesisOutput, Vec<u8>) {
