@@ -49,5 +49,4 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Run tests
-        # Keep general componentization tests bounded; SPEC corpus runs in an isolated workflow.
         run: cargo test --all-targets -- --test-threads=2 --show-output
