@@ -1,38 +1,57 @@
 # ABI v2 feasibility spike
 
-This directory contains a deliberately minimal end-to-end test for the first
-mandatory ABI v2 feasibility gate: a `componentize-qjs` component importing a
-host-defined WIT interface and calling it from JavaScript.
+This directory contains reproducible componentize-qjs experiments for the ABI v2
+feasibility and mapping questions. These are test fixtures, not production
+capabilities or a selected production ABI.
 
-## Run
+## Host-import feasibility gate
 
-From the repository root:
+Run:
 
 ```sh
 cargo test --test abi_v2_host_import -- --nocapture
 ```
 
-The integration test uses the repository-pinned `componentize-qjs` dependency and the
-same synchronous QuickJS runtime mode as the production componentizer. It:
+The integration test uses the repository-pinned `componentize-qjs` dependency
+and the same synchronous QuickJS runtime mode as the production componentizer.
+It componentizes `host-import.js` against `host-import.wit`, links the imported
+`nosrc:abi-v2-spike/host` interface in Wasmtime, calls the exported
+`roundtrip`, and checks the exact result `host:componentize-qjs`.
 
-1. Componentizes `host-import.js` against `host-import.wit`.
-2. Defines the imported `nosrc:abi-v2-spike/host` interface in a Wasmtime
-   component linker.
-3. Instantiates the component and calls its exported `roundtrip` function.
-4. Verifies that JavaScript called the host function and returned its result.
+This gate passed on Linux, Windows, and macOS in CI on commit
+`810f4183d48f940a2250ed579629b037da97324d` (PR #86). No network, filesystem,
+persistence, or other host authority is exposed.
 
-A successful run exits successfully. The assertion checks the exact host-provided value returned through JavaScript.
+## Mapping and binary-body measurements
 
-This is a feasibility harness, not a production capability implementation.
-No network, filesystem, persistence, or other host authority is exposed.
+Run:
 
-## Gate
+```sh
+cargo test --test abi_v2_mapping -- --nocapture
+```
 
-Do not finalize the ABI v2 representation or implement capabilities until this
-test succeeds on the pinned dependency and supported CI platforms. If the
-component cannot import and call the host interface, stop and revisit the
-capability architecture.
+The second test exercises the exact JavaScript/WIT mapping against a dynamic
+Wasmtime host import:
 
-The remaining spike work (records, variants, options, lists, binary values,
-text codecs, and fuel/memory measurements) follows only after this gate is
-demonstrated.
+- Nested records use JavaScript objects and camelCase property names
+  (`request.meta.requestId`, `request.meta.attempt`).
+- A WIT variant is passed as a tagged object (`{ tag: "bytes", val: Uint8Array }`).
+- `option<string>` none and some values are passed as JavaScript `null` and
+  a string, respectively.
+- `list<u8>` is passed as a `Uint8Array`; the host checks every byte.
+- The test reports whether QuickJS exposes `TextEncoder` and `TextDecoder`
+  and whether their UTF-8 round trip works. The result is printed, not assumed.
+- A 1 MiB `list<u8>` request decode and 1 MiB response encode are measured in
+  separate fresh Wasmtime stores. Fuel consumption is printed independently.
+
+The test gives each measurement 100,000,000 fuel so it can print diagnostics
+for an operation that exceeds the current production budget of 50,000,000.
+It then explicitly fails if either the 1 MiB request decode or response encode
+uses more than 50,000,000 fuel. Each store enforces the current 64 MiB
+linear-memory growth limit and records the largest memory-growth request
+observed by the limiter. That number is growth requested by Wasmtime, not total
+process RSS or total component memory.
+
+No measured values are checked into this document until the test has run on CI.
+Review the printed fuel and memory measurements before choosing typed WIT
+versus JSON/base64. The experiment does not by itself approve an ABI v2 design.
