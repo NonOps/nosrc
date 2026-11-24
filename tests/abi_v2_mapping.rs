@@ -21,7 +21,8 @@ impl ResourceLimiter for Limits {
         desired: usize,
         _maximum: Option<usize>,
     ) -> Result<bool, wasmtime::Error> {
-        self.peak_requested_linear_memory_bytes = self.peak_requested_linear_memory_bytes.max(desired);
+        self.peak_requested_linear_memory_bytes =
+            self.peak_requested_linear_memory_bytes.max(desired);
         Ok(desired <= PRODUCTION_MEMORY_LIMIT)
     }
 
