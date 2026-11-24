@@ -51,4 +51,4 @@ jobs:
       - name: Run tests
         # Componentization tests are CPU-heavy; bound parallelism so they do not
         # starve lifecycle tests with their own runtime deadlines.
-        run: cargo test --all-targets -- --test-threads=2
+        run: cargo test --all-targets -- --test-threads=2 --show-output

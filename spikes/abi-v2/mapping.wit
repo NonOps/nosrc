@@ -1,0 +1,35 @@
+package nosrc:abi-v2-mapping;
+
+interface host {
+    record request-meta {
+        request-id: string,
+        attempt: u32,
+    }
+
+    record nested-request {
+        meta: request-meta,
+    }
+
+    variant body-kind {
+        text(string),
+        bytes(list<u8>),
+        empty,
+    }
+
+    record payload {
+        request: nested-request,
+        kind: body-kind,
+        note: option<string>,
+        correlation-id: option<string>,
+        raw: list<u8>,
+    }
+
+    inspect: func(value: payload) -> string;
+}
+
+world mapping {
+    import host;
+    export probe: func() -> string;
+    export decode-request: func(body: list<u8>) -> u32;
+    export encode-response: func(size: u32) -> list<u8>;
+}
