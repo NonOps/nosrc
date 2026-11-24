@@ -171,7 +171,7 @@ Every declared endpoint must have at least one matching case under `## Verificat
 - Body contains: `hello`
 ```
 
-`Header:` sets a request header; `Response header:` asserts an exact response-header value. `Body:`, `Body contains:`, and `Response` are scalar fields and may appear at most once per case. Header names are case-insensitive. Repeated query keys in trusted verification headings are rejected because the current handler ABI represents each query key with one string value.
+`Header:` sets a request header; `Request body:` supplies the UTF-8 request body (wrap JSON in backticks); `Response header:` asserts an exact response-header value. `Request body:` may appear once per case. The legacy `Body:` label remains accepted as an alias for request bodies; prefer `Request body:` for clarity. `Body contains:` and `Response` are scalar response assertions and may appear at most once per case. Header names are case-insensitive. Repeated query keys in trusted verification headings are rejected because the current handler ABI represents each query key with one string value.
 
 ## Configuration and diagnostics
 

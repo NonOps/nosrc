@@ -111,6 +111,27 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
+    fn trusted_policy_passes_request_body_to_the_guest_envelope() {
+        let spec = ServiceSpec::parse(
+            r#"# Service: Example
+## Endpoints
+### `POST /items`
+- Response `200`: ok
+## Verification
+### `POST /items`
+- Request body: `{"name":"hello"}`
+- Response `200`
+"#,
+        )
+        .unwrap();
+        let policy = AcceptancePolicy::from_spec(&spec).unwrap();
+        assert_eq!(
+            policy.spec_assertions[0].request.body.as_deref(),
+            Some(r#"{"name":"hello"}"#)
+        );
+    }
+
+    #[test]
     fn policy_rejects_relaxed_runtime_ceilings() {
         let policy = AcceptancePolicy {
             spec_assertions: vec![ContractAssertion {

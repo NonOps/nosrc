@@ -107,7 +107,7 @@ JavaScript module-level variables are the only current guest state. They survive
 
 Trusted SPEC cases, host-generated ABI probes, and generated supplemental assertions each run on separate disposable candidate instances. Each assertion suite runs sequentially on one instance so stateful request sequences within that suite are preserved. The production instance is created separately after required checks pass.
 
-The trusted verifier checks operator-configured response status, body substring, and response-header expectations. Trusted cases can also set request headers and decoded query parameters. The string-map request ABI cannot represent multi-valued query parameters; repeated query keys in trusted verification headings are rejected.
+The trusted verifier checks operator-configured response status, response-body substring, and response-header expectations. Trusted cases can set request headers, a UTF-8 request body (`Request body:` in SPEC.md), and decoded query parameters. The string-map request ABI cannot represent multi-valued query parameters; repeated query keys in trusted verification headings are rejected. Verification failures are logged with a one-based case number and expected/actual status; request bodies and assertion contents are not logged.
 
 Host probes are fixed by the runtime and are not derived from SPEC text or model output. They exercise a minimal request, an encoded path with unusual query/header values, and a JSON body containing escaped delimiters and Unicode. They require the guest not to trap and to return a bounded, syntactically valid response envelope with a valid HTTP status and header syntax. They do not test application-specific route semantics, authorization, data handling, or general security.
 
