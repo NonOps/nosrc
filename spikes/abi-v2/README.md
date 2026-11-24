@@ -48,9 +48,9 @@ The test gives each measurement 100,000,000 fuel so it can print diagnostics
 for an operation that exceeds the current production budget of 50,000,000.
 It then explicitly fails if either the 1 MiB request decode or response encode
 uses more than 50,000,000 fuel. Each store enforces the current 64 MiB
-linear-memory growth limit and records the largest memory-growth request
-observed by the limiter. That number is growth requested by Wasmtime, not total
-process RSS or total component memory.
+linear-memory growth limit and records the largest requested total linear-memory
+size observed by the limiter. That number is the requested memory size, not a
+growth delta, process RSS, or total component memory.
 
 No measured values are checked into this document until the test has run on CI.
 Review the printed fuel and memory measurements before choosing typed WIT
