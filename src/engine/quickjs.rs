@@ -8,7 +8,7 @@ use wasmtime::{Config, Engine, ResourceLimiter, Store, StoreLimits, StoreLimitsB
 use crate::engine::http_envelope::{RequestEnvelope, ResponseEnvelope, MAX_HANDLER_RESPONSE_BYTES};
 use crate::error::{EngineError, SandboxTrap};
 
-pub const DEFAULT_COMPONENT_FUEL: u64 = 50_000_000;
+pub const DEFAULT_COMPONENT_FUEL: u64 = 250_000_000;
 pub const DEFAULT_COMPONENT_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 pub const DEFAULT_GUEST_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
 // Keep the epoch cadence above Windows' default timer granularity. A 1 ms
