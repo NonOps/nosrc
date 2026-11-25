@@ -1,0 +1,22 @@
+package nosrc:abi-v2-json-benchmark;
+
+interface types {
+    record request-body-record {
+        bytes: list<u8>,
+        utf8-text: option<string>,
+    }
+
+    variant request-body-variant {
+        text(string),
+        binary(list<u8>),
+    }
+}
+
+world json-benchmark {
+    use types.{request-body-record, request-body-variant};
+
+    export handle-record: func(body: request-body-record) -> string;
+    export handle-variant: func(body: request-body-variant) -> string;
+    export serialize-response: func(payload: string) -> string;
+    export roundtrip-binary: func(body: list<u8>) -> list<u8>;
+}

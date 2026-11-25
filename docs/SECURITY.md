@@ -34,7 +34,7 @@ The optional `mcp --http-port` mode also opens an HTTP application listener in t
 
 ## Enforced limits and behavior
 
-- Component fuel budget: 50,000,000 units by default, with operator policy unable to exceed the runtime ceiling.
+- Component fuel budget: 250,000,000 units by default, with operator policy unable to exceed the runtime ceiling. This was raised from 50,000,000 after the 1 MiB JSON component benchmark measured 143–178 million units for JSON serialization/handling; the independent 30-second epoch deadline and 64 MiB memory ceiling remain in force.
 - Guest wall-clock execution deadline: 30 seconds by default, enforced by Wasmtime epoch interruption independently of fuel. The epoch ticker advances every 10 ms; interruption is coarse-grained and may occur after the nominal deadline at the next instrumented guest check.
 - Per-linear-memory growth: 64 MiB default ceiling.
 - Component handles, table elements, instances, tables, and memories are bounded.

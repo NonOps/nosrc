@@ -1,57 +1,70 @@
-# ABI v2 feasibility spike
+# ABI v2 feasibility and conformance fixtures
 
-This directory contains reproducible componentize-qjs experiments for the ABI v2
-feasibility and mapping questions. These are test fixtures, not production
-capabilities or a selected production ABI.
+These experiments are fixtures, not production ABI or capability changes.
 
-## Host-import feasibility gate
+## Existing feasibility and mapping probes
 
 Run:
 
 ```sh
 cargo test --test abi_v2_host_import -- --nocapture
+cargo test --test abi_v2_mapping -- --nocapture
 ```
 
-The integration test uses the repository-pinned `componentize-qjs` dependency
-and the same synchronous QuickJS runtime mode as the production componentizer.
-It componentizes `host-import.js` against `host-import.wit`, links the imported
-`nosrc:abi-v2-spike/host` interface in Wasmtime, calls the exported
-`roundtrip`, and checks the exact result `host:componentize-qjs`.
+The host-import probe establishes that componentize-qjs can call an imported
+host interface. The mapping probe covers nested records, variants, options,
+`list<u8>` / `Uint8Array`, and raw 1 MiB binary mapping costs.
 
-This gate passed on Linux, Windows, and macOS in CI on commit
-`810f4183d48f940a2250ed579629b037da97324d` (PR #86). No network, filesystem,
-persistence, or other host authority is exposed.
-
-## Mapping and binary-body measurements
+## Realistic JSON body representation comparison
 
 Run:
 
 ```sh
-cargo test --test abi_v2_mapping -- --nocapture
+cargo test --test abi_v2_json_benchmark -- --nocapture
 ```
 
-The second test exercises the exact JavaScript/WIT mapping against a dynamic
-Wasmtime host import:
+The benchmark sends the same exactly 1 MiB ASCII JSON request through the two
+candidate WIT body shapes:
 
-- Nested records use JavaScript objects and camelCase property names
-  (`request.meta.requestId`, `request.meta.attempt`).
-- A WIT variant is passed as a tagged object (`{ tag: "bytes", val: Uint8Array }`).
-- `option<string>` none and some values are passed as JavaScript `null` and
-  a string, respectively.
-- `list<u8>` is passed as a `Uint8Array`; the host checks every byte.
-- The test reports whether QuickJS exposes `TextEncoder` and `TextDecoder`
-  and whether their UTF-8 round trip works. The result is printed, not assumed.
-- A 1 MiB `list<u8>` request decode and 1 MiB response encode are measured in
-  separate fresh Wasmtime stores. Fuel consumption is printed independently.
+1. A record containing authoritative `list<u8>` bytes plus
+   `option<string>` UTF-8 text.
+2. A tagged variant containing either text or binary; this benchmark measures
+   the explicitly selected text case.
 
-The test gives each measurement 100,000,000 fuel so it can print diagnostics
-for an operation that exceeds the current production budget of 50,000,000.
-It then explicitly fails if either the 1 MiB request decode or response encode
-uses more than 50,000,000 fuel. Each store enforces the current 64 MiB
-linear-memory growth limit and records the largest requested total linear-memory
-size observed by the limiter. That number is the requested memory size, not a
-growth delta, process RSS, or total component memory.
+Both paths execute guest `JSON.parse` and `JSON.stringify`; the first keeps
+both byte and text representations live while the guest handles the request.
+The test measures each path with a separate Wasmtime store and a 1,000,000,000-fuel
+measurement ceiling, so one expensive path does not prevent the others from
+being measured. It reports per-invocation fuel and limiter-observed peak
+requested linear-memory size, then compares each successful measurement against
+the revised production limits of 250,000,000 fuel and 64 MiB linear-memory growth.
+A path that still exhausts the measurement ceiling is reported as unmeasurable
+rather than silently treated as a production-limit result. The test fails after
+all paths have been attempted if any path exceeds the production limits or
+cannot complete within the measurement ceiling. It separately measures creation
+of an exactly 1 MiB JSON response with `JSON.stringify`.
 
-No measured values are checked into this document until the test has run on CI.
-Review the printed fuel and memory measurements before choosing typed WIT
-versus JSON/base64. The experiment does not by itself approve an ABI v2 design.
+The benchmark intentionally does not infer text/binary intent from UTF-8
+validity. The host selects the text variant explicitly. The binary round-trip
+case includes NUL and invalid UTF-8 bytes and requires byte-for-byte equality.
+
+The memory figure is Wasmtime limiter-observed linear-memory growth, not process
+RSS or total host allocation. Fuel is measured around each exported invocation;
+component instantiation is outside the per-invocation fuel measurement.
+
+## HTTP no-body conformance already present in the runtime
+
+The current host behavior is suppression, not rejection:
+
+- `ResponseEnvelope::into_axum_response` suppresses guest-supplied bodies for
+  `204`, `205`, and `304`.
+- Ingress middleware strips bodies from every `HEAD` response, including
+  guest responses that otherwise contain a body.
+
+Existing tests cover the guest-supplied-body cases:
+- `no_content_reset_content_and_not_modified_responses_have_no_body`
+  in `src/engine/http_envelope.rs`.
+- `ingress_dispatches_requests_to_the_active_quickjs_handler_and_strips_head_body`
+  in `src/ingress/mod.rs` (the corresponding GET returns a non-empty body).
+
+No production behavior is changed by these fixtures.
