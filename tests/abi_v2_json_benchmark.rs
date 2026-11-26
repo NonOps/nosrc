@@ -189,6 +189,41 @@ async fn compares_full_one_mib_json_body_representations_and_response_serializat
         }
     }
 
+    // Candidate B: bytes-only, matching the production request contract.
+    // The guest performs the documented decodeUtf8 conversion before JSON.parse.
+    let bytes_only_body = Val::List(json.as_bytes().iter().copied().map(Val::U8).collect());
+    let (mut bytes_only_store, bytes_only_instance) = instantiate(&engine, &component)?;
+    match call_string_export(
+        &mut bytes_only_store,
+        &bytes_only_instance,
+        "handle-bytes-only",
+        bytes_only_body,
+    ) {
+        Ok((bytes_only_response, bytes_only_fuel, bytes_only_peak)) => {
+            ensure!(
+                bytes_only_response.len() == ONE_MIB && bytes_only_response == json,
+                "bytes-only request path changed the JSON response"
+            );
+            all_within_production_limits &= report_measurement(
+                "bytes-only UTF-8 decode + JSON request/handler path",
+                bytes_only_fuel,
+                bytes_only_peak,
+            );
+        }
+        Err(error) => {
+            // This is the deliberately rejected bytes-only alternative. Its
+            // failure is evidence for retaining the host-validated UTF-8 view
+            // in the production request record; it must not fail CI once the
+            // selected production representation passes its own measurement.
+            report_invocation_failure(
+                "rejected bytes-only UTF-8 decode + JSON request/handler candidate",
+                &error,
+                &bytes_only_store,
+            );
+            println!("bytes-only candidate rejected: guest-side UTF-8 decoding exceeds the production fuel budget");
+        }
+    }
+
     // Candidate B: the actual WIT text variant. The host explicitly selects the
     // text case; the guest never guesses based on whether bytes happen to be UTF-8.
     let text_variant = Val::Variant("text".to_owned(), Some(Box::new(Val::String(json.clone()))));

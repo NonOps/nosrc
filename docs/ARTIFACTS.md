@@ -27,7 +27,7 @@ The exact SPEC text used to synthesize the handler. Its SHA-256 is recorded in t
 
 ### `handler.js`
 
-The self-contained JavaScript ES module synthesized for the SPEC. The handler exports `handle(requestJson)` and follows the JSON request/response envelope contract. It is source intended for inspection and review.
+The self-contained JavaScript ES module synthesized for the SPEC. The handler exports ABI v2 `handle(request)`, using typed WIT records (`nosrc:runtime@2.0.0`) rather than JSON request/response envelopes. It is source intended for inspection and review.
 
 ### `component.wasm`
 
@@ -55,6 +55,7 @@ Current manifest fields:
 
 | Field | Meaning |
 |---|---|
+| `abi_version` | Required handler ABI version (`2.0.0`); incompatible or v1 bundles are rejected |
 | `service_name` | Service name parsed from the SPEC |
 | `spec_sha256` | SHA-256 digest of the exact SPEC text read for this run |
 | `module_hash` | Hash identifying the compiled component in the engine |

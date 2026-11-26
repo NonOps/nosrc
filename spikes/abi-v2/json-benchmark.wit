@@ -17,6 +17,7 @@ world json-benchmark {
 
     export handle-record: func(body: request-body-record) -> string;
     export handle-variant: func(body: request-body-variant) -> string;
+    export handle-bytes-only: func(body: list<u8>) -> string;
     export serialize-response: func(payload: string) -> string;
     export roundtrip-binary: func(body: list<u8>) -> list<u8>;
 }

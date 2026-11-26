@@ -1,11 +1,34 @@
-export function handle(requestJson) {
-  const request = JSON.parse(requestJson);
-  if (request.method === "GET" && request.path === "/jobs/queued") {
-    return JSON.stringify({
-      status: 202,
-      headers: { "content-type": "text/plain", "x-job-state": "queued" },
-      body: "queued"
-    });
+function decodeUtf8(bytes) {
+  let encoded = "";
+  for (const byte of bytes) encoded += "%" + byte.toString(16).padStart(2, "0");
+  return decodeURIComponent(encoded);
+}
+
+function encodeUtf8(value) {
+  const encoded = encodeURIComponent(value);
+  const bytes = [];
+  for (let i = 0; i < encoded.length; i++) {
+    if (encoded[i] === "%") {
+      bytes.push(parseInt(encoded.slice(i + 1, i + 3), 16));
+      i += 2;
+    } else {
+      bytes.push(encoded.charCodeAt(i));
+    }
   }
-  return JSON.stringify({ status: 404, headers: {}, body: "not found" });
+  return new Uint8Array(bytes);
+}
+
+function header(name, value) {
+  return { name, value: encodeUtf8(value) };
+}
+
+function text(status, body, headers = []) {
+  return { status, headers, body: { tag: "text", val: body } };
+}
+
+export function handle(request) {
+  if (request.method === "GET" && request.path === "/jobs/queued") {
+    return text(202, "queued", [header("content-type", "text/plain"), header("x-job-state", "queued")]);
+  }
+  return text(404, "not found");
 }

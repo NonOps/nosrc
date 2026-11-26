@@ -130,16 +130,19 @@ async fn stdio_protocol_supports_prepare_status_activate_and_invoke() {
     assert!(names.contains(&"export_app"));
 
     let js_code = r#"
-        export function handle(requestJson) {
-            const request = JSON.parse(requestJson);
+        export function handle(request) {
             if (request.path === "/health") {
-                return JSON.stringify({
+                return {
                     status: 200,
-                    headers: { "content-type": "text/plain" },
-                    body: "healthy"
-                });
+                    headers: [{ name: "content-type", value: new Uint8Array([116, 101, 120, 116, 47, 112, 108, 97, 105, 110]) }],
+                    body: { tag: "text", val: "healthy" }
+                };
             }
-            return JSON.stringify({ status: 404, headers: {}, body: "not found" });
+            return {
+                status: 404,
+                headers: [],
+                body: { tag: "text", val: "not found" }
+            };
         }
     "#;
     let prepared = send_request(
@@ -215,7 +218,8 @@ async fn stdio_protocol_supports_prepare_status_activate_and_invoke() {
     .await;
     let response = structured_result(&invoked);
     assert_eq!(response["status"], 200);
-    assert_eq!(response["body"], "healthy");
+    assert_eq!(response["body"]["tag"], "text");
+    assert_eq!(response["body"]["val"], "healthy");
 
     let final_status = send_request(
         &mut stdin,
@@ -346,16 +350,19 @@ async fn shared_http_listener_serves_the_generation_activated_over_mcp() {
     assert!(before.starts_with("HTTP/1.1 503"), "{before}");
 
     let js_code = r#"
-        export function handle(requestJson) {
-            const request = JSON.parse(requestJson);
+        export function handle(request) {
             if (request.path === "/health") {
-                return JSON.stringify({
+                return {
                     status: 200,
-                    headers: { "content-type": "text/plain" },
-                    body: "healthy"
-                });
+                    headers: [{ name: "content-type", value: new Uint8Array([116, 101, 120, 116, 47, 112, 108, 97, 105, 110]) }],
+                    body: { tag: "text", val: "healthy" }
+                };
             }
-            return JSON.stringify({ status: 404, headers: {}, body: "not found" });
+            return {
+                status: 404,
+                headers: [],
+                body: { tag: "text", val: "not found" }
+            };
         }
     "#;
     let prepared = send_request(

@@ -46,6 +46,11 @@ pub fn load_and_verify(bundle_dir: &Path) -> anyhow::Result<(ActiveGeneration, B
 
     let manifest: ExportManifest = serde_json::from_slice(&manifest_bytes)
         .context("Bundle manifest.json is not a valid export manifest")?;
+    if manifest.abi_version != crate::export::EXPORT_ABI_VERSION {
+        bail!(
+            "Bundle requires ABI v2 (nosrc:runtime@2.0.0); v1 or incompatible bundles are not supported"
+        );
+    }
     let spec_digest = validate_digest("spec_sha256", &manifest.spec_sha256)?;
     let spec_bytes = read_optional_bundle_file(bundle_dir, "SPEC.md", MAX_SPEC_BYTES)?;
     if manifest.policy_mode == "draft" && spec_bytes.is_none() {
@@ -272,17 +277,18 @@ mod tests {
     use crate::engine::quickjs::test_support;
     use crate::export::{ExportAssertions, ExportManifest};
     use crate::synthesizer::ContractAssertion;
-    use std::collections::HashMap;
 
     fn assertion(name: &str) -> ContractAssertion {
         ContractAssertion {
             name: name.to_string(),
             request: RequestEnvelope {
                 method: "GET".to_string(),
+                scheme: None,
+                authority: None,
                 path: "/health".to_string(),
-                query: HashMap::new(),
-                headers: HashMap::new(),
-                body: None,
+                query: None,
+                headers: vec![],
+                body: vec![],
             },
             expected_status: 200,
             body_contains: Some("healthy".to_string()),
@@ -298,6 +304,7 @@ mod tests {
             .unwrap();
         let component_hash = crate::hex_lower(Sha256::digest(&component_bytes));
         let manifest = ExportManifest {
+            abi_version: crate::export::EXPORT_ABI_VERSION.to_string(),
             service_name: "Bundle test".into(),
             spec_sha256: "a".repeat(64),
             module_hash: component_hash.clone(),

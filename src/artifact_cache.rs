@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::synthesizer::SynthesisOutput;
 
-const CACHE_SCHEMA_VERSION: u32 = 2;
+const CACHE_SCHEMA_VERSION: u32 = 3;
 const MAX_MANIFEST_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_COMPONENT_BYTES: u64 = 64 * 1024 * 1024;
 

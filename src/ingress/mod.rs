@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 
-use crate::engine::http_envelope::{ErrorEnvelope, RequestEnvelope};
+use crate::engine::http_envelope::{ErrorEnvelope, RequestEnvelope, RequestError};
 use crate::engine::quickjs::{QuickJsHandler, RuntimeTelemetry, DEFAULT_GUEST_EXECUTION_TIMEOUT};
 use crate::error::EngineError;
 
@@ -217,10 +217,18 @@ async fn handle_http_request(
 
     let envelope = match RequestEnvelope::try_from_parts(&method, &uri, &headers, body) {
         Ok(envelope) => envelope,
-        Err(_) => {
+        Err(RequestError::ConnectUnsupported) => {
             return ErrorEnvelope {
-                error: "Request body must be valid UTF-8 for this handler ABI".to_string(),
-                error_type: "InvalidRequestBody".to_string(),
+                error: "CONNECT tunneling is not supported".to_string(),
+                error_type: "MethodNotAllowed".to_string(),
+                status: StatusCode::METHOD_NOT_ALLOWED.as_u16(),
+            }
+            .into_axum_response();
+        }
+        Err(RequestError::InvalidHeaderValue(_)) => {
+            return ErrorEnvelope {
+                error: "Request contains an invalid header value".to_string(),
+                error_type: "InvalidRequestHeader".to_string(),
                 status: StatusCode::BAD_REQUEST.as_u16(),
             }
             .into_axum_response();
@@ -810,7 +818,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_utf8_header_values_are_dropped_instead_of_failing_the_request() {
+    async fn non_utf8_header_values_are_preserved_for_the_guest() {
         let app = app_with_active_handler().await;
         let request = Request::builder()
             .uri("/echo?q=1")
@@ -825,9 +833,9 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         let echoed: serde_json::Value = serde_json::from_str(&body_text(response).await).unwrap();
-        assert_eq!(echoed["headers"]["x-good"], "ok");
-        assert!(echoed["headers"].get("x-binary").is_none());
-        assert_eq!(echoed["query"]["q"], "1");
+        assert!(echoed["headerNames"].as_str().unwrap().contains("x-good"));
+        assert!(echoed["headerNames"].as_str().unwrap().contains("x-binary"));
+        assert_eq!(echoed["query"], "q=1");
     }
 
     #[tokio::test]
@@ -870,15 +878,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_utf8_request_bodies_are_rejected_with_a_client_error() {
+    async fn connect_method_is_rejected_at_ingress() {
         let app = app_with_active_handler().await;
         let request = Request::builder()
-            .method("POST")
-            .uri("/echo")
-            .body(Body::from(vec![0xff, 0xfe, 0x00]))
+            .method(Method::CONNECT)
+            .uri("example.com:443")
+            .body(Body::empty())
             .unwrap();
         let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(response.headers()["x-nosrc-error"], "InvalidRequestBody");
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(response.headers()["x-nosrc-error"], "MethodNotAllowed");
     }
 }

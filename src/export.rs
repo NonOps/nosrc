@@ -21,8 +21,12 @@ pub struct RepairSummary {
     pub failure_categories: Vec<String>,
 }
 
+pub const EXPORT_ABI_VERSION: &str = "2.0.0";
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ExportManifest {
+    #[serde(default)]
+    pub abi_version: String,
     pub service_name: String,
     pub spec_sha256: String,
     pub module_hash: String,
@@ -149,6 +153,7 @@ pub fn export_artifacts_with_policy(
     write_artifact(staging_path, "component.wasm", component_bytes)?;
 
     let manifest = ExportManifest {
+        abi_version: EXPORT_ABI_VERSION.to_string(),
         service_name: spec.name.clone(),
         spec_sha256: crate::hex_lower(Sha256::digest(spec_text.as_bytes())),
         module_hash: module_hash.to_string(),

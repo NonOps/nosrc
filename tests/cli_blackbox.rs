@@ -38,20 +38,19 @@ impl Drop for Provider {
 fn completion() -> Value {
     let synthesis = json!({
         "handler_code": r#"
-            export function handle(requestJson) {
-                const request = JSON.parse(requestJson);
+            export function handle(request) {
                 if (request.method === "GET" && request.path === "/hello") {
-                    return JSON.stringify({
+                    return {
                         status: 200,
-                        headers: { "content-type": "application/json" },
-                        body: JSON.stringify({ message: "hello" })
-                    });
+                        headers: [{ name: "content-type", value: new Uint8Array([97, 112, 112, 108, 105, 99, 97, 116, 105, 111, 110, 47, 106, 115, 111, 110]) }],
+                        body: { tag: "text", val: JSON.stringify({ message: "hello" }) }
+                    };
                 }
-                return JSON.stringify({
+                return {
                     status: 404,
-                    headers: { "content-type": "text/plain" },
-                    body: "not found"
-                });
+                    headers: [{ name: "content-type", value: new Uint8Array([116, 101, 120, 116, 47, 112, 108, 97, 105, 110]) }],
+                    body: { tag: "text", val: "not found" }
+                };
             }
         "#,
         "code_format": "javascript",
@@ -59,10 +58,12 @@ fn completion() -> Value {
             "name": "generated hello assertion",
             "request": {
                 "method": "GET",
+                "scheme": null,
+                "authority": null,
                 "path": "/hello",
-                "query": {},
-                "headers": {},
-                "body": null
+                "query": null,
+                "headers": [],
+                "body": []
             },
             "expected_status": 200,
             "body_contains": "hello"

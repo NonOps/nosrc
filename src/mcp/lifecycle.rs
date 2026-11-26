@@ -172,20 +172,17 @@ fn validate_assertions(assertions: &[ContractAssertion], label: &str) -> Result<
         )));
     }
     let total_bytes = assertions.iter().fold(0usize, |total, assertion| {
-        let request_header_bytes = assertion
-            .request
-            .headers
-            .iter()
-            .fold(0usize, |bytes, (name, value)| {
-                bytes.saturating_add(name.len()).saturating_add(value.len())
-            });
-        let query_bytes = assertion
-            .request
-            .query
-            .iter()
-            .fold(0usize, |bytes, (name, value)| {
-                bytes.saturating_add(name.len()).saturating_add(value.len())
-            });
+        let request_header_bytes =
+            assertion
+                .request
+                .headers
+                .iter()
+                .fold(0usize, |bytes, header| {
+                    bytes
+                        .saturating_add(header.name.len())
+                        .saturating_add(header.value.len())
+                });
+        let query_bytes = assertion.request.query.as_ref().map_or(0, String::len);
         let response_header_bytes = assertion
             .header_matches
             .as_ref()
@@ -199,7 +196,7 @@ fn validate_assertions(assertions: &[ContractAssertion], label: &str) -> Result<
             .saturating_add(assertion.name.len())
             .saturating_add(assertion.request.method.len())
             .saturating_add(assertion.request.path.len())
-            .saturating_add(assertion.request.body.as_ref().map_or(0, String::len))
+            .saturating_add(assertion.request.body.len())
             .saturating_add(assertion.body_contains.as_ref().map_or(0, String::len))
             .saturating_add(request_header_bytes)
             .saturating_add(query_bytes)
@@ -215,23 +212,25 @@ fn validate_assertions(assertions: &[ContractAssertion], label: &str) -> Result<
             .request
             .headers
             .iter()
-            .fold(0usize, |total, (name, value)| {
-                total.saturating_add(name.len()).saturating_add(value.len())
+            .fold(0usize, |total, header| {
+                total
+                    .saturating_add(header.name.len())
+                    .saturating_add(header.value.len())
             });
         if assertion.name.len() > MAX_ASSERTION_NAME_BYTES
             || assertion.request.path.len() > MAX_ASSERTION_PATH_BYTES
-            || assertion
-                .request
-                .body
-                .as_ref()
-                .is_some_and(|body| body.len() > MAX_ASSERTION_BODY_BYTES)
+            || assertion.request.body.len() > MAX_ASSERTION_BODY_BYTES
             || assertion
                 .body_contains
                 .as_ref()
                 .is_some_and(|body| body.len() > MAX_ASSERTION_BODY_BYTES)
             || assertion.request.headers.len() > MAX_ASSERTION_HEADER_COUNT
             || header_bytes > MAX_ASSERTION_HEADER_BYTES
-            || assertion.request.query.len() > MAX_ASSERTION_QUERY_COUNT
+            || assertion
+                .request
+                .query
+                .as_ref()
+                .is_some_and(|q| q.len() > MAX_ASSERTION_QUERY_COUNT * 64)
         {
             return Err(EngineError::Internal(format!(
                 "{label} assertion exceeds its input limits"
@@ -1469,10 +1468,12 @@ mod tests {
     fn request(path: &str) -> RequestEnvelope {
         RequestEnvelope {
             method: "GET".into(),
+            scheme: None,
+            authority: None,
             path: path.into(),
-            query: HashMap::new(),
-            headers: HashMap::new(),
-            body: None,
+            query: None,
+            headers: vec![],
+            body: vec![],
         }
     }
 
@@ -1583,7 +1584,7 @@ mod tests {
             "code_format": "javascript",
             "assertions": [{
                 "name": "generated health regression",
-                "request": { "method": "GET", "path": "/health", "query": {}, "headers": {} },
+                "request": { "method": "GET", "scheme": null, "authority": null, "path": "/health", "query": null, "headers": [], "body": [] },
                 "expected_status": 200,
                 "body_contains": "healthy"
             }],
@@ -1662,7 +1663,7 @@ mod tests {
     #[tokio::test]
     async fn componentization_failure_exhausts_initial_plus_two_replacements() {
         let error = assert_three_synthesis_candidates_are_requested(
-            provider_completion("export function handle(_requestJson) {"),
+            provider_completion("export function handle(_request) {"),
             "componentization-exhaustion-test",
         )
         .await;
@@ -1675,12 +1676,12 @@ mod tests {
             (
                 200,
                 provider_completion(
-                    r#"export function handle(_requestJson) {
-                        return JSON.stringify({
+                    r#"export function handle(_request) {
+                        return {
                             status: 500,
-                            headers: { "content-type": "text/plain" },
-                            body: "candidate rejected"
-                        });
+                            headers: [{ name: "content-type", value: [116,101,120,116,47,112,108,97,105,110] }],
+                            body: { tag: "text", val: "candidate rejected" }
+                        };
                     }"#,
                 ),
             )
@@ -1766,12 +1767,12 @@ mod tests {
             model: "cached-repair-test".into(),
             temperature: 0.0,
         });
-        let rejected_source = r#"export function handle(_requestJson) {
-            return JSON.stringify({
+        let rejected_source = r#"export function handle(_request) {
+            return {
                 status: 500,
-                headers: { "content-type": "text/plain" },
-                body: "cached candidate rejected"
-            });
+                headers: [{ name: "content-type", value: [116,101,120,116,47,112,108,97,105,110] }],
+                body: { tag: "text", val: "cached candidate rejected" }
+            };
         }"#;
         let (_, rejected_component) = engine
             .compile_handler_with_artifact(rejected_source)
@@ -1898,12 +1899,12 @@ mod tests {
         let engine = QuickJsEngine::new().unwrap();
         let cache_dir = tempfile::tempdir().unwrap();
         let cache = ArtifactCache::new(cache_dir.path());
-        let rejected_source = r#"export function handle(_requestJson) {
-            return JSON.stringify({
+        let rejected_source = r#"export function handle(_request) {
+            return {
                 status: 500,
-                headers: { "content-type": "text/plain" },
-                body: "cached candidate rejected"
-            });
+                headers: [{ name: "content-type", value: [116,101,120,116,47,112,108,97,105,110] }],
+                body: { tag: "text", val: "cached candidate rejected" }
+            };
         }"#;
         let (_, rejected_component) = engine
             .compile_handler_with_artifact(rejected_source)
@@ -2077,7 +2078,10 @@ mod tests {
         );
         let response = lifecycle.invoke_active(&request("/health")).unwrap();
         assert_eq!(response.status, 200);
-        assert_eq!(response.body.as_deref(), Some("healthy"));
+        assert_eq!(
+            response.body,
+            crate::engine::http_envelope::ResponseBody::Text("healthy".into())
+        );
     }
 
     #[tokio::test]

@@ -33,7 +33,7 @@ enum PrepareSource {
 struct PrepareAppParams {
     /// Whether to synthesize from the operator SPEC or accept direct JavaScript.
     source: PrepareSource,
-    /// ES module source exporting handle(requestJson).
+    /// ES module source exporting the ABI v2 `handle(request)` function.
     js_code: Option<String>,
     /// Agent-authored draft contract used as synthesis input, never as operator policy.
     draft_spec: Option<String>,
@@ -731,20 +731,20 @@ impl NosrcMcpServer {
                 }));
             }
         }
-        let mut query = HashMap::new();
-        if let Some(query_string) = parsed.query() {
-            for (key, value) in form_urlencoded::parse(query_string.as_bytes()) {
-                let key = key.into_owned();
-                // Match HTTP ingress: repeated query keys collapse to the last value.
-                query.insert(key, value.into_owned());
-            }
-        }
         let request = RequestEnvelope {
             method,
+            scheme: None,
+            authority: None,
             path: parsed.path().to_string(),
-            query,
-            headers,
-            body: params.body,
+            query: parsed.query().map(str::to_string),
+            headers: headers
+                .into_iter()
+                .map(|(name, value)| crate::engine::http_envelope::Header {
+                    name,
+                    value: value.into_bytes(),
+                })
+                .collect(),
+            body: params.body.map(String::into_bytes).unwrap_or_default(),
         };
 
         let handler = {
@@ -906,7 +906,10 @@ mod tests {
                 body: None,
             }))
             .await;
-        assert_eq!(invoked.structured_content.unwrap()["body"], "healthy");
+        assert_eq!(
+            invoked.structured_content.unwrap()["body"],
+            serde_json::json!({ "tag": "text", "val": "healthy" })
+        );
 
         let final_status = server.get_app_status().await;
         let final_status = final_status.structured_content.unwrap();
@@ -935,13 +938,13 @@ mod tests {
                 body: None,
             }))
             .await;
-        let echoed_body = echoed.structured_content.unwrap()["body"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let envelope: serde_json::Value = serde_json::from_str(&echoed_body).unwrap();
-        assert_eq!(envelope["headers"]["x-test"], "yes");
-        assert_eq!(envelope["query"]["tag"], "last");
+        let echoed_content = echoed.structured_content.unwrap();
+        assert_eq!(echoed_content["body"]["tag"], "text");
+        let echoed_body = echoed_content["body"]["val"].as_str().unwrap();
+        let envelope: serde_json::Value = serde_json::from_str(echoed_body).unwrap();
+        assert_eq!(envelope["headerNames"], "x-test");
+        // ABI v2 preserves the raw encoded query instead of parsing or collapsing duplicates.
+        assert_eq!(envelope["query"], "tag=first&tag=last");
     }
 
     #[tokio::test]
@@ -1322,7 +1325,7 @@ mod tests {
         let result = server
             .prepare_app(Parameters(PrepareAppParams {
                 source: PrepareSource::DirectJs,
-                js_code: Some("export function handle(_requestJson) { while (true) {} }".into()),
+                js_code: Some("export function handle(_request) { while (true) {} }".into()),
                 draft_spec: None,
                 supplemental_assertions: None,
             }))
@@ -1350,23 +1353,24 @@ mod tests {
             lifecycle: Arc::new(Mutex::new(lifecycle)),
         };
         let bad_handler = r#"
-            export function handle(requestJson) {
-                const request = JSON.parse(requestJson);
-                return JSON.stringify({
+            export function handle(request) {
+                return {
                     status: request.path === "/health" ? 404 : 200,
-                    headers: {},
-                    body: "healthy"
-                });
+                    headers: [],
+                    body: { tag: "text", val: "healthy" }
+                };
             }
         "#;
         let supplemental = crate::synthesizer::ContractAssertion {
             name: "agent supplemental success".into(),
             request: RequestEnvelope {
                 method: "GET".into(),
+                scheme: None,
+                authority: None,
                 path: "/agent-check".into(),
-                query: HashMap::new(),
-                headers: HashMap::new(),
-                body: None,
+                query: None,
+                headers: vec![],
+                body: vec![],
             },
             expected_status: 200,
             body_contains: Some("healthy".into()),
@@ -1410,18 +1414,18 @@ mod tests {
             lifecycle: Arc::new(Mutex::new(AppLifecycle::new(&spec, None).unwrap())),
         };
         let handler = r#"
-            export function handle(_requestJson) {
-                return JSON.stringify({
+            export function handle(_request) {
+                return {
                     status: 200,
-                    headers: {
-                        "content-type": "application/json",
-                        "set-cookie": "session=private"
-                    },
-                    body: JSON.stringify({
+                    headers: [
+                        { name: "content-type", value: [97,112,112,108,105,99,97,116,105,111,110,47,106,115,111,110] },
+                        { name: "set-cookie", value: [115,101,115,115,105,111,110,61,112,114,105,118,97,116,101] }
+                    ],
+                    body: { tag: "text", val: JSON.stringify({
                         message: "actual-value",
                         api_key: "must-not-leak"
-                    })
-                });
+                    }) }
+                };
             }
         "#;
         let result = server
@@ -1496,30 +1500,29 @@ mod tests {
             }
             let handler_code = if request_index == 0 {
                 r#"
-                    export function handle(_requestJson) {
-                        return JSON.stringify({
+                    export function handle(_request) {
+                        return {
                             status: 500,
-                            headers: { "content-type": "text/plain" },
-                            body: "first candidate fails"
-                        });
+                            headers: [{ name: "content-type", value: [116,101,120,116,47,112,108,97,105,110] }],
+                            body: { tag: "text", val: "first candidate fails" }
+                        };
                     }
                 "#
             } else {
                 r#"
-                    export function handle(requestJson) {
-                        const request = JSON.parse(requestJson);
+                    export function handle(request) {
                         if (request.method === "GET" && request.path === "/hello") {
-                            return JSON.stringify({
+                            return {
                                 status: 200,
-                                headers: { "content-type": "text/plain" },
-                                body: "hello from nosrc"
-                            });
+                                headers: [{ name: "content-type", value: [116,101,120,116,47,112,108,97,105,110] }],
+                                body: { tag: "text", val: "hello from nosrc" }
+                            };
                         }
-                        return JSON.stringify({
+                        return {
                             status: 404,
-                            headers: { "content-type": "text/plain" },
-                            body: "not found"
-                        });
+                            headers: [{ name: "content-type", value: [116,101,120,116,47,112,108,97,105,110] }],
+                            body: { tag: "text", val: "not found" }
+                        };
                     }
                 "#
             };
@@ -1530,10 +1533,12 @@ mod tests {
                     "name": "generated hello response",
                     "request": {
                         "method": "GET",
+                        "scheme": null,
+                        "authority": null,
                         "path": "/hello",
-                        "query": {},
-                        "headers": {},
-                        "body": null
+                        "query": null,
+                        "headers": [],
+                        "body": []
                     },
                     "expected_status": 200,
                     "body_contains": "hello from nosrc"
