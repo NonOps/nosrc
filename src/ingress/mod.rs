@@ -25,6 +25,7 @@ const INGRESS_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 pub struct ActiveGeneration {
     pub generation_id: u64,
     pub module_hash: String,
+    /// Serializes mutable access to this generation's QuickJS instance, including MCP calls.
     pub handler: Arc<Mutex<QuickJsHandler>>,
 }
 
@@ -32,6 +33,7 @@ pub struct ActiveGeneration {
 pub struct IngressState {
     pub active_generation: ArcSwap<Option<ActiveGeneration>>,
     admission: Arc<Semaphore>,
+    // Global across generations: per-handler mutexes cannot prevent overlap after a hot swap.
     execution: Arc<Semaphore>,
     execution_timeout: Duration,
     #[cfg(test)]
@@ -815,6 +817,81 @@ mod tests {
         let first = seen[0];
         let expected: Vec<u32> = (first..first + 16).collect();
         assert_eq!(seen, expected);
+    }
+
+    #[tokio::test]
+    async fn execution_semaphore_serializes_distinct_generations_during_hot_swap() {
+        let (engine, compiled) = test_support::compiled().await;
+        let old_handler = engine.instantiate(compiled, EPOCH_TEST_FUEL).unwrap();
+        let new_handler = engine
+            .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+            .unwrap();
+
+        let mut ingress_state = IngressState::new();
+        ingress_state.execution_timeout = EPOCH_TEST_TIMEOUT;
+        let state = Arc::new(ingress_state);
+        state.hot_swap(ActiveGeneration {
+            generation_id: 1,
+            module_hash: "old-generation".to_string(),
+            handler: Arc::new(Mutex::new(old_handler)),
+        });
+        let execution_started = watch_execution_start(&state);
+        let app = build_ingress_router(state.clone());
+
+        // The old generation is now running an unbounded guest loop.
+        let old_app = app.clone();
+        let old_request = tokio::spawn(async move {
+            old_app
+                .oneshot(Request::builder().uri("/loop").body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+        });
+        tokio::time::timeout(Duration::from_secs(10), execution_started)
+            .await
+            .expect("old generation should enter guest execution")
+            .expect("execution-start signal should be delivered");
+
+        // Activation is atomic and does not wait for the old request. The new
+        // generation has a different handler mutex, so only the global execution
+        // semaphore can prevent it from running concurrently with the old guest.
+        state.hot_swap(ActiveGeneration {
+            generation_id: 2,
+            module_hash: "new-generation".to_string(),
+            handler: Arc::new(Mutex::new(new_handler)),
+        });
+
+        let new_app = app.clone();
+        let new_request = tokio::spawn(async move {
+            new_app
+                .oneshot(
+                    Request::builder()
+                        .uri("/hello")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        });
+        let mut new_request = new_request;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut new_request)
+                .await
+                .is_err(),
+            "new generation must wait while the old generation still owns the execution permit"
+        );
+
+        let old_response = tokio::time::timeout(Duration::from_secs(2), old_request)
+            .await
+            .expect("epoch interruption should stop the old guest")
+            .unwrap();
+        assert_eq!(old_response.status(), StatusCode::GATEWAY_TIMEOUT);
+
+        let new_response = tokio::time::timeout(Duration::from_secs(2), new_request)
+            .await
+            .expect("new generation should run after old execution cleanup")
+            .unwrap();
+        assert_eq!(new_response.status(), StatusCode::OK);
+        assert_eq!(body_text(new_response).await, "GET /hello");
     }
 
     #[tokio::test]
