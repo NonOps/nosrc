@@ -15,7 +15,7 @@ use crate::spec::ServiceSpec;
 use crate::synthesizer::{ContractAssertion, LlmConfig, SynthesisOutput, Synthesizer};
 use crate::verifier::{AssertionResult, HostProbeVerifier, ShadowVerifier};
 
-use super::policy::AcceptancePolicy;
+use super::policy::{AcceptancePolicy, OperatorRuntimeLimits};
 
 const MAX_JS_SOURCE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ASSERTIONS: usize = 100;
@@ -441,7 +441,9 @@ pub(crate) async fn prepare_spec_generation(
     cache: Option<ArtifactCache>,
     synthesizer: &Synthesizer,
 ) -> Result<PreparedGeneration, PreparationError> {
-    let policy = AcceptancePolicy::from_spec(&spec).map_err(EngineError::Internal)?;
+    let limits = OperatorRuntimeLimits::from_env().map_err(EngineError::Internal)?;
+    let policy =
+        AcceptancePolicy::from_spec_with_limits(&spec, limits).map_err(EngineError::Internal)?;
     policy.validate().map_err(EngineError::Internal)?;
     let context = PreparationContext {
         engine: QuickJsEngine::new()?,
@@ -606,7 +608,10 @@ impl PreparationContext {
                 "Invalid draft SPEC verification: {error}"
             )))
         })?;
-        let draft_policy = AcceptancePolicy::from_spec(&draft).map_err(EngineError::Internal)?;
+        let mut draft_policy =
+            AcceptancePolicy::from_spec(&draft).map_err(EngineError::Internal)?;
+        // A draft may contribute candidate assertions, never a different resource budget.
+        draft_policy.invariants = self.policy.invariants.clone();
         // These cases are candidate checks, not operator-trusted acceptance policy.
         self.draft_assertions = draft_policy.spec_assertions;
         // The draft controls synthesis input only; the startup acceptance policy is unchanged.
@@ -1213,7 +1218,9 @@ pub struct AppLifecycle {
 
 impl AppLifecycle {
     pub fn new(spec: &ServiceSpec, cache: Option<ArtifactCache>) -> Result<Self, EngineError> {
-        let policy = AcceptancePolicy::from_spec(spec).map_err(EngineError::Internal)?;
+        let limits = OperatorRuntimeLimits::from_env().map_err(EngineError::Internal)?;
+        let policy =
+            AcceptancePolicy::from_spec_with_limits(spec, limits).map_err(EngineError::Internal)?;
         policy.validate().map_err(EngineError::Internal)?;
         Self::with_policy(Some(spec.clone()), None, cache, policy)
     }
@@ -1223,13 +1230,15 @@ impl AppLifecycle {
         spec_text: String,
         cache: Option<ArtifactCache>,
     ) -> Result<Self, EngineError> {
-        let policy = AcceptancePolicy::from_spec(spec).map_err(EngineError::Internal)?;
+        let limits = OperatorRuntimeLimits::from_env().map_err(EngineError::Internal)?;
+        let policy =
+            AcceptancePolicy::from_spec_with_limits(spec, limits).map_err(EngineError::Internal)?;
         policy.validate().map_err(EngineError::Internal)?;
         Self::with_policy(Some(spec.clone()), Some(spec_text), cache, policy)
     }
 
     pub fn new_mcp_first(cache: Option<ArtifactCache>) -> Result<Self, EngineError> {
-        let policy = AcceptancePolicy::baseline();
+        let policy = AcceptancePolicy::baseline_from_env().map_err(EngineError::Internal)?;
         policy.validate().map_err(EngineError::Internal)?;
         Self::with_policy(None, None, cache, policy)
     }
