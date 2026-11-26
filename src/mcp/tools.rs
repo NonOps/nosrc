@@ -406,6 +406,7 @@ where
                         "id": format!("{suite_name}-{:04}", result.case_index + 1),
                         "failure": result.failure_kind.unwrap_or("assertion_failed"),
                         "expected_status": result.expected_status,
+                        "expected_status_max": result.expected_status_max,
                         "actual_status": result.actual_status,
                         "response_headers": safe_response_headers(result.actual_headers.as_ref())
                     });
@@ -1373,8 +1374,11 @@ mod tests {
                 body: vec![],
             },
             expected_status: 200,
+            expected_status_max: None,
             body_contains: Some("healthy".into()),
             header_matches: None,
+            response_json_schema: None,
+            json_path_assertions: Vec::new(),
         };
 
         let result = server

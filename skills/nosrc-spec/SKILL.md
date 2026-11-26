@@ -42,9 +42,11 @@ Every declared endpoint **must** have at least one verification case under `## V
 - Allowed bullet assertions per case:
   - `- Header: <name>=<value>` (request header)
   - `- Request body: \`<JSON or other UTF-8 payload>\`` (request body — at most once per case)
-  - `- Response \`<status_code>\`` (scalar — at most once per case)
+  - `- Response \`<status_code>\``, `- Response 2xx`, or `- Response 200-299` (exact status, class, or inclusive range — at most once per case)
   - `- Response header: <name>=<value>` (exact match, case-insensitive header name)
+  - `- Response JSON schema: \`<single-line JSON Schema Draft 2020-12 object>\`` (validates the complete JSON response body; at most once per case, maximum 64 KiB; external references are not fetched; regex backtracking is capped at 10,000 steps)
   - `- Body contains: \`<substring>\`` (response substring — at most once per case)
+  - `- JSONPath: $.items[0].id = 42` (strict JSON value equality; supports `$`, `.field`, `[index]`, and `["quoted key"]`; missing paths and type mismatches fail; wildcards and filters are unsupported; at most 100 assertions per case and 4 KiB per path)
   - Legacy `- Body: <payload>` remains accepted as an alias for `Request body:`; use the explicit label in new specs.
 
 ### Template

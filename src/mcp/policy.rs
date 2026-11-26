@@ -80,12 +80,15 @@ impl AcceptancePolicy {
                             case.method, case.path
                         )
                     })?,
+                    expected_status_max: case.expected_status_max,
                     body_contains: case.body_contains.clone(),
                     header_matches: if case.response_headers.is_empty() {
                         None
                     } else {
                         Some(case.response_headers.clone())
                     },
+                    response_json_schema: case.response_json_schema.clone(),
+                    json_path_assertions: case.json_path_assertions.clone(),
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -160,8 +163,11 @@ mod tests {
                     body: vec![],
                 },
                 expected_status: 200,
+                expected_status_max: None,
                 body_contains: None,
                 header_matches: None,
+                response_json_schema: None,
+                json_path_assertions: Vec::new(),
             }],
             invariants: PolicyInvariants {
                 max_response_bytes: crate::engine::http_envelope::MAX_HANDLER_RESPONSE_BYTES,
