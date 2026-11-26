@@ -7,6 +7,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use axum::{Json, Router};
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
@@ -36,6 +37,7 @@ pub struct IngressState {
     // Global across generations: per-handler mutexes cannot prevent overlap after a hot swap.
     execution: Arc<Semaphore>,
     execution_timeout: Duration,
+    readiness: Arc<AtomicBool>,
     #[cfg(test)]
     execution_started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
@@ -47,9 +49,14 @@ impl IngressState {
             admission: Arc::new(Semaphore::new(MAX_ADMITTED_REQUESTS)),
             execution: Arc::new(Semaphore::new(1)),
             execution_timeout: DEFAULT_GUEST_EXECUTION_TIMEOUT,
+            readiness: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             execution_started: Mutex::new(None),
         }
+    }
+
+    pub fn readiness_handle(&self) -> Arc<AtomicBool> {
+        self.readiness.clone()
     }
 
     /// Atomically activates a candidate only after compilation and verification succeed.
@@ -75,10 +82,20 @@ struct RuntimeStatus {
     active_generation: Option<u64>,
     module_hash: Option<String>,
     telemetry: Option<RuntimeTelemetry>,
+    ready: bool,
 }
 
 async fn healthz() -> StatusCode {
     StatusCode::OK
+}
+
+async fn readyz(State(state): State<Arc<IngressState>>) -> StatusCode {
+    if state.readiness.load(Ordering::Acquire) && state.active_generation.load().as_ref().is_some()
+    {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
 }
 
 async fn runtime_status(State(state): State<Arc<IngressState>>) -> Json<RuntimeStatus> {
@@ -101,6 +118,7 @@ async fn runtime_status(State(state): State<Arc<IngressState>>) -> Json<RuntimeS
         active_generation,
         module_hash,
         telemetry,
+        ready: state.readiness.load(Ordering::Acquire) && active.as_ref().is_some(),
     })
 }
 
@@ -113,7 +131,7 @@ async fn admission_control(
 ) -> Response {
     let is_head = request.method() == Method::HEAD;
     let path = request.uri().path();
-    if path == "/healthz" || path == "/_nosrc/status" {
+    if path == "/healthz" || path == "/readyz" || path == "/_nosrc/status" {
         return strip_head_body(is_head, next.run(request).await);
     }
 
@@ -158,6 +176,11 @@ fn strip_head_body(is_head: bool, mut response: Response) -> Response {
 
 /// Logs safe request metadata without recording query strings, headers, or bodies.
 async fn log_http_request(request: Request<Body>, next: Next) -> Response {
+    let request_id = request
+        .extensions()
+        .get::<RequestId>()
+        .map(|id| id.0.clone())
+        .unwrap_or_default();
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
     let request_bytes = request
@@ -176,6 +199,7 @@ async fn log_http_request(request: Request<Body>, next: Next) -> Response {
     tracing::debug!(
         %method,
         %path,
+        request_id = %request_id,
         request_bytes = ?request_bytes,
         status = response.status().as_u16(),
         elapsed_ms = started.elapsed().as_millis(),
@@ -185,18 +209,52 @@ async fn log_http_request(request: Request<Body>, next: Next) -> Response {
     response
 }
 
+#[derive(Clone, Debug)]
+struct RequestId(String);
+
+const MAX_REQUEST_ID_BYTES: usize = 128;
+
+fn valid_request_id(value: &[u8]) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_REQUEST_ID_BYTES
+        && value
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'-' | b'_' | b'.' | b':'))
+}
+
+/// Accepts a conservative printable request ID; invalid or oversized values are replaced.
+async fn request_id_middleware(mut request: Request<Body>, next: Next) -> Response {
+    let mut supplied = request.headers().get_all("x-request-id").iter();
+    let value = match (supplied.next(), supplied.next()) {
+        (Some(value), None) if valid_request_id(value.as_bytes()) => {
+            String::from_utf8(value.as_bytes().to_vec()).expect("validated request IDs are ASCII")
+        }
+        // Missing, malformed, oversized, or duplicate values are ambiguous/untrusted.
+        _ => uuid::Uuid::now_v7().to_string(),
+    };
+    let header = axum::http::HeaderValue::from_bytes(value.as_bytes())
+        .expect("generated request ID is valid");
+    request.headers_mut().insert("x-request-id", header.clone());
+    request.extensions_mut().insert(RequestId(value));
+    let mut response = next.run(request).await;
+    response.headers_mut().insert("x-request-id", header);
+    response
+}
+
 /// Creates the Axum router for health, status, and application ingress.
 pub fn build_ingress_router(state: Arc<IngressState>) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
         .route("/_nosrc/status", get(runtime_status))
         .fallback(any(handle_http_request))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
-        .layer(middleware::from_fn(log_http_request))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             admission_control,
         ))
+        .layer(middleware::from_fn(log_http_request))
+        .layer(middleware::from_fn(request_id_middleware))
         .with_state(state)
 }
 
@@ -355,6 +413,162 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn readiness_is_unavailable_until_listener_is_ready_and_generation_is_active() {
+        let state = Arc::new(IngressState::new());
+        let app = build_ingress_router(state.clone());
+
+        let request = Request::builder()
+            .uri("/readyz")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+
+        state.readiness.store(true, Ordering::Release);
+        let request = Request::builder()
+            .uri("/readyz")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+
+        let (engine, compiled) = test_support::compiled().await;
+        let handler = Arc::new(Mutex::new(
+            engine
+                .instantiate(compiled, DEFAULT_COMPONENT_FUEL)
+                .unwrap(),
+        ));
+        state.hot_swap(ActiveGeneration {
+            generation_id: 1,
+            module_hash: "readiness-test".to_string(),
+            handler,
+        });
+        let request = Request::builder()
+            .uri("/readyz")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        state.readiness.store(false, Ordering::Release);
+        let request = Request::builder()
+            .uri("/readyz")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.oneshot(request).await.unwrap().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    fn assert_uuid_v7(value: &str) {
+        let id = uuid::Uuid::parse_str(value).expect("generated request ID should be a UUID");
+        assert_eq!(id.get_version_num(), 7);
+        assert_eq!(id.get_variant(), uuid::Variant::RFC4122);
+    }
+
+    #[tokio::test]
+    async fn request_ids_are_generated_validated_and_returned() {
+        let app = build_ingress_router(Arc::new(IngressState::new()));
+
+        let missing = Request::builder()
+            .uri("/healthz")
+            .body(Body::empty())
+            .unwrap();
+        let missing_response = app.clone().oneshot(missing).await.unwrap();
+        let generated = missing_response
+            .headers()
+            .get("x-request-id")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(valid_request_id(generated.as_bytes()));
+        assert_uuid_v7(generated);
+
+        let supplied = Request::builder()
+            .uri("/healthz")
+            .header("x-request-id", "client-123:abc")
+            .body(Body::empty())
+            .unwrap();
+        let supplied_response = app.clone().oneshot(supplied).await.unwrap();
+        assert_eq!(
+            supplied_response.headers().get("x-request-id").unwrap(),
+            "client-123:abc"
+        );
+
+        let malformed = Request::builder()
+            .uri("/healthz")
+            .header("x-request-id", "bad/id")
+            .body(Body::empty())
+            .unwrap();
+        let malformed_response = app.clone().oneshot(malformed).await.unwrap();
+        let replaced = malformed_response
+            .headers()
+            .get("x-request-id")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_ne!(replaced, "bad/id");
+        assert!(valid_request_id(replaced.as_bytes()));
+        assert_uuid_v7(replaced);
+
+        let boundary = "a".repeat(MAX_REQUEST_ID_BYTES);
+        let boundary_request = Request::builder()
+            .uri("/healthz")
+            .header("x-request-id", boundary.clone())
+            .body(Body::empty())
+            .unwrap();
+        let boundary_response = app.clone().oneshot(boundary_request).await.unwrap();
+        assert_eq!(
+            boundary_response.headers().get("x-request-id").unwrap(),
+            boundary.as_str()
+        );
+
+        let oversized = "a".repeat(MAX_REQUEST_ID_BYTES + 1);
+        let oversized_request = Request::builder()
+            .uri("/healthz")
+            .header("x-request-id", &oversized)
+            .body(Body::empty())
+            .unwrap();
+        let oversized_response = app.clone().oneshot(oversized_request).await.unwrap();
+        let oversized_replaced = oversized_response
+            .headers()
+            .get("x-request-id")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_ne!(oversized_replaced, oversized);
+        assert_uuid_v7(oversized_replaced);
+
+        let mut duplicate_request = Request::builder()
+            .uri("/healthz")
+            .body(Body::empty())
+            .unwrap();
+        duplicate_request
+            .headers_mut()
+            .append("x-request-id", "first".parse().unwrap());
+        duplicate_request
+            .headers_mut()
+            .append("x-request-id", "second".parse().unwrap());
+        let duplicate_response = app.oneshot(duplicate_request).await.unwrap();
+        let duplicate_replaced = duplicate_response
+            .headers()
+            .get("x-request-id")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_ne!(duplicate_replaced, "first");
+        assert_ne!(duplicate_replaced, "second");
+        assert_uuid_v7(duplicate_replaced);
+    }
+
+    #[tokio::test]
     async fn health_endpoint_reports_process_health() {
         let app = build_ingress_router(Arc::new(IngressState::new()));
         let request = Request::builder()
@@ -380,6 +594,7 @@ mod tests {
             .unwrap();
         let status: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(status["status"], "running");
+        assert_eq!(status["ready"], false);
         assert!(status["active_generation"].is_null());
         assert!(status["module_hash"].is_null());
         assert!(status["telemetry"].is_null());
