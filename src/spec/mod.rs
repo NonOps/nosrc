@@ -47,6 +47,13 @@ pub struct SpecResponse {
     pub schema: Option<String>,
 }
 
+/// One strict JSONPath-style equality assertion against a response JSON value.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JsonPathAssertion {
+    pub path: String,
+    pub expected: serde_json::Value,
+}
+
 /// Human-authored verification case parsed from the trusted SPEC.md.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SpecVerification {
@@ -58,9 +65,17 @@ pub struct SpecVerification {
     pub headers: HashMap<String, String>,
     pub body: Option<String>,
     pub expected_status: Option<u16>,
+    /// Inclusive upper bound for status classes/ranges; absent means exact status.
+    #[serde(default)]
+    pub expected_status_max: Option<u16>,
     pub body_contains: Option<String>,
     /// Expected response headers, independent of request headers.
     pub response_headers: HashMap<String, String>,
+    /// Trusted JSON Schema Draft 2020-12 for the response body.
+    #[serde(default)]
+    pub response_json_schema: Option<serde_json::Value>,
+    #[serde(default)]
+    pub json_path_assertions: Vec<JsonPathAssertion>,
 }
 
 impl ServiceSpec {
@@ -113,15 +128,77 @@ impl ServiceSpec {
                     case.method, case.path
                 )
             })?;
+            let status_max = case.expected_status_max.unwrap_or(status);
+            if status_max < status || status_max > 599 {
+                return Err(format!(
+                    "verification case {} {} has an invalid expected status range",
+                    case.method, case.path
+                ));
+            }
+            if case.json_path_assertions.len() > 100 {
+                return Err(format!(
+                    "verification case {} {} exceeds the 100 JSONPath assertion limit",
+                    case.method, case.path
+                ));
+            }
             if !endpoint
                 .responses
                 .iter()
-                .any(|response| response.status == status)
+                .any(|response| (status..=status_max).contains(&response.status))
             {
                 return Err(format!(
-                    "verification case {} {} expects undocumented status {}",
-                    case.method, case.path, status
+                    "verification case {} {} expects undocumented status range {}-{}",
+                    case.method, case.path, status, status_max
                 ));
+            }
+
+            for assertion in &case.json_path_assertions {
+                if assertion.path.len() > 4096 {
+                    return Err(format!(
+                        "verification case {} {} has a JSONPath longer than 4096 bytes",
+                        case.method, case.path
+                    ));
+                }
+                parse_json_path(&assertion.path).map_err(|error| {
+                    format!(
+                        "verification case {} {} has invalid JSONPath '{}': {error}",
+                        case.method, case.path, assertion.path
+                    )
+                })?;
+            }
+
+            if let Some(schema) = &case.response_json_schema {
+                let encoded = serde_json::to_vec(schema).map_err(|error| {
+                    format!("verification response schema is not serializable: {error}")
+                })?;
+                if encoded.len() > 64 * 1024 {
+                    return Err("verification response schema exceeds the 65536 byte limit".into());
+                }
+                if !schema.is_object() {
+                    return Err("verification response schema must be a JSON object".into());
+                }
+                if let Some(draft) = schema.get("$schema").and_then(serde_json::Value::as_str) {
+                    if !matches!(
+                        draft,
+                        "https://json-schema.org/draft/2020-12/schema"
+                            | "https://json-schema.org/draft/2020-12/schema#"
+                    ) {
+                        return Err(
+                            "verification response schemas must use JSON Schema Draft 2020-12"
+                                .into(),
+                        );
+                    }
+                }
+                jsonschema::draft202012::options()
+                    .offline()
+                    .with_pattern_options(
+                        jsonschema::PatternOptions::fancy_regex()
+                            .backtrack_limit(10_000)
+                            .size_limit(1024 * 1024)
+                            .dfa_size_limit(2 * 1024 * 1024),
+                    )
+                    .build(schema)
+                    .map_err(|error| format!("invalid JSON Schema Draft 2020-12: {error}"))?;
             }
         }
         for (index, endpoint) in self.endpoints.iter().enumerate() {
@@ -226,8 +303,11 @@ impl ServiceSpec {
                             headers: HashMap::new(),
                             body: None,
                             expected_status: None,
+                            expected_status_max: None,
                             body_contains: None,
                             response_headers: HashMap::new(),
+                            response_json_schema: None,
+                            json_path_assertions: Vec::new(),
                         });
                         current_section = "verification_detail";
                     }
@@ -327,12 +407,57 @@ impl ServiceSpec {
                                         "response header '{name}'"
                                     )));
                                 }
+                            } else if let Some(assertion) = item.strip_prefix("JSONPath:") {
+                                let (path, expected) = assertion.split_once(" = ").ok_or_else(|| {
+                                    HostAbiError::MalformedJson(
+                                        "invalid JSONPath assertion; expected 'JSONPath: <path> = <JSON value>'".into(),
+                                    )
+                                })?;
+                                let path = path.trim();
+                                parse_json_path(path).map_err(|error| {
+                                    HostAbiError::MalformedJson(format!(
+                                        "invalid JSONPath expression '{path}': {error}"
+                                    ))
+                                })?;
+                                let expected =
+                                    serde_json::from_str(expected.trim()).map_err(|error| {
+                                        HostAbiError::MalformedJson(format!(
+                                            "invalid JSONPath expected JSON value: {error}"
+                                        ))
+                                    })?;
+                                case.json_path_assertions.push(JsonPathAssertion {
+                                    path: path.to_string(),
+                                    expected,
+                                });
+                            } else if let Some(schema) = item.strip_prefix("Response JSON schema:")
+                            {
+                                if case.response_json_schema.is_some() {
+                                    return Err(duplicate_verification_field(
+                                        "Response JSON schema",
+                                    ));
+                                }
+                                let schema_text = trim_verification_code_span(schema);
+                                if schema_text.len() > 64 * 1024 {
+                                    return Err(HostAbiError::MalformedJson(
+                                        "verification response schema exceeds the 65536 byte limit"
+                                            .into(),
+                                    ));
+                                }
+                                let parsed =
+                                    serde_json::from_str(&schema_text).map_err(|error| {
+                                        HostAbiError::MalformedJson(format!(
+                                            "invalid verification response JSON schema: {error}"
+                                        ))
+                                    })?;
+                                case.response_json_schema = Some(parsed);
                             } else if let Some(status) = item.strip_prefix("Response ") {
                                 if case.expected_status.is_some() {
                                     return Err(duplicate_verification_field("Response status"));
                                 }
                                 let status = status.trim().trim_matches('`');
-                                case.expected_status = Some(parse_http_status(status)?);
+                                let (minimum, maximum) = parse_http_status_expectation(status)?;
+                                case.expected_status = Some(minimum);
+                                case.expected_status_max = (minimum != maximum).then_some(maximum);
                             } else if let Some(expected) = item.strip_prefix("Body contains:") {
                                 if case.body_contains.is_some() {
                                     return Err(duplicate_verification_field("Body contains"));
@@ -518,6 +643,140 @@ fn parse_http_status(value: &str) -> Result<u16, HostAbiError> {
         )));
     }
     Ok(status)
+}
+
+fn parse_http_status_expectation(value: &str) -> Result<(u16, u16), HostAbiError> {
+    let value = value.trim();
+    if value.len() == 3
+        && value.as_bytes()[0].is_ascii_digit()
+        && value.as_bytes()[1].eq_ignore_ascii_case(&b'x')
+        && value.as_bytes()[2].eq_ignore_ascii_case(&b'x')
+    {
+        let class = value.as_bytes()[0] - b'0';
+        if !(1..=5).contains(&class) {
+            return Err(HostAbiError::MalformedJson(format!(
+                "HTTP response status class must be 1xx through 5xx, got '{value}'"
+            )));
+        }
+        let minimum = u16::from(class) * 100;
+        return Ok((minimum, minimum + 99));
+    }
+
+    if let Some((minimum, maximum)) = value.split_once('-') {
+        let minimum = parse_http_status(minimum.trim())?;
+        let maximum = parse_http_status(maximum.trim())?;
+        if minimum > maximum {
+            return Err(HostAbiError::MalformedJson(format!(
+                "HTTP response status range start exceeds end: '{value}'"
+            )));
+        }
+        return Ok((minimum, maximum));
+    }
+
+    let exact = parse_http_status(value)?;
+    Ok((exact, exact))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum JsonPathSegment {
+    Key(String),
+    Index(usize),
+}
+
+/// Parse a strict JSONPath subset: root, dot identifiers, quoted object keys, and array indexes.
+fn parse_json_path(path: &str) -> Result<Vec<JsonPathSegment>, String> {
+    let bytes = path.as_bytes();
+    if bytes.first() != Some(&b'$') {
+        return Err("expression must start with '$'".into());
+    }
+
+    let mut segments = Vec::new();
+    let mut index = 1;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'.' => {
+                index += 1;
+                let start = index;
+                while index < bytes.len()
+                    && (bytes[index].is_ascii_alphanumeric() || matches!(bytes[index], b'_' | b'-'))
+                {
+                    index += 1;
+                }
+                if start == index || (!bytes[start].is_ascii_alphabetic() && bytes[start] != b'_') {
+                    return Err("dot segments must use an identifier".into());
+                }
+                segments.push(JsonPathSegment::Key(path[start..index].to_string()));
+            }
+            b'[' => {
+                index += 1;
+                if index >= bytes.len() {
+                    return Err("unterminated bracket segment".into());
+                }
+                if bytes[index] == b'"' {
+                    let start = index;
+                    index += 1;
+                    let mut escaped = false;
+                    while index < bytes.len() {
+                        let byte = bytes[index];
+                        index += 1;
+                        if escaped {
+                            escaped = false;
+                        } else if byte == b'\\' {
+                            escaped = true;
+                        } else if byte == b'"' {
+                            break;
+                        }
+                    }
+                    if bytes.get(index.saturating_sub(1)) != Some(&b'"') {
+                        return Err("unterminated quoted object key".into());
+                    }
+                    let key: String = serde_json::from_str(&path[start..index])
+                        .map_err(|_| "invalid quoted object key".to_string())?;
+                    if bytes.get(index) != Some(&b']') {
+                        return Err("expected ']' after quoted object key".into());
+                    }
+                    index += 1;
+                    segments.push(JsonPathSegment::Key(key));
+                } else {
+                    let start = index;
+                    while index < bytes.len() && bytes[index].is_ascii_digit() {
+                        index += 1;
+                    }
+                    if start == index || bytes.get(index) != Some(&b']') {
+                        return Err("array segments must be non-negative integer indexes".into());
+                    }
+                    let array_index = path[start..index]
+                        .parse::<usize>()
+                        .map_err(|_| "array index is too large".to_string())?;
+                    index += 1;
+                    segments.push(JsonPathSegment::Index(array_index));
+                }
+            }
+            _ => return Err("expected '.', or '[' after path root".into()),
+        }
+    }
+    Ok(segments)
+}
+
+pub(crate) fn json_path_value<'a>(
+    root: &'a serde_json::Value,
+    path: &str,
+) -> Result<Option<&'a serde_json::Value>, String> {
+    let segments = parse_json_path(path)?;
+    let mut current = root;
+    for segment in segments {
+        current = match segment {
+            JsonPathSegment::Key(key) => match current.get(key.as_str()) {
+                Some(value) => value,
+                None => return Ok(None),
+            },
+            JsonPathSegment::Index(index) => match current.get(index) {
+                Some(value) => value,
+                None => return Ok(None),
+            },
+        };
+    }
+    Ok(Some(current))
 }
 
 fn path_specificity(template: &str) -> usize {
@@ -770,6 +1029,127 @@ A resilient spec-driven URL shortener.
             "- Header: accept=application/json\n- Header: Accept=text/plain",
         );
         assert!(ServiceSpec::parse(&duplicate_request).is_err());
+    }
+
+    #[test]
+    fn parses_jsonpath_assertions_and_status_classes() {
+        let markdown = r#"
+# Service: Example
+## Endpoints
+### `GET /items`
+- Response `200`: JSON
+- Response `201`: JSON
+## Verification
+### `GET /items`
+- Response `2xx`
+- JSONPath: $.items[0].id = 42
+- JSONPath: $["items"][0].active = true
+"#;
+        let spec = ServiceSpec::parse(markdown).unwrap();
+        spec.validate_verification().unwrap();
+        let case = &spec.verification[0];
+        assert_eq!(case.expected_status, Some(200));
+        assert_eq!(case.expected_status_max, Some(299));
+        assert_eq!(case.json_path_assertions.len(), 2);
+        assert_eq!(case.json_path_assertions[0].expected, serde_json::json!(42));
+        assert_eq!(
+            case.json_path_assertions[1].expected,
+            serde_json::json!(true)
+        );
+    }
+
+    #[test]
+    fn parses_explicit_status_ranges_and_rejects_invalid_ranges() {
+        let valid = r#"
+# Service: Example
+## Endpoints
+### `GET /items`
+- Response `201`: JSON
+## Verification
+### `GET /items`
+- Response `200-299`
+"#;
+        let spec = ServiceSpec::parse(valid).unwrap();
+        spec.validate_verification().unwrap();
+        assert_eq!(spec.verification[0].expected_status, Some(200));
+        assert_eq!(spec.verification[0].expected_status_max, Some(299));
+
+        for status in ["299-200", "600-699", "6xx"] {
+            let invalid = valid.replace("200-299", status);
+            assert!(
+                ServiceSpec::parse(&invalid).is_err(),
+                "accepted invalid status expectation {status}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_jsonpath_expressions_and_expected_values() {
+        for assertion in [
+            "JSONPath: items[0].id = 42",
+            "JSONPath: $.items[*].id = 42",
+            "JSONPath: $.items[0].id = not-json",
+        ] {
+            let markdown = format!(
+                "# Service: Example\n## Endpoints\n### `GET /items`\n- Response `200`\n## Verification\n### `GET /items`\n- Response `200`\n- {assertion}\n"
+            );
+            assert!(
+                ServiceSpec::parse(&markdown).is_err(),
+                "accepted invalid assertion {assertion}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_and_validates_draft_2020_12_response_schema() {
+        let markdown = r#"
+# Service: Example
+## Endpoints
+### `GET /items`
+- Response `200`: JSON
+## Verification
+### `GET /items`
+- Response `200`
+- Response JSON schema: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["items"],"properties":{"items":{"type":"array","items":{"type":"string"}}}}`
+"#;
+        let spec = ServiceSpec::parse(markdown).unwrap();
+        spec.validate_verification().unwrap();
+        let schema = spec.verification[0].response_json_schema.as_ref().unwrap();
+        assert_eq!(schema["type"], "object");
+    }
+
+    #[test]
+    fn rejects_invalid_or_oversized_response_schemas() {
+        let invalid = r#"# Service: Example
+## Endpoints
+### `GET /items`
+- Response `200`
+## Verification
+### `GET /items`
+- Response `200`
+- Response JSON schema: `{"type":42}`
+"#;
+        let spec = ServiceSpec::parse(invalid).unwrap();
+        assert!(spec
+            .validate_verification()
+            .unwrap_err()
+            .contains("invalid JSON Schema"));
+
+        let remote = invalid.replace(
+            r#"{"type":42}"#,
+            r#"{"$ref":"https://example.invalid/schema.json"}"#,
+        );
+        let remote_spec = ServiceSpec::parse(&remote).unwrap();
+        assert!(
+            remote_spec.validate_verification().is_err(),
+            "external schema references must not be fetched"
+        );
+
+        let oversized = format!(
+            "# Service: Example\n## Endpoints\n### `GET /items`\n- Response `200`\n## Verification\n### `GET /items`\n- Response `200`\n- Response JSON schema: `{{\"description\":\"{}\"}}`\n",
+            "x".repeat(65 * 1024)
+        );
+        assert!(ServiceSpec::parse(&oversized).is_err());
     }
 
     #[test]

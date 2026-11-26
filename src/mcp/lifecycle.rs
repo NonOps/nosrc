@@ -26,6 +26,8 @@ const MAX_ASSERTION_BODY_BYTES: usize = 1024 * 1024;
 const MAX_ASSERTION_HEADER_COUNT: usize = 100;
 const MAX_ASSERTION_HEADER_BYTES: usize = 64 * 1024;
 const MAX_ASSERTION_QUERY_COUNT: usize = 100;
+const MAX_ASSERTION_JSON_PATH_COUNT: usize = 100;
+const MAX_ASSERTION_JSON_PATH_BYTES: usize = 4096;
 const MAX_REPLACEMENT_ATTEMPTS: usize = 2;
 
 /// Opaque identifier for one prepared application generation.
@@ -125,6 +127,7 @@ pub struct AssertionSummary {
     pub name: String,
     pub passed: bool,
     pub expected_status: u16,
+    pub expected_status_max: u16,
     pub actual_status: Option<u16>,
 }
 
@@ -192,6 +195,23 @@ fn validate_assertions(assertions: &[ContractAssertion], label: &str) -> Result<
                 })
             })
             .unwrap_or_default();
+        let response_schema_bytes = assertion
+            .response_json_schema
+            .as_ref()
+            .and_then(|schema| serde_json::to_vec(schema).ok())
+            .map_or(0, |schema| schema.len());
+        let json_path_bytes =
+            assertion
+                .json_path_assertions
+                .iter()
+                .fold(0usize, |bytes, path_assertion| {
+                    bytes
+                        .saturating_add(path_assertion.path.len())
+                        .saturating_add(
+                            serde_json::to_vec(&path_assertion.expected)
+                                .map_or(0, |value| value.len()),
+                        )
+                });
         total
             .saturating_add(assertion.name.len())
             .saturating_add(assertion.request.method.len())
@@ -201,6 +221,8 @@ fn validate_assertions(assertions: &[ContractAssertion], label: &str) -> Result<
             .saturating_add(request_header_bytes)
             .saturating_add(query_bytes)
             .saturating_add(response_header_bytes)
+            .saturating_add(response_schema_bytes)
+            .saturating_add(json_path_bytes)
     });
     if total_bytes > MAX_ASSERTION_TOTAL_BYTES {
         return Err(EngineError::Internal(format!(
@@ -224,7 +246,22 @@ fn validate_assertions(assertions: &[ContractAssertion], label: &str) -> Result<
                 .body_contains
                 .as_ref()
                 .is_some_and(|body| body.len() > MAX_ASSERTION_BODY_BYTES)
+            || assertion
+                .response_json_schema
+                .as_ref()
+                .and_then(|schema| serde_json::to_vec(schema).ok())
+                .is_some_and(|schema| schema.len() > 64 * 1024)
             || assertion.request.headers.len() > MAX_ASSERTION_HEADER_COUNT
+            || assertion.json_path_assertions.len() > MAX_ASSERTION_JSON_PATH_COUNT
+            || assertion.json_path_assertions.iter().any(|path_assertion| {
+                path_assertion.path.len() > MAX_ASSERTION_JSON_PATH_BYTES
+                    || crate::spec::json_path_value(&serde_json::Value::Null, &path_assertion.path)
+                        .is_err()
+            })
+            || !(100..=599).contains(&assertion.expected_status)
+            || assertion
+                .expected_status_max
+                .is_some_and(|maximum| maximum < assertion.expected_status || maximum > 599)
             || header_bytes > MAX_ASSERTION_HEADER_BYTES
             || assertion
                 .request
@@ -235,6 +272,24 @@ fn validate_assertions(assertions: &[ContractAssertion], label: &str) -> Result<
             return Err(EngineError::Internal(format!(
                 "{label} assertion exceeds its input limits"
             )));
+        }
+        if let Some(schema) = &assertion.response_json_schema {
+            if !schema.is_object()
+                || jsonschema::draft202012::options()
+                    .offline()
+                    .with_pattern_options(
+                        jsonschema::PatternOptions::fancy_regex()
+                            .backtrack_limit(10_000)
+                            .size_limit(1024 * 1024)
+                            .dfa_size_limit(2 * 1024 * 1024),
+                    )
+                    .build(schema)
+                    .is_err()
+            {
+                return Err(EngineError::Internal(format!(
+                    "{label} assertion contains an invalid Draft 2020-12 response schema"
+                )));
+            }
         }
     }
     Ok(())
@@ -292,6 +347,7 @@ mod repair_feedback_tests {
                 passed: false,
                 actual_status: Some(500),
                 expected_status: 200,
+                expected_status_max: 200,
                 actual_headers: None,
                 actual_body: None,
                 failure_kind: None,
@@ -303,6 +359,7 @@ mod repair_feedback_tests {
                 passed: false,
                 actual_status: Some(502),
                 expected_status: 200,
+                expected_status_max: 200,
                 actual_headers: None,
                 actual_body: None,
                 failure_kind: None,
@@ -314,6 +371,7 @@ mod repair_feedback_tests {
                 passed: false,
                 actual_status: Some(500),
                 expected_status: 200,
+                expected_status_max: 200,
                 actual_headers: None,
                 actual_body: None,
                 failure_kind: None,
@@ -325,6 +383,7 @@ mod repair_feedback_tests {
                 passed: true,
                 actual_status: Some(200),
                 expected_status: 200,
+                expected_status_max: 200,
                 actual_headers: None,
                 actual_body: None,
                 failure_kind: None,
@@ -942,6 +1001,7 @@ fn assertion_summaries(results: &[AssertionResult]) -> Vec<AssertionSummary> {
             name: result.name.clone(),
             passed: result.passed,
             expected_status: result.expected_status,
+            expected_status_max: result.expected_status_max,
             actual_status: result.actual_status,
         })
         .collect()
@@ -1099,6 +1159,9 @@ pub(super) fn prepare_compiled(
                     passed: false,
                     actual_status: None,
                     expected_status: assertion.expected_status,
+                    expected_status_max: assertion
+                        .expected_status_max
+                        .unwrap_or(assertion.expected_status),
                     actual_headers: None,
                     actual_body: None,
                     failure_kind: Some("execution_error"),
@@ -1517,6 +1580,7 @@ mod tests {
                 passed: false,
                 actual_status: Some(418),
                 expected_status: 200,
+                expected_status_max: 200,
                 actual_headers: Some(HashMap::from([(
                     "x-private".into(),
                     "secret-header-value".into(),
@@ -1785,8 +1849,11 @@ mod tests {
                 name: "cached candidate health regression".into(),
                 request: request("/health"),
                 expected_status: 200,
+                expected_status_max: None,
                 body_contains: Some("healthy".into()),
                 header_matches: None,
+                response_json_schema: None,
+                json_path_assertions: Vec::new(),
             }],
             rationale: Some("intentionally failing cached candidate".into()),
         };
@@ -1850,8 +1917,11 @@ mod tests {
                 name: "cached assertion".into(),
                 request: request("/health"),
                 expected_status: 200,
+                expected_status_max: None,
                 body_contains: Some("healthy".into()),
                 header_matches: None,
+                response_json_schema: None,
+                json_path_assertions: Vec::new(),
             }],
             rationale: Some("invalid cached component fixture".into()),
         };
@@ -1917,8 +1987,11 @@ mod tests {
                 name: "cached candidate health regression".into(),
                 request: request("/health"),
                 expected_status: 200,
+                expected_status_max: None,
                 body_contains: Some("healthy".into()),
                 header_matches: None,
+                response_json_schema: None,
+                json_path_assertions: Vec::new(),
             }],
             rationale: Some("intentionally failing cached candidate".into()),
         };
@@ -1968,8 +2041,11 @@ mod tests {
                 name: "bounded handler".into(),
                 request: request("/health"),
                 expected_status: 200,
+                expected_status_max: None,
                 body_contains: None,
                 header_matches: None,
+                response_json_schema: None,
+                json_path_assertions: Vec::new(),
             }],
             rationale: None,
         };
@@ -1997,8 +2073,11 @@ mod tests {
                 name: "cached assertion".into(),
                 request: request("/health"),
                 expected_status: 200,
+                expected_status_max: None,
                 body_contains: None,
                 header_matches: None,
+                response_json_schema: None,
+                json_path_assertions: Vec::new(),
             }],
             rationale: Some("legacy oversized cache entry".into()),
         };
@@ -2038,8 +2117,11 @@ mod tests {
             name: "operator assertion".into(),
             request: request("/health"),
             expected_status: 200,
+            expected_status_max: None,
             body_contains: None,
             header_matches: None,
+            response_json_schema: None,
+            json_path_assertions: Vec::new(),
         }];
 
         assert!(has_unambiguous_export_provenance(false, &trusted));
@@ -2189,8 +2271,11 @@ mod tests {
             name: "supplemental expected failure".into(),
             request: request("/error"),
             expected_status: 200,
+            expected_status_max: None,
             body_contains: None,
             header_matches: None,
+            response_json_schema: None,
+            json_path_assertions: Vec::new(),
         };
 
         let id = prepare_fixture(
@@ -2220,15 +2305,21 @@ mod tests {
             name: "first request".into(),
             request: request("/counter"),
             expected_status: 200,
+            expected_status_max: None,
             body_contains: Some("1".into()),
             header_matches: None,
+            response_json_schema: None,
+            json_path_assertions: Vec::new(),
         };
         let second = ContractAssertion {
             name: "second request".into(),
             request: request("/counter"),
             expected_status: 200,
+            expected_status_max: None,
             body_contains: Some("2".into()),
             header_matches: None,
+            response_json_schema: None,
+            json_path_assertions: Vec::new(),
         };
 
         let id = prepare_fixture(
@@ -2268,8 +2359,11 @@ mod tests {
                 name: "cached health assertion".into(),
                 request: request("/health"),
                 expected_status: 200,
+                expected_status_max: None,
                 body_contains: Some("healthy".into()),
                 header_matches: None,
+                response_json_schema: None,
+                json_path_assertions: Vec::new(),
             }],
             rationale: Some("cached synthesis".into()),
         };
@@ -2330,8 +2424,11 @@ mod tests {
                 name: "model health regression".into(),
                 request: request("/health"),
                 expected_status: 200,
+                expected_status_max: None,
                 body_contains: Some("healthy".into()),
                 header_matches: None,
+                response_json_schema: None,
+                json_path_assertions: Vec::new(),
             }],
             rationale: Some("preseeded cache fixture".into()),
         };
@@ -2370,8 +2467,11 @@ mod tests {
             name: "model regression must fail candidate".into(),
             request: request("/health"),
             expected_status: 404,
+            expected_status_max: None,
             body_contains: None,
             header_matches: None,
+            response_json_schema: None,
+            json_path_assertions: Vec::new(),
         };
 
         let result = prepare_fixture(

@@ -156,9 +156,15 @@ pub struct ContractAssertion {
     pub request: RequestEnvelope,
     pub expected_status: u16,
     #[serde(default)]
+    pub expected_status_max: Option<u16>,
+    #[serde(default)]
     pub body_contains: Option<String>,
     #[serde(default)]
     pub header_matches: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    pub response_json_schema: Option<serde_json::Value>,
+    #[serde(default)]
+    pub json_path_assertions: Vec<crate::spec::JsonPathAssertion>,
 }
 
 /// Structured synthesis output expected from LLM completion

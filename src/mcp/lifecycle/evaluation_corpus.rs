@@ -103,9 +103,12 @@ fn assertions_from_spec(spec: &ServiceSpec) -> Vec<ContractAssertion> {
                 body: case.body.as_deref().unwrap_or("").as_bytes().to_vec(),
             },
             expected_status: case.expected_status.unwrap_or(200),
+            expected_status_max: case.expected_status_max,
             body_contains: case.body_contains.clone(),
             header_matches: (!case.response_headers.is_empty())
                 .then(|| case.response_headers.clone()),
+            response_json_schema: case.response_json_schema.clone(),
+            json_path_assertions: case.json_path_assertions.clone(),
         })
         .collect()
 }

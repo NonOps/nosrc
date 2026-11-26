@@ -13,6 +13,7 @@ pub struct AssertionResult {
     pub passed: bool,
     pub actual_status: Option<u16>,
     pub expected_status: u16,
+    pub expected_status_max: u16,
     pub actual_headers: Option<std::collections::HashMap<String, String>>,
     pub actual_body: Option<String>,
     pub failure_kind: Option<&'static str>,
@@ -198,6 +199,9 @@ impl ShadowVerifier {
                         passed,
                         actual_status: Some(response.status),
                         expected_status: assertion.expected_status,
+                        expected_status_max: assertion
+                            .expected_status_max
+                            .unwrap_or(assertion.expected_status),
                         actual_headers: Some(
                             response
                                 .headers
@@ -224,6 +228,9 @@ impl ShadowVerifier {
                     passed: false,
                     actual_status: None,
                     expected_status: assertion.expected_status,
+                    expected_status_max: assertion
+                        .expected_status_max
+                        .unwrap_or(assertion.expected_status),
                     actual_headers: None,
                     actual_body: None,
                     failure_kind: Some(match &error {
@@ -299,13 +306,21 @@ fn evaluate_response(
     response: &ResponseEnvelope,
     assertion: &ContractAssertion,
 ) -> (bool, Option<String>, Option<&'static str>) {
-    if response.status != assertion.expected_status {
+    let expected_status_max = assertion
+        .expected_status_max
+        .unwrap_or(assertion.expected_status);
+    if !(assertion.expected_status..=expected_status_max).contains(&response.status) {
+        let expected = if expected_status_max == assertion.expected_status {
+            format!("Expected status {}", assertion.expected_status)
+        } else {
+            format!(
+                "Expected status in range {}-{}",
+                assertion.expected_status, expected_status_max
+            )
+        };
         return (
             false,
-            Some(format!(
-                "Expected status {}, got {}",
-                assertion.expected_status, response.status
-            )),
+            Some(format!("{expected}, got {}", response.status)),
             Some("status_mismatch"),
         );
     }
@@ -323,6 +338,81 @@ fn evaluate_response(
                 Some("Response body did not satisfy the configured body assertion".into()),
                 Some("body_mismatch"),
             );
+        }
+    }
+
+    if assertion.response_json_schema.is_some() || !assertion.json_path_assertions.is_empty() {
+        let body = match &response.body {
+            ResponseBody::Text(text) => text.as_bytes(),
+            ResponseBody::Bytes(bytes) => bytes.as_slice(),
+        };
+        let instance: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(value) => value,
+            Err(_) => {
+                return (
+                    false,
+                    Some(
+                        "Response body is not valid JSON for configured structured assertions"
+                            .into(),
+                    ),
+                    Some("response_json_invalid"),
+                );
+            }
+        };
+        if let Some(schema) = &assertion.response_json_schema {
+            let validator = match jsonschema::draft202012::options()
+                .offline()
+                .with_pattern_options(
+                    jsonschema::PatternOptions::fancy_regex()
+                        .backtrack_limit(10_000)
+                        .size_limit(1024 * 1024)
+                        .dfa_size_limit(2 * 1024 * 1024),
+                )
+                .build(schema)
+            {
+                Ok(validator) => validator,
+                Err(_) => {
+                    return (
+                        false,
+                        Some("Configured response JSON Schema could not be compiled".into()),
+                        Some("response_schema_invalid"),
+                    );
+                }
+            };
+            if !validator.is_valid(&instance) {
+                return (
+                    false,
+                    Some("Response JSON body did not satisfy the configured schema".into()),
+                    Some("response_schema_mismatch"),
+                );
+            }
+        }
+
+        for assertion in &assertion.json_path_assertions {
+            match crate::spec::json_path_value(&instance, &assertion.path) {
+                Ok(Some(actual)) if actual == &assertion.expected => {}
+                Ok(Some(_)) => {
+                    return (
+                        false,
+                        Some("JSONPath value did not match the expected JSON value".into()),
+                        Some("json_path_mismatch"),
+                    );
+                }
+                Ok(None) => {
+                    return (
+                        false,
+                        Some("JSONPath expression did not resolve to a response value".into()),
+                        Some("json_path_missing"),
+                    );
+                }
+                Err(_) => {
+                    return (
+                        false,
+                        Some("JSONPath expression is invalid".into()),
+                        Some("json_path_invalid"),
+                    );
+                }
+            }
         }
     }
 
@@ -376,9 +466,88 @@ mod tests {
                 body: vec![],
             },
             expected_status,
+            expected_status_max: None,
             body_contains: body_contains.map(str::to_string),
             header_matches: None,
+            response_json_schema: None,
+            json_path_assertions: Vec::new(),
         }
+    }
+
+    #[test]
+    fn verifier_enforces_draft_2020_12_response_schemas() {
+        let response = ResponseEnvelope::new(
+            200,
+            ResponseBody::Text(r#"{"ok":true,"count":2}"#.to_string()),
+        );
+        let mut expected = assertion(200, None);
+        expected.response_json_schema = Some(serde_json::json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "required": ["ok", "count"],
+            "properties": {
+                "ok": {"const": true},
+                "count": {"type": "integer", "minimum": 1}
+            },
+            "additionalProperties": false
+        }));
+        assert!(evaluate_response(&response, &expected).0);
+
+        let invalid_response = ResponseEnvelope::new(
+            200,
+            ResponseBody::Text(r#"{"ok":"yes","count":0}"#.to_string()),
+        );
+        let (passed, _, kind) = evaluate_response(&invalid_response, &expected);
+        assert!(!passed);
+        assert_eq!(kind, Some("response_schema_mismatch"));
+    }
+
+    #[test]
+    fn verifier_enforces_status_ranges_and_jsonpath_values() {
+        let response = ResponseEnvelope::new(
+            201,
+            ResponseBody::Text(r#"{"items":[{"id":42,"active":true}]}"#.to_string()),
+        );
+        let mut expected = assertion(200, None);
+        expected.expected_status_max = Some(299);
+        expected.json_path_assertions = vec![
+            crate::spec::JsonPathAssertion {
+                path: "$.items[0].id".into(),
+                expected: serde_json::json!(42),
+            },
+            crate::spec::JsonPathAssertion {
+                path: r#"$["items"][0].active"#.into(),
+                expected: serde_json::json!(true),
+            },
+        ];
+        assert!(evaluate_response(&response, &expected).0);
+
+        let wrong_status =
+            ResponseEnvelope::new(404, ResponseBody::Text(r#"{"items":[]}"#.to_string()));
+        let (passed, _, kind) = evaluate_response(&wrong_status, &expected);
+        assert!(!passed);
+        assert_eq!(kind, Some("status_mismatch"));
+
+        expected.json_path_assertions[0].expected = serde_json::json!("42");
+        let (passed, _, kind) = evaluate_response(&response, &expected);
+        assert!(!passed);
+        assert_eq!(kind, Some("json_path_mismatch"));
+
+        expected.json_path_assertions[0].path = "$.items[9].id".into();
+        expected.json_path_assertions[0].expected = serde_json::json!(42);
+        let (passed, _, kind) = evaluate_response(&response, &expected);
+        assert!(!passed);
+        assert_eq!(kind, Some("json_path_missing"));
+    }
+
+    #[test]
+    fn response_schema_rejects_non_json_bodies() {
+        let response = ResponseEnvelope::new(200, ResponseBody::Text("not json".into()));
+        let mut expected = assertion(200, None);
+        expected.response_json_schema = Some(serde_json::json!({"type": "object"}));
+        let (passed, _, kind) = evaluate_response(&response, &expected);
+        assert!(!passed);
+        assert_eq!(kind, Some("response_json_invalid"));
     }
 
     #[test]
@@ -566,15 +735,21 @@ mod tests {
             name: "first call".to_string(),
             request: first_request,
             expected_status: 200,
+            expected_status_max: None,
             body_contains: Some("1".to_string()),
             header_matches: None,
+            response_json_schema: None,
+            json_path_assertions: Vec::new(),
         };
         let second = ContractAssertion {
             name: "second call".to_string(),
             request: second_request,
             expected_status: 200,
+            expected_status_max: None,
             body_contains: Some("2".to_string()),
             header_matches: None,
+            response_json_schema: None,
+            json_path_assertions: Vec::new(),
         };
 
         let results = ShadowVerifier::new()

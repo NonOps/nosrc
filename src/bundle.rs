@@ -291,8 +291,11 @@ mod tests {
                 body: vec![],
             },
             expected_status: 200,
+            expected_status_max: None,
             body_contains: Some("healthy".to_string()),
             header_matches: None,
+            response_json_schema: None,
+            json_path_assertions: Vec::new(),
         }
     }
 
