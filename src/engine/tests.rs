@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::net::IpAddr;
 use std::sync::Arc;
 
@@ -328,9 +328,9 @@ fn test_invoke_handler_e2e_envelope() {
     let engine = WasmEngine::new().expect("Failed to create engine");
 
     // Guest WAT module exporting `handle_request`:
-    // Returns `{"status":201,"headers":{"x-nosrc":"active"},"body":"created"}` (len 64)
+    // Returns the legacy host ABI's JSON encoding of the typed ABI v2 response.
     // Written at offset 1024
-    let resp_str = r#"{"status":201,"headers":{"x-nosrc":"active"},"body":"created"}"#;
+    let resp_str = r#"{"status":201,"headers":[{"name":"x-nosrc","value":[97,99,116,105,118,101]}],"body":{"tag":"text","val":"created"}}"#;
     let resp_escaped = resp_str.replace('"', "\\\"");
 
     // In this test, guest handle_request receives req_ptr (1024), copies its response at offset 2048,
@@ -353,15 +353,18 @@ fn test_invoke_handler_e2e_envelope() {
 
     let module = engine.compile(wat.as_bytes()).expect("WAT compile failed");
 
-    let mut req = RequestEnvelope {
+    let req = RequestEnvelope {
         method: "POST".to_string(),
+        scheme: None,
+        authority: None,
         path: "/users".to_string(),
-        query: HashMap::new(),
-        headers: HashMap::new(),
-        body: Some(r#"{"name":"bob"}"#.to_string()),
+        query: None,
+        headers: vec![crate::engine::http_envelope::Header {
+            name: "content-type".to_string(),
+            value: b"application/json".to_vec(),
+        }],
+        body: br#"{"name":"bob"}"#.to_vec(),
     };
-    req.headers
-        .insert("content-type".to_string(), "application/json".to_string());
 
     let caps = HostCapabilities::new_external(HashSet::new());
     let resp = engine
@@ -369,8 +372,17 @@ fn test_invoke_handler_e2e_envelope() {
         .expect("Invoke handler failed");
 
     assert_eq!(resp.status, 201);
-    assert_eq!(resp.headers.get("x-nosrc"), Some(&"active".to_string()));
-    assert_eq!(resp.body, Some("created".to_string()));
+    assert_eq!(
+        resp.headers
+            .iter()
+            .find(|h| h.name == "x-nosrc")
+            .map(|h| h.value.as_slice()),
+        Some(b"active".as_slice())
+    );
+    assert_eq!(
+        resp.body,
+        crate::engine::http_envelope::ResponseBody::Text("created".to_string())
+    );
 
     // Verify converting into Axum HTTP response
     let axum_resp = resp.into_axum_response();

@@ -59,7 +59,7 @@ Normal diagnostics are scoped to nosrc events. Verbose mode enables nosrc DEBUG 
 
 - No guest-visible durable state, SQL, KV, or outbound network capability is implemented.
 - Durable application-state persistence and durable generation/control-plane metadata are backlog items. Any storage capability must have a narrow WIT contract, explicit policy gates, bounded operations, candidate isolation, defined consistency/recovery behavior, and component-level tests.
-- The current string-based request ABI does not support arbitrary non-UTF-8 request bodies.
+- ABI v2 preserves arbitrary request body bytes and byte-valued header fields. Host validation rejects malformed header names and prohibited field-value bytes, and guest framing/hop-by-hop headers are not forwarded.
 - Assertions are examples, not proof of correctness or security.
 - MCP-first mode intentionally starts without application-specific trusted assertions. Candidates may be prepared and exported for review under baseline sandbox limits, but cannot be activated until an operator-reviewed SPEC is supplied at restart.
 - The export manifest is not signed and does not contain complete build provenance or assertion execution records.

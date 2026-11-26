@@ -82,10 +82,25 @@ fn assertions_from_spec(spec: &ServiceSpec) -> Vec<ContractAssertion> {
             name: format!("mock corpus case {}", index + 1),
             request: RequestEnvelope {
                 method: case.method.clone(),
+                scheme: None,
+                authority: None,
                 path: case.path.clone(),
-                query: case.query.clone(),
-                headers: case.headers.clone(),
-                body: case.body.clone(),
+                query: (!case.query.is_empty()).then(|| {
+                    let mut serializer = form_urlencoded::Serializer::new(String::new());
+                    for (k, v) in &case.query {
+                        serializer.append_pair(k, v);
+                    }
+                    serializer.finish()
+                }),
+                headers: case
+                    .headers
+                    .iter()
+                    .map(|(name, value)| crate::engine::http_envelope::Header {
+                        name: name.clone(),
+                        value: value.as_bytes().to_vec(),
+                    })
+                    .collect(),
+                body: case.body.as_deref().unwrap_or("").as_bytes().to_vec(),
             },
             expected_status: case.expected_status.unwrap_or(200),
             body_contains: case.body_contains.clone(),
@@ -166,7 +181,7 @@ async fn mock_repair_completion(
         .expect("repair mock received an unknown SPEC");
     let attempt = state.requests.fetch_add(1, Ordering::SeqCst);
     let handler = if attempt == 0 {
-        "export function handle(_requestJson) { return JSON.stringify({ status: 500, headers: {}, body: \"deliberate first-pass failure\" }); }"
+        "export function handle(_request) { return { status: 500, headers: [], body: { tag: \"text\", val: \"deliberate first-pass failure\" } }; }"
     } else {
         assert!(
             prompt.contains("Failure category: verification_failed"),
@@ -373,7 +388,7 @@ async fn spec_evaluation_host_probe_telemetry_is_retained_without_other_verifica
     let generation = lifecycle
         .preparation_context()
         .prepare_from_js(
-            "export function handle(_requestJson) { return JSON.stringify({ status: 200, headers: {}, body: \"ok\" }); }".to_string(),
+            "export function handle(_request) { return { status: 200, headers: [], body: { tag: \"text\", val: \"ok\" } }; }".to_string(),
             Vec::new(),
         )
         .await

@@ -28,20 +28,23 @@ candidate WIT body shapes:
 
 1. A record containing authoritative `list<u8>` bytes plus
    `option<string>` UTF-8 text.
-2. A tagged variant containing either text or binary; this benchmark measures
+2. A bytes-only `list<u8>` request, decoded in the guest with the exact
+   `decodeUtf8` helper documented to generated handlers, then passed to
+   `JSON.parse`.
+3. A tagged variant containing either text or binary; this benchmark measures
    the explicitly selected text case.
 
-Both paths execute guest `JSON.parse` and `JSON.stringify`; the first keeps
-both byte and text representations live while the guest handles the request.
+All three request paths execute guest `JSON.parse` and `JSON.stringify`;
+the record keeps both byte and text representations live, while the bytes-only
+path includes the guest-side UTF-8 conversion cost that was previously missing.
 The test measures each path with a separate Wasmtime store and a 1,000,000,000-fuel
 measurement ceiling, so one expensive path does not prevent the others from
 being measured. It reports per-invocation fuel and limiter-observed peak
-requested linear-memory size, then compares each successful measurement against
-the revised production limits of 250,000,000 fuel and 64 MiB linear-memory growth.
-A path that still exhausts the measurement ceiling is reported as unmeasurable
-rather than silently treated as a production-limit result. The test fails after
-all paths have been attempted if any path exceeds the production limits or
-cannot complete within the measurement ceiling. It separately measures creation
+requested linear-memory size. The production-selected record path and response
+serialization must remain within 250,000,000 fuel and 64 MiB linear-memory growth.
+The bytes-only path is a deliberately rejected alternative: if guest-side UTF-8
+decoding exhausts fuel, the test records that evidence without failing the
+selected production path. It separately measures creation
 of an exactly 1 MiB JSON response with `JSON.stringify`.
 
 The benchmark intentionally does not infer text/binary intent from UTF-8

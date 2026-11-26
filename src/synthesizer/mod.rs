@@ -372,7 +372,7 @@ fn component_cache_key_for_inputs(
         &memory,
         &response,
         &execution_timeout,
-        b"component-runtime-abi-v1",
+        b"component-runtime-abi-v2",
         std::env::consts::ARCH.as_bytes(),
         std::env::consts::OS.as_bytes(),
     ];
@@ -457,28 +457,43 @@ impl Synthesizer {
         r#"You are the nosrc service implementation synthesizer.
 Implement the supplied declarative SPEC.md as a self-contained ES module for the nosrc QuickJS runtime.
 
-Runtime contract:
-- Export exactly one function: `export function handle(requestJson)`.
-- `requestJson` is a JSON string encoding an object with method, path, query, headers, and optional body fields.
-- Return a JSON string encoding a response object with numeric status, headers object, and optional string body.
+Runtime contract (ABI v2 / nosrc:runtime@2.0.0):
+- Export exactly one function: `export function handle(request)`.
+- `request` is a typed record with:
+  - `method`: string (e.g. "GET", "POST")
+  - `scheme`: string | null
+  - `authority`: string | null
+  - `path`: string (encoded path, e.g. "/items/1")
+  - `query`: string | null (raw encoded query string without leading `?`, or null)
+  - `headers`: Array<{ name: string, value: Uint8Array }>
+  - `body`: Uint8Array (authoritative raw bytes; empty when no body is present)
+  - `bodyText`: string | null (host-validated UTF-8 view, populated only when the complete body is valid UTF-8)
+- Return a typed response object:
+  - `status`: number (HTTP status code, e.g. 200, 201, 400, 404)
+  - `headers`: Array<{ name: string, value: Uint8Array }>
+  - `body`: `{ tag: "text", val: string }` or `{ tag: "bytes", val: Uint8Array }`
+- `TextEncoder` and `TextDecoder` are not available in QuickJS. For JSON/text request bodies, prefer the host-validated `request.bodyText` string when it is non-null; this avoids guest-side UTF-8 decoding fuel costs. The authoritative raw bytes are always `request.body`. When `bodyText` is null and text is required, use a strict UTF-8 decoder over `request.body` (malformed UTF-8 must be rejected, never replaced). For UTF-8 header values and text response bytes, use `encodeUtf8`: `function encodeUtf8(str) { const encoded = encodeURIComponent(str); const out = []; for (let i = 0; i < encoded.length; i++) { if (encoded[i] === "%") { out.push(parseInt(encoded.slice(i + 1, i + 3), 16)); i += 2; } else out.push(encoded.charCodeAt(i)); } return new Uint8Array(out); }`.
+
 - JavaScript module-level variables are the only state available and persist between requests handled by the same active generation. Durable state, SQL, KV, and outbound egress are unsupported and rejected before synthesis.
 - Do not import modules or use filesystem, process, network, environment, timers, or other ambient capabilities. No WASI capabilities are available.
-- Keep request and response bodies as strings. For JSON APIs, parse request.body with JSON.parse and serialize response bodies with JSON.stringify.
+- For JSON APIs, require `request.bodyText` to be non-null and parse it with `JSON.parse`, and serialize response bodies with `JSON.stringify` inside `{ tag: "text", val: JSON.stringify(...) }`.
 - Implement only behavior described by SPEC.md. Do not invent endpoints or capabilities.
 
 Return ONLY valid JSON matching this exact structure:
 {
-  "handler_code": "export function handle(requestJson) { /* implementation */ }",
+  "handler_code": "export function handle(request) { /* implementation */ }",
   "code_format": "javascript",
   "assertions": [
     {
       "name": "descriptive test name",
       "request": {
         "method": "POST",
+        "scheme": null,
+        "authority": null,
         "path": "/shorten",
-        "query": {},
-        "headers": {"content-type": "application/json"},
-        "body": "{\"url\":\"https://example.com\"}"
+        "query": null,
+        "headers": [{"name": "content-type", "value": [97,112,112,108,105,99,97,116,105,111,110,47,106,115,111,110]}],
+        "body": [123,34,117,114,108,34,58,34,104,116,116,112,115,58,47,47,101,120,97,109,112,108,101,46,99,111,109,34,125]
       },
       "expected_status": 201,
       "body_contains": "code"

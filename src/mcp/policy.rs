@@ -54,10 +54,25 @@ impl AcceptancePolicy {
                     name: format!("SPEC {} {}", case.method, case.path),
                     request: RequestEnvelope {
                         method: case.method.clone(),
+                        scheme: None,
+                        authority: None,
                         path: case.path.clone(),
-                        query: case.query.clone(),
-                        headers: case.headers.clone(),
-                        body: case.body.clone(),
+                        query: (!case.query.is_empty()).then(|| {
+                            let mut serializer = form_urlencoded::Serializer::new(String::new());
+                            for (k, v) in &case.query {
+                                serializer.append_pair(k, v);
+                            }
+                            serializer.finish()
+                        }),
+                        headers: case
+                            .headers
+                            .iter()
+                            .map(|(name, value)| crate::engine::http_envelope::Header {
+                                name: name.clone(),
+                                value: value.as_bytes().to_vec(),
+                            })
+                            .collect(),
+                        body: case.body.as_deref().unwrap_or("").as_bytes().to_vec(),
                     },
                     expected_status: case.expected_status.ok_or_else(|| {
                         format!(
@@ -108,7 +123,6 @@ impl AcceptancePolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     #[test]
     fn trusted_policy_passes_request_body_to_the_guest_envelope() {
@@ -126,8 +140,8 @@ mod tests {
         .unwrap();
         let policy = AcceptancePolicy::from_spec(&spec).unwrap();
         assert_eq!(
-            policy.spec_assertions[0].request.body.as_deref(),
-            Some(r#"{"name":"hello"}"#)
+            policy.spec_assertions[0].request.body,
+            br#"{"name":"hello"}"#.to_vec()
         );
     }
 
@@ -138,10 +152,12 @@ mod tests {
                 name: "trusted".into(),
                 request: RequestEnvelope {
                     method: "GET".into(),
+                    scheme: None,
+                    authority: None,
                     path: "/".into(),
-                    query: HashMap::new(),
-                    headers: HashMap::new(),
-                    body: None,
+                    query: None,
+                    headers: vec![],
+                    body: vec![],
                 },
                 expected_status: 200,
                 body_contains: None,

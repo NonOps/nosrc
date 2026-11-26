@@ -14,3 +14,8 @@
 - Body: {"name":" ADA "}
 - Response `200`
 - Body contains: ada
+
+### `POST /normalize`
+- Body: {"name":" 雪🚀 "}
+- Response `200`
+- Body contains: 雪🚀

@@ -86,14 +86,22 @@ When a synthesized candidate has an invalid artifact shape, fails componentizati
 `src/engine/quickjs.rs` uses `componentize-qjs` to compile a self-contained ES module against the fixed WIT world:
 
 ```wit
-package nosrc:runtime;
+package nosrc:runtime@2.0.0;
+
+interface http {
+    record header { name: string, value: list<u8> }
+    record request { method: string, scheme: option<string>, authority: option<string>, path: string, query: option<string>, headers: list<header>, body: list<u8>, body-text: option<string> }
+    variant response-body { text(string), bytes(list<u8>) }
+    record response { status: u16, headers: list<header>, body: response-body }
+}
 
 world handler {
-    export handle: func(request: string) -> string;
+    use http.{request, response};
+    export handle: func(request: request) -> response;
 }
 ```
 
-The handler contract is `handle(requestJson: string) -> responseJson: string`. Request and response values are JSON strings following `src/engine/http_envelope.rs`. The component runs with Wasmtime 50. WASI imports are stubbed; the guest receives no filesystem, process, network, SQL, or KV host imports.
+The handler contract is typed WIT: `handle(request) -> response`. Request bodies expose authoritative raw bytes plus an optional host-validated UTF-8 text view (`null` for invalid UTF-8); header values remain raw bytes. Response bodies are explicitly `text(string)` (host UTF-8 encoding) or `bytes(list<u8>)`. Repeated header occurrences are retained. The component runs with Wasmtime 50. WASI imports are stubbed; the guest receives no filesystem, process, network, SQL, or KV host imports.
 
 Each component store enforces a default fuel budget of 250,000,000 units and a 64 MiB per-linear-memory growth limit. The fuel ceiling was raised from 50,000,000 after the ABI v2 1 MiB JSON benchmark measured approximately 143–178 million units for request handling and response serialization; the independent 30-second epoch deadline remains the wall-clock execution bound. Table elements, instances, tables, memories, and component handles are also bounded. The response envelope is capped at 1 MiB. Fuel is reset before each invocation. The runtime records fuel consumed by the most recent invocation and the largest per-invocation consumption observed by the generation; values are absent when Wasmtime cannot report them. The resource limiter records accepted linear-memory growth targets, rolling back a target when Wasmtime reports that allocation failed. The current-instance memory high-water resets when a trapped instance is replaced, while the generation high-water retains the maximum observed across replacements. These are guest linear-memory measurements, not total process or Wasmtime host memory. Wasmtime epoch interruption is enabled independently of fuel: a process-local ticker advances each engine epoch every 10 ms, and each guest invocation sets its own deadline (30 seconds by default). Epoch interruption is coarse-grained; a deadline is observed at the next instrumented guest check and is not an exact real-time cutoff. Startup and recovery instantiation also have a bounded epoch deadline. A guest trap, including an epoch timeout, discards the trapped instance and attempts recreation from the compiled component. Each successful replacement increments the generation-scoped `instance_recreations` counter and emits a warning with a bounded failure category; guest-controlled exception and trap text is neither returned to HTTP clients nor written to request-failure logs. If recovery fails, that handler is marked unusable rather than reusing the trapped store.
 
@@ -107,7 +115,7 @@ JavaScript module-level variables are the only current guest state. They survive
 
 Trusted SPEC cases, host-generated ABI probes, and generated supplemental assertions each run on separate disposable candidate instances. Each assertion suite runs sequentially on one instance so stateful request sequences within that suite are preserved. The production instance is created separately after required checks pass.
 
-The trusted verifier checks operator-configured response status, response-body substring, and response-header expectations. Trusted cases can set request headers, a UTF-8 request body (`Request body:` in SPEC.md), and decoded query parameters. The string-map request ABI cannot represent multi-valued query parameters; repeated query keys in trusted verification headings are rejected. Verification failures are logged with a one-based case number and expected/actual status; request bodies and assertion contents are not logged.
+The trusted verifier checks operator-configured response status, response-body substring, and response-header expectations. Trusted cases can set request headers, a UTF-8 request body (`Request body:` in SPEC.md), and raw encoded query text. SPEC grammar remains scalar and rejects repeated query keys; the runtime ABI itself preserves raw query encoding and repeated headers. Verification failures are logged with a one-based case number and expected/actual status; request bodies and assertion contents are not logged.
 
 Host probes are fixed by the runtime and are not derived from SPEC text or model output. They exercise a minimal request, an encoded path with unusual query/header values, and a JSON body containing escaped delimiters and Unicode. They require the guest not to trap and to return a bounded, syntactically valid response envelope with a valid HTTP status and header syntax. They do not test application-specific route semantics, authorization, data handling, or general security.
 
@@ -123,7 +131,7 @@ A matching component hit can avoid componentization, but it never bypasses compi
 
 Axum handles `GET /healthz` and `GET /_nosrc/status`. The status response includes a versioned `telemetry` object for the active generation with last-invocation fuel, generation fuel high-water, current-instance memory high-water, generation memory high-water, and the number of successfully recreated guest instances after traps. The recreation count is generation-scoped and survives instance replacement; the current-instance memory high-water resets with the replacement while the generation memory high-water is retained. Measurements are numeric or null when unavailable and never include request or guest payload data. Other requests are converted into the handler request envelope and dispatched to the active QuickJS handler. The listener binds to `127.0.0.1` by default; external binding requires an explicit `--bind` address. The accept loop enforces a 128-connection ceiling before spawning per-connection tasks; when the cap is reached, newly accepted sockets are closed. Transient accept failures (interrupted, aborted, would-block, and descriptor-exhaustion errors) are logged and retried with a short backoff; non-transient listener failures terminate the server. On SIGINT, or on Unix SIGTERM, the listener stops accepting and active connection tasks are drained for up to 30 seconds by default, then remaining tasks are aborted. Set `--shutdown-timeout SECONDS` or `NOSRC_SHUTDOWN_TIMEOUT_SECS` to change the deadline. This transport-level bound is independent of application request admission.
 
-Incoming HTTP request bodies and serialized guest response envelopes are limited to 1 MiB. The current text-based ABI does not support arbitrary non-UTF-8 request bodies. A mutex serializes calls to the active handler instance, and the execution permit remains owned by the blocking guest task until it exits—even if the client disconnects. Epoch interruption ensures an untrusted infinite guest loop eventually traps and releases that permit. HTTP error responses use sanitized messages while detailed diagnostics are written to server logs.
+Incoming HTTP request bodies and guest response bodies are limited to 1 MiB. ABI v2 preserves arbitrary request bytes and byte-valued header fields. The host owns message framing, strips guest framing/hop-by-hop fields, and suppresses content for HEAD, 204, 205, and 304. A mutex serializes calls to the active handler instance, and the execution permit remains owned by the blocking guest task until it exits—even if the client disconnects. Epoch interruption ensures an untrusted infinite guest loop eventually traps and releases that permit. HTTP error responses use sanitized messages while detailed diagnostics are written to server logs.
 
 ### MCP control plane
 

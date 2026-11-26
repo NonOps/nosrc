@@ -1,4 +1,6 @@
-use crate::engine::http_envelope::{RequestEnvelope, ResponseEnvelope, MAX_HANDLER_RESPONSE_BYTES};
+use crate::engine::http_envelope::{
+    Header, RequestEnvelope, ResponseBody, ResponseEnvelope, MAX_HANDLER_RESPONSE_BYTES,
+};
 use crate::engine::quickjs::QuickJsHandler;
 use crate::error::EngineError;
 use crate::synthesizer::ContractAssertion;
@@ -28,50 +30,58 @@ struct HostProbe {
 /// trap the guest or produce an invalid HTTP response envelope. They do not assert
 /// application-specific status codes or business behavior.
 fn host_probes() -> Vec<HostProbe> {
-    use std::collections::HashMap;
-
     vec![
         HostProbe {
             name: "minimal request",
             request: RequestEnvelope {
                 method: "GET".into(),
+                scheme: None,
+                authority: None,
                 path: "/__nosrc_probe__/minimal".into(),
-                query: HashMap::new(),
-                headers: HashMap::new(),
-                body: None,
+                query: None,
+                headers: vec![],
+                body: vec![],
             },
         },
         HostProbe {
             name: "encoded path and adversarial query",
             request: RequestEnvelope {
                 method: "GET".into(),
+                scheme: None,
+                authority: None,
                 path: "/__nosrc_probe__/encoded/%2e%2e/%2F".into(),
-                query: HashMap::from([
-                    ("empty".into(), String::new()),
-                    ("reserved".into(), "&=/+%?#".into()),
-                    ("unicode".into(), "雪だるま☃".into()),
-                ]),
-                headers: HashMap::from([
-                    ("accept".into(), "application/json".into()),
-                    ("x-nosrc-probe".into(), "quotes=\"; braces={}".into()),
-                ]),
-                body: None,
+                query: Some(
+                    "empty=&reserved=%26%3D%2F%2B%25%3F%23&unicode=%E9%9B%AA%E3%81%A0%E3%82%8B%E3%81%BE%E2%98%83"
+                        .into(),
+                ),
+                headers: vec![
+                    Header {
+                        name: "accept".into(),
+                        value: b"application/json".to_vec(),
+                    },
+                    Header {
+                        name: "x-nosrc-probe".into(),
+                        value: br#"quotes="; braces={}"#.to_vec(),
+                    },
+                ],
+                body: vec![],
             },
         },
         HostProbe {
             name: "JSON body with escaped delimiters and Unicode",
             request: RequestEnvelope {
                 method: "POST".into(),
+                scheme: None,
+                authority: None,
                 path: "/__nosrc_probe__/body".into(),
-                query: HashMap::from([("mode".into(), "probe".into())]),
-                headers: HashMap::from([(
-                    "content-type".into(),
-                    "application/json".into(),
-                )]),
-                body: Some(
-                    r#"{"text":"quotes: \" and slash /","unicode":"こんにちは 🌍","nested":{"items":[1,true,null]}}"#
-                        .into(),
-                ),
+                query: Some("mode=probe".into()),
+                headers: vec![Header {
+                    name: "content-type".into(),
+                    value: b"application/json".to_vec(),
+                }],
+                body: r#"{"text":"quotes: \" and slash /","unicode":"こんにちは 🌍","nested":{"items":[1,true,null]}}"#
+                    .as_bytes()
+                    .to_vec(),
             },
         },
     ]
@@ -117,23 +127,29 @@ fn validate_host_probe_response(response: &ResponseEnvelope) -> Result<(), Strin
         ));
     }
 
-    // The ABI permits an omitted/null body, represented as None, or a UTF-8 string.
-    // The serde decode in QuickJsHandler::invoke rejects every other JSON type; keep
-    // the byte-size check explicit here so the host-probe guarantee does not depend
-    // only on that lower-level response-envelope limit.
-    if let Some(body) = &response.body {
-        if body.len() > MAX_HANDLER_RESPONSE_BYTES {
-            return Err(format!(
-                "Response body exceeds the {MAX_HANDLER_RESPONSE_BYTES} byte limit"
-            ));
-        }
+    let body_len = match &response.body {
+        ResponseBody::Text(s) => s.len(),
+        ResponseBody::Bytes(b) => b.len(),
+    };
+    if body_len > MAX_HANDLER_RESPONSE_BYTES {
+        return Err(format!(
+            "Response body exceeds the {MAX_HANDLER_RESPONSE_BYTES} byte limit"
+        ));
     }
 
-    for (name, value) in &response.headers {
-        axum::http::header::HeaderName::from_bytes(name.as_bytes())
-            .map_err(|_| format!("Response contains an invalid header name: {name:?}"))?;
-        axum::http::header::HeaderValue::try_from(value.as_str())
-            .map_err(|_| format!("Response contains an invalid value for header {name:?}"))?;
+    for header in &response.headers {
+        axum::http::header::HeaderName::from_bytes(header.name.as_bytes()).map_err(|_| {
+            format!(
+                "Response contains an invalid header name: {:?}",
+                header.name
+            )
+        })?;
+        axum::http::header::HeaderValue::from_bytes(&header.value).map_err(|_| {
+            format!(
+                "Response contains an invalid value for header {:?}",
+                header.name
+            )
+        })?;
     }
 
     Ok(())
@@ -182,8 +198,22 @@ impl ShadowVerifier {
                         passed,
                         actual_status: Some(response.status),
                         expected_status: assertion.expected_status,
-                        actual_headers: Some(response.headers.clone()),
-                        actual_body: response.body.clone(),
+                        actual_headers: Some(
+                            response
+                                .headers
+                                .iter()
+                                .map(|h| {
+                                    (
+                                        h.name.clone(),
+                                        String::from_utf8_lossy(&h.value).into_owned(),
+                                    )
+                                })
+                                .collect(),
+                        ),
+                        actual_body: match &response.body {
+                            ResponseBody::Text(s) => Some(s.clone()),
+                            ResponseBody::Bytes(b) => Some(format!("[{} bytes]", b.len())),
+                        },
                         failure_kind,
                         error_message,
                     });
@@ -281,8 +311,13 @@ fn evaluate_response(
     }
 
     if let Some(expected_substring) = &assertion.body_contains {
-        let body = response.body.as_deref().unwrap_or("");
-        if !body.contains(expected_substring) {
+        let matched = match &response.body {
+            ResponseBody::Text(s) => s.contains(expected_substring),
+            ResponseBody::Bytes(b) => b
+                .windows(expected_substring.len())
+                .any(|w| w == expected_substring.as_bytes()),
+        };
+        if !matched {
             return (
                 false,
                 Some("Response body did not satisfy the configured body assertion".into()),
@@ -296,10 +331,10 @@ fn evaluate_response(
             let actual = response
                 .headers
                 .iter()
-                .find(|(actual_name, _)| actual_name.eq_ignore_ascii_case(name))
-                .map(|(_, value)| value);
+                .find(|h| h.name.eq_ignore_ascii_case(name))
+                .map(|h| String::from_utf8_lossy(&h.value).into_owned());
             match actual {
-                Some(actual_value) if actual_value == expected_value => {}
+                Some(actual_value) if actual_value == *expected_value => {}
                 Some(_) => {
                     return (
                         false,
@@ -333,10 +368,12 @@ mod tests {
             name: "test assertion".to_string(),
             request: RequestEnvelope {
                 method: "GET".to_string(),
+                scheme: None,
+                authority: None,
                 path: "/health".to_string(),
-                query: HashMap::new(),
-                headers: HashMap::new(),
-                body: None,
+                query: None,
+                headers: vec![],
+                body: vec![],
             },
             expected_status,
             body_contains: body_contains.map(str::to_string),
@@ -345,14 +382,17 @@ mod tests {
     }
 
     #[test]
-    fn host_probe_response_validation_accepts_an_omitted_body() {
-        let response = ResponseEnvelope::new(204, None);
+    fn host_probe_response_validation_accepts_an_empty_body() {
+        let response = ResponseEnvelope::new(204, ResponseBody::Text(String::new()));
         assert!(validate_host_probe_response(&response).is_ok());
     }
 
     #[test]
     fn host_probe_response_validation_rejects_an_oversized_body() {
-        let response = ResponseEnvelope::new(200, Some("x".repeat(MAX_HANDLER_RESPONSE_BYTES + 1)));
+        let response = ResponseEnvelope::new(
+            200,
+            ResponseBody::Text("x".repeat(MAX_HANDLER_RESPONSE_BYTES + 1)),
+        );
         let error = validate_host_probe_response(&response).unwrap_err();
         assert!(error.contains("Response body exceeds the 1048576 byte limit"));
     }
@@ -372,8 +412,8 @@ mod tests {
     async fn host_probes_reject_a_response_with_a_non_string_body() {
         let engine = QuickJsEngine::new().unwrap();
         let source = r#"
-            export function handle(_requestJson) {
-                return JSON.stringify({ status: 200, headers: {}, body: 42 });
+            export function handle(_request) {
+                return { status: 200, headers: [], body: 42 };
             }
         "#;
         let compiled = engine.compile_handler(source).await.unwrap();
@@ -388,7 +428,7 @@ mod tests {
             results.iter().all(|result| result
                 .error_message
                 .as_deref()
-                .is_some_and(|message| message.contains("invalid response envelope"))),
+                .is_some_and(|message| message.contains("Candidate execution failed"))),
             "{results:?}"
         );
     }
@@ -397,12 +437,15 @@ mod tests {
     async fn host_probes_reject_a_candidate_that_traps_on_each_probe() {
         let engine = QuickJsEngine::new().unwrap();
         let source = r#"
-            export function handle(requestJson) {
-                const request = JSON.parse(requestJson);
+            export function handle(request) {
                 if (request.path.startsWith("/__nosrc_probe__/")) {
                     throw new Error("host probe rejected");
                 }
-                return JSON.stringify({ status: 200, headers: {}, body: "ok" });
+                return {
+                    status: 200,
+                    headers: [],
+                    body: { tag: "text", val: "ok" }
+                };
             }
         "#;
         let compiled = engine.compile_handler(source).await.unwrap();
@@ -471,7 +514,7 @@ mod tests {
             .unwrap();
         let mut query_assertion = assertion(200, Some("rust wasm"));
         query_assertion.request.path = "/query".to_string();
-        query_assertion.request.query = HashMap::from([("q".to_string(), "rust wasm".to_string())]);
+        query_assertion.request.query = Some("q=rust%20wasm".to_string());
 
         let results = ShadowVerifier::new()
             .verify_handler(&mut candidate, &[query_assertion])
