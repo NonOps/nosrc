@@ -25,6 +25,27 @@ Example:
 cargo run -- --spec ./examples/minimal/SPEC.md --bind 127.0.0.1 --port 8080 --verbose
 ```
 
+## Runtime resource budgets
+
+Operators may lower the guest execution budgets with environment variables. Unset values use the hard ceiling as the default; values above the ceiling, zero, empty values, and non-integers fail startup with the offending variable and accepted range.
+
+| Environment variable | Default / hard ceiling | Meaning |
+|---|---:|---|
+| `NOSRC_MAX_FUEL` | `250000000` | Wasmtime fuel available to each guest invocation |
+| `NOSRC_MAX_MEMORY_BYTES` | `67108864` (64 MiB) | Maximum linear-memory growth for each component instance |
+| `NOSRC_MAX_RESPONSE_BYTES` | `1048576` (1 MiB) | Complete guest response envelope, including headers and WIT overhead |
+
+The HTTP request-body limit remains a fixed 1 MiB hard ceiling. The 30-second guest epoch deadline and 5-second component startup deadline also remain fixed safety bounds in this release. These settings apply consistently to HTTP startup, MCP preparation/activation, verification, and offline bundle serving. MCP clients and draft SPECs cannot raise or replace the operator's selected budgets.
+
+Example (lower the budgets while retaining the runtime's hard ceilings):
+
+```sh
+NOSRC_MAX_FUEL=200000000 \\
+NOSRC_MAX_MEMORY_BYTES=33554432 \\
+NOSRC_MAX_RESPONSE_BYTES=524288 \\
+cargo run -- --spec ./SPEC.md
+```
+
 ## Artifact export
 
 ```sh

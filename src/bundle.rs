@@ -5,9 +5,10 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use crate::engine::quickjs::{QuickJsEngine, DEFAULT_COMPONENT_FUEL};
+use crate::engine::quickjs::QuickJsEngine;
 use crate::export::{ExportAssertions, ExportManifest};
 use crate::ingress::ActiveGeneration;
+use crate::mcp::policy::OperatorRuntimeLimits;
 use crate::verifier::ShadowVerifier;
 
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
@@ -104,6 +105,9 @@ pub fn load_and_verify(bundle_dir: &Path) -> anyhow::Result<(ActiveGeneration, B
         bail!("Bundle generated assertion count does not match manifest");
     }
 
+    // The operator-selected budgets apply equally to bundle verification and serving.
+    let limits = OperatorRuntimeLimits::from_env().map_err(anyhow::Error::msg)?;
+
     // The engine independently compiles the component and derives its own hash.
     let engine = QuickJsEngine::new()?;
     let compiled = engine.compile_component(&component_bytes)?;
@@ -118,7 +122,12 @@ pub fn load_and_verify(bundle_dir: &Path) -> anyhow::Result<(ActiveGeneration, B
     let trusted_results = if assertions.trusted_assertions.is_empty() {
         Vec::new()
     } else {
-        let mut trusted_candidate = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
+        let mut trusted_candidate = engine.instantiate_with_limits(
+            &compiled,
+            limits.max_fuel,
+            limits.max_memory_bytes,
+            limits.max_response_bytes,
+        )?;
         let results = ShadowVerifier::new()
             .verify_handler(&mut trusted_candidate, &assertions.trusted_assertions)
             .context("Bundle trusted assertion verification failed")?;
@@ -129,7 +138,12 @@ pub fn load_and_verify(bundle_dir: &Path) -> anyhow::Result<(ActiveGeneration, B
     let generated_results = if assertions.generated_assertions.is_empty() {
         Vec::new()
     } else {
-        let mut generated_candidate = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
+        let mut generated_candidate = engine.instantiate_with_limits(
+            &compiled,
+            limits.max_fuel,
+            limits.max_memory_bytes,
+            limits.max_response_bytes,
+        )?;
         let results = ShadowVerifier::new()
             .verify_handler(&mut generated_candidate, &assertions.generated_assertions)
             .context("Bundle generated assertion verification failed")?;
@@ -138,7 +152,12 @@ pub fn load_and_verify(bundle_dir: &Path) -> anyhow::Result<(ActiveGeneration, B
     };
 
     // Only construct the serving instance after all integrity and verification checks pass.
-    let handler = engine.instantiate(&compiled, DEFAULT_COMPONENT_FUEL)?;
+    let handler = engine.instantiate_with_limits(
+        &compiled,
+        limits.max_fuel,
+        limits.max_memory_bytes,
+        limits.max_response_bytes,
+    )?;
     let generation = ActiveGeneration {
         generation_id: 1,
         module_hash: compiled.module_hash,
