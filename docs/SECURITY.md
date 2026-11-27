@@ -40,7 +40,9 @@ The optional `mcp --http-port` mode also opens an HTTP application listener in t
 - Component handles, table elements, instances, tables, and memories are bounded.
 - Active HTTP connection limit: 128; the accept loop closes connections above the cap before spawning per-connection tasks.
 - HTTP request body limit: 1 MiB.
-- Serialized guest response envelope limit: 1 MiB.
+- Complete serialized guest response envelope limit: 1 MiB, including body bytes, headers, and WIT framing overhead.
+- HTTP application admission limit: 32 concurrent requests; excess requests receive 503 with `Retry-After: 1`. Health, readiness, and status probes bypass application admission.
+- HTTP readiness: `/healthz` is liveness; `/readyz` is ready only when the listener is bound and a verified generation is active; `/_nosrc/status` reports the active generation, telemetry, and readiness.
 - LLM serialized request limit: 2 MiB.
 - LLM connect timeout: 10 seconds; total request timeout: 120 seconds.
 - LLM success response limit: 4 MiB; error response limit: 8 KiB.
@@ -59,7 +61,7 @@ Normal diagnostics are scoped to nosrc events. Verbose mode enables nosrc DEBUG 
 
 - No guest-visible durable state, SQL, KV, or outbound network capability is implemented.
 - Durable application-state persistence and durable generation/control-plane metadata are backlog items. Any storage capability must have a narrow WIT contract, explicit policy gates, bounded operations, candidate isolation, defined consistency/recovery behavior, and component-level tests.
-- ABI v2 preserves arbitrary request body bytes and byte-valued header fields. Host validation rejects malformed header names and prohibited field-value bytes, and guest framing/hop-by-hop headers are not forwarded.
+- ABI v2 uses typed WIT records (`nosrc:runtime@2.0.0`): request bodies are authoritative raw `list<u8>` bytes with an optional host-validated UTF-8 `body-text` view (absent for invalid UTF-8); header values are raw bytes and repeated fields are retained; response bodies explicitly select `text(string)` or `bytes(list<u8>)`. Host validation rejects malformed header names and prohibited field-value bytes, and guest framing/hop-by-hop headers are not forwarded.
 - Assertions are examples, not proof of correctness or security.
 - MCP-first mode intentionally starts without application-specific trusted assertions. Candidates may be prepared and exported for review under baseline sandbox limits, but cannot be activated until an operator-reviewed SPEC is supplied at restart.
 - The export manifest is not signed and does not contain complete build provenance or assertion execution records.

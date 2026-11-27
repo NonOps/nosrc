@@ -72,8 +72,9 @@ The current manifest does not include a signature, signer identity, explicit per
 Export occurs only after:
 1. SPEC parsing and runtime capability validation.
 2. Trusted SPEC verification.
-3. Generated supplemental verification.
-4. Creation of a fresh production handler instance.
+3. Fixed host-owned ABI probes.
+4. Generated supplemental verification.
+5. Creation of a fresh production handler instance.
 
 Operator-policy exports require the trusted operator suite to pass; a generated suite may be empty for direct-JavaScript MCP generations. Draft-policy exports have no operator-trusted suite and require the draft SPEC verification cases plus model-generated assertions to pass. The manifest records this distinction; draft assertions are never relabeled as operator trust.
 
@@ -100,8 +101,9 @@ Before opening the HTTP listener, the loader:
 2. Parses the manifest and assertion document, validates SHA-256 field syntax, and checks assertion counts against the manifest.
 3. Recomputes the component SHA-256 and requires it to match both `component_sha256` and `module_hash`.
 4. Compiles the component with the current Wasmtime engine.
-5. Runs the trusted and generated assertion suites on separate disposable component instances, then runs the runtime's fixed host-owned ABI probes on another disposable instance.
-6. Creates a fresh serving instance only after every check succeeds.
+5. Runs the trusted and generated assertion suites on separate disposable component instances.
+6. Runs the runtime's fixed host-owned ABI probes on another disposable instance.
+7. Creates a fresh serving instance only after every check succeeds.
 
 The loader does not execute `handler.js`; the prebuilt `component.wasm` is the serving artifact. `handler.js` is required as an audit/review artifact and is checked for presence, regular-file type, size, and non-empty content, but the current manifest has no handler-source digest.
 

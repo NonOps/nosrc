@@ -72,6 +72,7 @@ The listener binds to `127.0.0.1` by default. Use `--bind 0.0.0.0` only when ext
 
 ```sh
 curl -i http://localhost:8080/healthz
+curl -i http://localhost:8080/readyz
 curl -sS http://localhost:8080/_nosrc/status
 curl -i http://localhost:8080/hello
 ```
@@ -192,10 +193,11 @@ See [CLI reference](docs/CLI.md) for all commands, options, and environment vari
 - JavaScript module state is volatile and scoped to one active generation. It does not survive handler replacement or process restart.
 - The current WIT world exposes only the handler entrypoint. Guest code has no filesystem, process, network, database, or key-value host capability.
 - The HTTP server keeps at most 128 accepted connections active at once. Connections beyond that cap are closed before a per-connection task is spawned. This transport-level limit applies independently of the 32-request application admission limit.
-- Requests to one active handler instance are serialized. HTTP ingress admits at most 32 application requests at once; excess requests receive `503 Service Unavailable` with `Retry-After: 1`. Health and status probes remain available during overload.
+- `GET /healthz` is a process/liveness probe and returns `200` while the listener responds. `GET /readyz` returns `200` only after the HTTP listener is bound and a verified handler generation is active; otherwise it returns `503`. `GET /_nosrc/status` reports the active generation, telemetry, and readiness flag. These probes bypass application admission and remain available during overload.
+- Requests to one active handler instance are serialized. HTTP ingress admits at most 32 application requests at once; excess requests receive `503 Service Unavailable` with `Retry-After: 1`.
 - HTTP/1 request headers must arrive within 10 seconds; connections that exceed the header-read deadline are closed. The server also caps HTTP/1 requests at 64 headers.
 - Requests wait at most 5 seconds for the serialized guest execution slot, then receive a retryable `503`. Guest execution has a 30-second wall-clock deadline enforced by Wasmtime epoch interruption, independently of its fuel budget. The epoch ticker advances every 10 ms; interruption is coarse-grained and occurs at an instrumented guest check, so it is not an exact real-time guarantee. The blocking execution retains its slot until the interrupt is handled and the instance is recreated or marked unavailable. The overall application request deadline is 45 seconds, including body receipt. Fuel and memory remain independent safeguards.
-- HTTP request and guest response bodies are limited to 1 MiB. ABI v2 preserves authoritative raw request bytes, supplies a host-validated optional UTF-8 request-text view, and retains byte-valued/repeated header fields; handlers return typed WIT records and explicitly choose UTF-8 text or raw-byte response bodies. Guest responses cannot set message-framing or hop-by-hop headers (`Content-Length`, `Transfer-Encoding`, `Connection`, and related fields); invalid status codes are mapped to `500`. `HEAD`, `204`, `205`, and `304` responses never include a body.
+- HTTP request bodies are limited to 1 MiB. The complete serialized guest response envelope—including headers and WIT framing overhead—is limited to 1 MiB. ABI v2 preserves authoritative raw request bytes, supplies a host-validated optional UTF-8 request-text view, and retains byte-valued/repeated header fields; handlers return typed WIT records and explicitly choose UTF-8 text or raw-byte response bodies. Guest responses cannot set message-framing or hop-by-hop headers (`Content-Length`, `Transfer-Encoding`, `Connection`, and related fields); invalid status codes are mapped to `500`. `HEAD`, `204`, `205`, and `304` responses never include a body.
 - Synthesized JavaScript handlers are limited to 2 MiB on both the HTTP and MCP preparation paths. LLM synthesis requests are limited to 2 MiB; connect and total timeouts are 10 and 120 seconds; successful and error response bodies are capped at 4 MiB and 8 KiB.
 - The local artifact cache is an optimization, not a verification bypass. Cached components are recompiled and both verification suites run again.
 - There is no automatic rebuild, file watching, automatic rollback, remote MCP transport, authentication/authorization for MCP, or Kubernetes orchestration.
