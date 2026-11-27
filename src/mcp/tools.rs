@@ -1744,4 +1744,168 @@ mod tests {
 
         assert!(resolve_export_destination(temp.path(), Path::new("escape")).is_err());
     }
+
+    #[test]
+    fn mcp_tool_params_reject_malformed_and_mistyped_arguments() {
+        for invalid in [
+            serde_json::json!({"source": "not_a_source"}),
+            serde_json::json!({"source": "direct_js", "js_code": 42}),
+            serde_json::json!({"source": "direct_js", "js_code": "export function handle() {}", "unexpected": true}),
+            serde_json::json!({"source": 7}),
+        ] {
+            assert!(
+                serde_json::from_value::<PrepareAppParams>(invalid).is_err(),
+                "malformed tool arguments unexpectedly deserialized"
+            );
+        }
+
+        assert!(serde_json::from_value::<ActivateAppParams>(
+            serde_json::json!({"generation_id": false})
+        )
+        .is_err());
+        assert!(serde_json::from_value::<InvokeAppParams>(
+            serde_json::json!({"path": [], "method": "GET"})
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn preparation_publication_racing_with_activation_keeps_generation_state_consistent() {
+        use crate::engine::quickjs::test_support;
+        use crate::mcp::lifecycle::{prepare_compiled, SourceType};
+        use crate::mcp::policy::AcceptancePolicy;
+        use crate::spec::ServiceSpec;
+
+        let spec = ServiceSpec::parse(
+            "# Service: mcp-preparation-activation-race\n\n## Capabilities\n- state: volatile\n- egress: []\n\n## Endpoints\n### `GET /health`\n- Response `200`: `healthy`\n\n## Verification\n### `GET /health`\n- Response `200`\n- Body contains: `healthy`\n"
+        ).unwrap();
+        let (engine, compiled) = test_support::compiled().await;
+        let engine = engine.clone();
+        let compiled = compiled.clone();
+        let policy = AcceptancePolicy::from_spec(&spec).unwrap();
+
+        async fn candidate(
+            engine: crate::engine::quickjs::QuickJsEngine,
+            compiled: crate::engine::quickjs::CompiledHandler,
+            policy: AcceptancePolicy,
+        ) -> crate::mcp::lifecycle::PreparedGeneration {
+            tokio::task::spawn_blocking(move || {
+                prepare_compiled(
+                    engine,
+                    policy,
+                    compiled,
+                    test_support::HANDLER_SOURCE.to_string(),
+                    SourceType::DirectJs,
+                    Vec::new(),
+                    Vec::new(),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap()
+        }
+
+        let first = candidate(engine.clone(), compiled.clone(), policy.clone()).await;
+        let second = candidate(engine.clone(), compiled.clone(), policy.clone()).await;
+        let mut initial = AppLifecycle::new(&spec, None).unwrap();
+        let first_id = initial.insert_prepared(first);
+        let second_id = initial.insert_prepared(second);
+        initial.activate(&first_id).unwrap();
+        let lifecycle = Arc::new(Mutex::new(initial));
+
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let publish = tokio::spawn(prepare_and_publish(
+            lifecycle.clone(),
+            Duration::from_secs(30),
+            async move {
+                let _ = started_tx.send(());
+                release_rx.await.expect("test releases pending preparation");
+                Ok(candidate(engine, compiled, policy).await)
+            },
+        ));
+
+        started_rx.await.unwrap();
+        {
+            let mut lifecycle = lifecycle.lock().await;
+            lifecycle.activate(&second_id).unwrap();
+            let status = lifecycle.get_status();
+            assert_eq!(
+                status.active_generation.as_deref(),
+                Some(second_id.as_str())
+            );
+            assert_eq!(
+                status
+                    .generations
+                    .iter()
+                    .find(|item| item.generation_id == first_id.as_str())
+                    .unwrap()
+                    .state,
+                crate::mcp::lifecycle::GenerationState::Superseded
+            );
+
+            // The lifecycle status and atomically published HTTP ingress must
+            // identify the same active generation after the concurrent swap.
+            let second_summary = status
+                .generations
+                .iter()
+                .find(|item| item.generation_id == second_id.as_str())
+                .unwrap();
+            let ingress = lifecycle.ingress_state();
+            let active_ingress = ingress.active_generation.load();
+            let active_ingress = active_ingress.as_ref().as_ref().unwrap();
+            assert_eq!(active_ingress.generation_id, 2);
+            assert_eq!(active_ingress.module_hash, second_summary.module_hash);
+        }
+
+        release_tx.send(()).unwrap();
+        let published = publish.await.unwrap();
+        assert_eq!(published.is_error, Some(false));
+
+        let lifecycle = lifecycle.lock().await;
+        let status = lifecycle.get_status();
+        assert_eq!(
+            status.active_generation.as_deref(),
+            Some(second_id.as_str())
+        );
+        let second_summary = status
+            .generations
+            .iter()
+            .find(|item| item.generation_id == second_id.as_str())
+            .unwrap();
+        let ingress = lifecycle.ingress_state();
+        let active_ingress = ingress.active_generation.load();
+        let active_ingress = active_ingress.as_ref().as_ref().unwrap();
+        assert_eq!(active_ingress.generation_id, 2);
+        assert_eq!(active_ingress.module_hash, second_summary.module_hash);
+
+        assert_eq!(
+            status
+                .generations
+                .iter()
+                .filter(|item| item.state == crate::mcp::lifecycle::GenerationState::Active)
+                .count(),
+            1
+        );
+        assert_eq!(
+            status
+                .generations
+                .iter()
+                .filter(|item| item.state == crate::mcp::lifecycle::GenerationState::Ready)
+                .count(),
+            1
+        );
+        assert_eq!(
+            status
+                .generations
+                .iter()
+                .find(|item| item.state == crate::mcp::lifecycle::GenerationState::Ready)
+                .unwrap()
+                .generation_id,
+            serde_json::from_value::<serde_json::Value>(published.structured_content.unwrap())
+                .unwrap()["generation_id"]
+                .as_str()
+                .unwrap()
+        );
+    }
 }
