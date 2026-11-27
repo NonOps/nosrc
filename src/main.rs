@@ -193,7 +193,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 anyhow::anyhow!("Failed to parse SPEC at {}: {error}", spec_path.display())
             })?;
 
-            let synthesizer = Synthesizer::new(LlmConfig::from_env_deferred_key()?);
+            let synthesizer = Synthesizer::new(LlmConfig::from_env_deferred_key()?)?;
             let cache = if no_cache {
                 None
             } else {
@@ -326,7 +326,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 "Loaded service specification"
             );
 
-            let synthesizer = Synthesizer::new(LlmConfig::from_env_deferred_key()?);
+            let synthesizer = Synthesizer::new(LlmConfig::from_env_deferred_key()?)?;
             let cache = if cli.no_cache {
                 tracing::info!("Artifact cache is disabled");
                 None
@@ -801,7 +801,8 @@ mod tests {
             base_url: format!("http://{provider_address}/v1"),
             model: "nosrc-test-model".to_string(),
             temperature: 0.0,
-        });
+        })
+        .expect("valid test HTTP client configuration");
 
         let cache_directory = tempfile::tempdir().unwrap();
         let cache = ArtifactCache::new(cache_directory.path());
@@ -851,7 +852,8 @@ mod tests {
             base_url: format!("http://{provider_address}/v1"),
             model: "nosrc-test-model".to_string(),
             temperature: 0.0,
-        });
+        })
+        .expect("valid test HTTP client configuration");
         let keyless_prepared = mcp::lifecycle::prepare_spec_generation(
             spec.clone(),
             include_str!("../examples/minimal/SPEC.md").to_string(),

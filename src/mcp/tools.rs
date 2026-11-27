@@ -1600,7 +1600,8 @@ mod tests {
             base_url: format!("http://{provider_address}/v1"),
             model: "nosrc-mcp-first-e2e".into(),
             temperature: 0.0,
-        });
+        })
+        .expect("valid test HTTP client configuration");
         // Exercise the same validation, preparation, and publication path as the MCP tool,
         // injecting only the local mock provider instead of reading process credentials.
         let prepared = server

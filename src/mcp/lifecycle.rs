@@ -558,7 +558,7 @@ impl PreparationContext {
                 "No operator SPEC is loaded; provide draft_spec to prepare an agent-authored contract".into(),
             )));
         }
-        let synthesizer = Synthesizer::new(LlmConfig::from_env()?);
+        let synthesizer = Synthesizer::new(LlmConfig::from_env()?)?;
         self.prepare_from_spec_with_synthesizer(supplemental_assertions, &synthesizer)
             .await
     }
@@ -569,7 +569,7 @@ impl PreparationContext {
         spec_text: String,
         supplemental_assertions: Vec<ContractAssertion>,
     ) -> Result<PreparedGeneration, PreparationError> {
-        let synthesizer = Synthesizer::new(LlmConfig::from_env()?);
+        let synthesizer = Synthesizer::new(LlmConfig::from_env()?)?;
         self.prepare_from_draft_spec_with_synthesizer(
             spec_text,
             supplemental_assertions,
@@ -1694,7 +1694,8 @@ mod tests {
             base_url: url,
             model: model.into(),
             temperature: 0.0,
-        });
+        })
+        .expect("valid test HTTP client configuration");
         let result = context
             .prepare_from_spec_with_synthesizer(Vec::new(), &synthesizer)
             .await;
@@ -1776,7 +1777,8 @@ mod tests {
             base_url: url,
             model: "exhausted-repair-test".into(),
             temperature: 0.0,
-        });
+        })
+        .expect("valid test HTTP client configuration");
 
         let error = match context
             .prepare_from_spec_with_synthesizer(Vec::new(), &synthesizer)
@@ -1810,7 +1812,8 @@ mod tests {
             base_url: url,
             model: "provider-failure-repair-test".into(),
             temperature: 0.0,
-        });
+        })
+        .expect("valid test HTTP client configuration");
 
         let error = match context
             .prepare_from_spec_with_synthesizer(Vec::new(), &synthesizer)
@@ -1839,7 +1842,8 @@ mod tests {
             base_url: provider_url.clone(),
             model: "cached-repair-test".into(),
             temperature: 0.0,
-        });
+        })
+        .expect("valid test HTTP client configuration");
         let rejected_source = r#"export function handle(_request) {
             return {
                 status: 500,
@@ -1918,7 +1922,8 @@ mod tests {
             base_url: provider_url,
             model: "cached-component-fallback-test".into(),
             temperature: 0.0,
-        });
+        })
+        .expect("valid test HTTP client configuration");
         let cached_output = SynthesisOutput {
             handler_code: HANDLER_SOURCE.into(),
             code_format: "javascript".into(),
@@ -2011,7 +2016,8 @@ mod tests {
             base_url: provider_url,
             model: "cached-exhaustion-test".into(),
             temperature: 0.0,
-        });
+        })
+        .expect("valid test HTTP client configuration");
         let cache_key = synthesizer.synthesis_cache_key(&spec);
         cache
             .store(&cache_key, &rejected_output, &rejected_component)
@@ -2074,7 +2080,8 @@ mod tests {
             base_url: "http://127.0.0.1:1/v1".into(),
             model: "oversized-cache-test".into(),
             temperature: 0.0,
-        });
+        })
+        .expect("valid test HTTP client configuration");
         let output = SynthesisOutput {
             handler_code: "x".repeat(MAX_JS_SOURCE_BYTES + 1),
             code_format: "javascript".into(),
@@ -2360,7 +2367,8 @@ mod tests {
             base_url: "http://127.0.0.1:1/v1".into(),
             model: "toolchain-cache-test".into(),
             temperature: 0.0,
-        });
+        })
+        .expect("valid test HTTP client configuration");
         let output = SynthesisOutput {
             handler_code: HANDLER_SOURCE.into(),
             code_format: "javascript".into(),
@@ -2424,7 +2432,8 @@ mod tests {
             base_url: "http://127.0.0.1:1/v1".into(),
             model: "unused-cache-test".into(),
             temperature: 0.0,
-        });
+        })
+        .expect("valid test HTTP client configuration");
         let cache_key = synthesizer.synthesis_cache_key(&spec);
         let output = SynthesisOutput {
             handler_code: HANDLER_SOURCE.to_string(),
