@@ -101,6 +101,7 @@ Before opening the HTTP listener, the loader:
 3. Recomputes the component SHA-256 and requires it to match both `component_sha256` and `module_hash`.
 4. Compiles the component with the current Wasmtime engine.
 5. Runs the trusted and generated assertion suites on separate disposable component instances, then runs the runtime's fixed host-owned ABI probes on another disposable instance.
+6. Applies the current operator-selected fuel, linear-memory, and complete response-envelope limits when creating the serving instance; the response envelope ceiling includes headers and WIT overhead.
 6. Creates a fresh serving instance only after every check succeeds.
 
 The loader does not execute `handler.js`; the prebuilt `component.wasm` is the serving artifact. `handler.js` is required as an audit/review artifact and is checked for presence, regular-file type, size, and non-empty content, but the current manifest has no handler-source digest.

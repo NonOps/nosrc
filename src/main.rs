@@ -255,6 +255,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
 
             let app = ingress::build_ingress_router(state);
             let listener = tokio::net::TcpListener::bind((bind, port)).await?;
+            state.set_listener_ready(true);
 
             tracing::info!(
                 address = %listener.local_addr()?,
@@ -357,6 +358,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
 
             let app = ingress::build_ingress_router(state);
             let listener = tokio::net::TcpListener::bind((cli.bind, cli.port)).await?;
+            state.set_listener_ready(true);
 
             tracing::info!(
                 address = %listener.local_addr()?,

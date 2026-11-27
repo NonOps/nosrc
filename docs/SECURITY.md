@@ -40,7 +40,8 @@ The optional `mcp --http-port` mode also opens an HTTP application listener in t
 - Component handles, table elements, instances, tables, and memories are bounded.
 - Active HTTP connection limit: 128; the accept loop closes connections above the cap before spawning per-connection tasks.
 - HTTP request body limit: 1 MiB.
-- Serialized guest response envelope limit: 1 MiB.
+- Complete serialized guest response envelope limit: 1 MiB, including headers and WIT overhead; the body alone does not receive a separate 1 MiB allowance.
+- `/healthz` is a process-liveness endpoint. `/readyz` reports ready only after the HTTP listener has bound and a verified handler generation is active; MCP-first shared HTTP mode remains unready until activation.
 - LLM serialized request limit: 2 MiB.
 - LLM connect timeout: 10 seconds; total request timeout: 120 seconds.
 - LLM success response limit: 4 MiB; error response limit: 8 KiB.
@@ -63,7 +64,7 @@ Normal diagnostics are scoped to nosrc events. Verbose mode enables nosrc DEBUG 
 - Assertions are examples, not proof of correctness or security.
 - MCP-first mode intentionally starts without application-specific trusted assertions. Candidates may be prepared and exported for review under baseline sandbox limits, but cannot be activated until an operator-reviewed SPEC is supplied at restart.
 - The export manifest is not signed and does not contain complete build provenance or assertion execution records.
-- Offline bundle serving validates component hashes and reruns exported assertions, but the manifest and assertions are unsigned and are stored alongside the component. It does not authenticate a bundle against an independently trusted SPEC or signer.
+- Offline bundle serving validates component hashes, reruns the applicable exported assertion suites, and runs the fixed host-owned ABI probes on a separate disposable instance. The manifest and assertions are unsigned and are stored alongside the component. It does not authenticate a bundle against an independently trusted SPEC or signer.
 - Offline bundle artifact opens reject symbolic links and other reparse points on Unix and Windows using no-follow open flags, then inspect the opened handle and enforce bounded reads. Other operating-system targets fail closed because an equivalent no-follow primitive is not implemented there.
 - Export files are staged together and published by a same-filesystem directory rename. Existing destinations are rejected rather than replaced; this prevents a failed export from leaving a partially updated bundle, but does not provide authenticity or tamper evidence.
 - The prototype has no remote MCP transport or MCP authentication/authorization.

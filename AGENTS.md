@@ -10,12 +10,12 @@ Current toolchain: Rust 1.97+, Wasmtime 50 component model, and `componentize-qj
 
 ## 2. Hard invariants
 
-1. **No unverified activation.** HTTP startup and MCP SPEC-driven preparation must pass every operator-authored SPEC verification case and the separate model-generated assertion suite. MCP direct-JavaScript preparation must pass every trusted SPEC case. MCP-first draft-SPEC candidates may be prepared and exported for review. Direct-JavaScript candidates without a startup SPEC are preparation-only and cannot be invoked, activated, or exported. Activation is forbidden until an operator-controlled SPEC with at least one trusted verification case is loaded. Supplemental client assertions are informational only. Never activate a candidate without trusted policy or after a failed check.
+1. **No unverified activation.** HTTP startup and MCP SPEC-driven preparation must pass every operator-authored SPEC verification case, the fixed host-owned ABI probes, and the separate model-generated assertion suite. MCP direct-JavaScript preparation must pass every trusted SPEC case and the fixed host-owned ABI probes. Offline bundle serving reruns the applicable exported assertion suites and the fixed host-owned ABI probes. MCP-first draft-SPEC candidates may be prepared and exported for review. Direct-JavaScript candidates without a startup SPEC are preparation-only and cannot be invoked, activated, or exported. Activation is forbidden until an operator-controlled SPEC with at least one trusted verification case is loaded. Supplemental client assertions are informational only. Never activate a candidate without trusted policy or after a failed check.
 2. **Trusted policy belongs to the operator.** An MCP client cannot replace the startup SPEC, weaken trusted assertions, or raise runtime ceilings.
 3. **Strict guest isolation.** The current QuickJS component world exports only the handler entrypoint. Do not grant filesystem, process, network, SQL, KV, or WASI capabilities without an explicit WIT contract, host implementation, policy gate, bounds, and component-level tests.
 4. **Enforce resource limits.** Fuel, linear memory, component handles/tables/instances/memories, request size, response size, and a wall-clock guest execution deadline enforced by Wasmtime epochs must be enforced by the actual runtime path, not merely reported. Epoch interruption is coarse-grained and does not replace fuel or memory limits.
 5. **Honest state semantics.** JavaScript module-level state is in-memory and generation-scoped. It is lost on handler replacement or process restart. Do not claim that SQLite/redb prototypes or dependencies provide persistence to the active QuickJS guest.
-6. **Keep verification isolated.** Trusted and model-generated suites use separate disposable instances. Agent-supplied informational assertions use their own disposable instance. Production instances are created only after mandatory checks pass.
+6. **Keep verification isolated.** Trusted assertions, fixed host-owned ABI probes, model-generated assertions, and agent-supplied informational assertions each use separate disposable instances as applicable. Production instances are created only after mandatory checks pass.
 7. **Preserve process-mode boundaries.** The default HTTP mode and `serve --bundle` each run HTTP ingress in their own process. `nosrc mcp` defaults to a local stdio-only control plane. With `--http-port`, MCP also starts HTTP ingress in the same process and shares one lifecycle and active generation; do not describe that configuration as separate processes.
 8. **Do not invent implemented capabilities.** A crate dependency, legacy module, test fixture, or backlog item is not proof that the active QuickJS guest can use that capability.
 
@@ -33,15 +33,15 @@ Do not add a persistence backend or claim persistence is wired into the request 
 
 - No subcommand: HTTP runtime. Default SPEC `./SPEC.md`, port `8080`, bind `127.0.0.1`, cache directory `./.nosrc-cache`.
 - `nosrc export`: verifies and exports `handler.js`, `component.wasm`, `assertions.json`, and `manifest.json`; does not start HTTP ingress. It stages the complete bundle in a temporary sibling directory and publishes it by rename; the destination must not already exist.
-- `nosrc serve --bundle PATH`: validates an exported bundle, recompiles its component, reruns both assertion suites, and starts HTTP ingress without LLM credentials or provider access. It does not load a SPEC; the bundle and its unsigned assertion/manifest files are operator-controlled inputs.
+- `nosrc serve --bundle PATH`: validates an exported bundle, recompiles its component, reruns both assertion suites and the fixed host-owned ABI probes, then starts HTTP ingress without LLM credentials or provider access. It does not load a SPEC; the bundle and its unsigned assertion/manifest files are operator-controlled inputs.
 - `nosrc mcp`: local stdio MCP process by default. With `--http-port`, it also starts HTTP ingress in the same process; MCP activation and rollback update the generation served by that listener. `--export-root` (default `./.nosrc-exports`) confines `export_app` to single directory names beneath the configured root. MCP-first candidates cannot be activated until an operator SPEC is loaded.
 
 See `docs/CLI.md` for exact flags and environment variables, and `docs/ARTIFACTS.md` before changing exported files or manifest fields.
 
 ## 5. Security and execution rules
 
-- The handler ABI is `handle(requestJson: string) -> responseJson: string`.
-- The current WIT world exposes no guest imports or host capabilities beyond the handler export.
+- The handler ABI is WIT v2 (`nosrc:runtime@2.0.0`): `handle(request: request) -> response`. Request bodies are authoritative `list<u8>` with an optional host-validated UTF-8 `body-text`; headers retain byte values and repeated occurrences; response bodies use the explicit `text(string)` or `bytes(list<u8>)` variant. Do not document or generate the retired JSON-string ABI.
+- The current WIT v2 world exports only the typed HTTP handler; the guest receives no host imports or ambient capabilities.
 - Do not add ambient host access or rely on WASI stubs as a security boundary.
 - Any future outbound HTTP feature must defend against DNS rebinding and redirect-based SSRF, including IPv4/IPv6 private, loopback, link-local, and metadata ranges.
 - Any future database feature must use parameterized operations and enforce query, result, row-count, and execution-time bounds.
