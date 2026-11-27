@@ -33,14 +33,16 @@ Do not add a persistence backend or claim persistence is wired into the request 
 
 - No subcommand: HTTP runtime. Default SPEC `./SPEC.md`, port `8080`, bind `127.0.0.1`, cache directory `./.nosrc-cache`.
 - `nosrc export`: verifies and exports `handler.js`, `component.wasm`, `assertions.json`, and `manifest.json`; does not start HTTP ingress. It stages the complete bundle in a temporary sibling directory and publishes it by rename; the destination must not already exist.
-- `nosrc serve --bundle PATH`: validates an exported bundle, recompiles its component, reruns both assertion suites, and starts HTTP ingress without LLM credentials or provider access. It does not load a SPEC; the bundle and its unsigned assertion/manifest files are operator-controlled inputs.
+- `nosrc serve --bundle PATH`: validates an exported bundle, recompiles its component, reruns the trusted and generated assertion suites on separate disposable instances, runs fixed host-owned ABI probes on another disposable instance, and starts HTTP ingress without LLM credentials or provider access. It does not load a SPEC; the bundle and its unsigned assertion/manifest files are operator-controlled inputs.
 - `nosrc mcp`: local stdio MCP process by default. With `--http-port`, it also starts HTTP ingress in the same process; MCP activation and rollback update the generation served by that listener. `--export-root` (default `./.nosrc-exports`) confines `export_app` to single directory names beneath the configured root. MCP-first candidates cannot be activated until an operator SPEC is loaded.
 
 See `docs/CLI.md` for exact flags and environment variables, and `docs/ARTIFACTS.md` before changing exported files or manifest fields.
 
 ## 5. Security and execution rules
 
-- The handler ABI is `handle(requestJson: string) -> responseJson: string`.
+- The handler ABI is typed WIT `nosrc:runtime@2.0.0`: `handle(request: request) -> response`, with raw-byte request/header values, optional host-validated UTF-8 request text, and explicit text-or-bytes response bodies. Keep this contract aligned with `src/engine/quickjs.rs` and `ARCHITECTURE.md`.
+- Request bodies are capped at 1 MiB. The complete serialized guest response envelope (body, headers, and WIT framing overhead) is capped at 1 MiB by default and may only be lowered by `NOSRC_MAX_RESPONSE_BYTES`.
+- Runtime ceilings are 250,000,000 fuel units, 64 MiB linear memory, and 1 MiB complete guest response envelope. `NOSRC_MAX_FUEL`, `NOSRC_MAX_MEMORY_BYTES`, and `NOSRC_MAX_RESPONSE_BYTES` may lower but never raise these ceilings; zero, malformed, empty, and over-ceiling values are rejected.
 - The current WIT world exposes no guest imports or host capabilities beyond the handler export.
 - Do not add ambient host access or rely on WASI stubs as a security boundary.
 - Any future outbound HTTP feature must defend against DNS rebinding and redirect-based SSRF, including IPv4/IPv6 private, loopback, link-local, and metadata ranges.
@@ -54,6 +56,7 @@ See `docs/SECURITY.md` for the current threat model and known gaps.
 
 ## 6. Concurrency and lifecycle
 
+- HTTP `/healthz` is liveness; `/readyz` is ready only while the listener is bound and a verified generation is active; `/_nosrc/status` reports the same readiness state. The listener lifecycle must set readiness after a successful bind and clear it when serving ends. Probe routes bypass application admission. MCP shared-HTTP mode may have a bound listener but remains unready until a generation is activated.
 - Do not hold the MCP lifecycle mutex during provider requests, componentization, candidate verification, or guest execution. Snapshot immutable inputs, perform expensive work outside the lock, and lock only to publish a completed candidate.
 - Componentization and Wasm verification belong on Tokio's blocking pool.
 - Guest invocation uses Wasmtime epoch interruption with a 30-second default deadline, independent of fuel. A periodic ticker advances epochs; interruption is observed at instrumented guest checks, so it is not an exact real-time cutoff. A trapped instance must be discarded and recreated; never reuse a trapped store, and fail closed if recovery fails. Classify guest traps with stable categories and never log or return raw guest-controlled trap text.

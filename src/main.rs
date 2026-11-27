@@ -253,8 +253,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let state = Arc::new(IngressState::new());
             state.hot_swap(generation);
 
-            let app = ingress::build_ingress_router(state);
+            let app = ingress::build_ingress_router(state.clone());
             let listener = tokio::net::TcpListener::bind((bind, port)).await?;
+            state.set_listener_ready(true);
 
             tracing::info!(
                 address = %listener.local_addr()?,
@@ -262,7 +263,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 "nosrc is serving a verified offline bundle"
             );
 
-            crate::server::serve(listener, app, shutdown_timeout).await?;
+            let result = crate::server::serve(listener, app, shutdown_timeout).await;
+            state.set_listener_ready(false);
+            result?;
             Ok(())
         }
         Some(Commands::Mcp {
@@ -355,15 +358,18 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let state = Arc::new(IngressState::new());
             state.hot_swap(generation);
 
-            let app = ingress::build_ingress_router(state);
+            let app = ingress::build_ingress_router(state.clone());
             let listener = tokio::net::TcpListener::bind((cli.bind, cli.port)).await?;
+            state.set_listener_ready(true);
 
             tracing::info!(
                 address = %listener.local_addr()?,
                 "nosrc is listening with a verified JavaScript handler"
             );
 
-            crate::server::serve(listener, app, shutdown_timeout).await?;
+            let result = crate::server::serve(listener, app, shutdown_timeout).await;
+            state.set_listener_ready(false);
+            result?;
             Ok(())
         }
     }

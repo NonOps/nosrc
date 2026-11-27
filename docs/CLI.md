@@ -114,7 +114,7 @@ cargo run -- serve --bundle ./dist [OPTIONS]
 | `--verbose`, `-v` | off | Enable nosrc DEBUG diagnostics |
 | `--shutdown-timeout SECONDS` | `30` | Maximum time to drain in-flight HTTP connections after SIGINT or (on Unix) SIGTERM; also settable with `NOSRC_SHUTDOWN_TIMEOUT_SECS` |
 
-This mode does not read `SPEC.md`, require `LLM_API_KEY`, synthesize code, or contact a model provider. It validates the component digest and manifest fields, checks bounded regular bundle files, compiles the component, and reruns the assertion suites in separate candidate instances according to the manifest's `policy_mode`. The listener starts only after all checks pass. The manifest is unsigned; these checks do not authenticate the bundle or protect against an attacker who can replace the component, assertions, and manifest together. Artifact symlinks/reparse points are rejected on Unix and Windows; other operating-system targets fail closed because safe no-follow file opening is unavailable.
+This mode does not read `SPEC.md`, require `LLM_API_KEY`, synthesize code, or contact a model provider. It validates the component digest and manifest fields, checks bounded regular bundle files, compiles the component, reruns the trusted and generated assertion suites in separate candidate instances according to the manifest's `policy_mode`, and runs the fixed host-owned ABI probes on another disposable instance. It creates a fresh serving instance and binds the HTTP listener only after all checks pass. The manifest is unsigned; these checks do not authenticate the bundle or protect against an attacker who can replace the component, assertions, and manifest together. Artifact symlinks/reparse points are rejected on Unix and Windows; other operating-system targets fail closed because safe no-follow file opening is unavailable.
 
 Example:
 
@@ -123,6 +123,16 @@ cargo run -- serve --bundle ./dist --bind 127.0.0.1 --port 8080
 ```
 
 `serve` still opens an HTTP listener for application traffic; “offline” means the startup path has no LLM/provider dependency or outbound provider request.
+
+## HTTP probes
+
+All HTTP modes expose the same probe routes:
+
+- `GET /healthz` is a liveness probe and returns `200 OK` while the listener responds.
+- `GET /readyz` returns `200 OK` only after the listener has bound successfully and a verified handler generation is active; otherwise it returns `503 Service Unavailable`. In MCP shared-HTTP mode, an empty MCP-first runtime is not ready until a generation is activated.
+- `GET /_nosrc/status` returns the active generation, module hash, versioned telemetry (when available), and a `ready` boolean.
+
+These routes bypass the 32-request application admission limit and remain observable during overload. Listener readiness is cleared when the HTTP server stops.
 
 ## Environment variables
 
