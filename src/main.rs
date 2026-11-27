@@ -27,8 +27,41 @@ use std::sync::Arc;
 
 use artifact_cache::ArtifactCache;
 use ingress::{ActiveGeneration, IngressState};
+use spec::openapi::OpenApiContract;
 use spec::ServiceSpec;
 use synthesizer::{LlmConfig, Synthesizer};
+
+async fn load_spec_with_openapi(
+    spec_path: &std::path::Path,
+    openapi_path: Option<&std::path::Path>,
+) -> anyhow::Result<(ServiceSpec, String)> {
+    let spec_text = tokio::fs::read_to_string(spec_path)
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!("Failed to read SPEC at {}: {error}", spec_path.display())
+        })?;
+    let mut spec = ServiceSpec::parse(&spec_text).map_err(|error| {
+        anyhow::anyhow!("Failed to parse SPEC at {}: {error}", spec_path.display())
+    })?;
+    if let Some(openapi_path) = openapi_path {
+        let openapi_text = tokio::fs::read_to_string(openapi_path)
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "Failed to read OpenAPI contract at {}: {error}",
+                    openapi_path.display()
+                )
+            })?;
+        let openapi = OpenApiContract::parse(&openapi_text).map_err(|error| {
+            anyhow::anyhow!(
+                "Failed to parse OpenAPI contract at {}: {error}",
+                openapi_path.display()
+            )
+        })?;
+        spec = spec.with_openapi(openapi);
+    }
+    Ok((spec, spec_text))
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -41,6 +74,10 @@ pub struct Cli {
 
     #[arg(short, long, default_value = "./SPEC.md")]
     pub spec: std::path::PathBuf,
+
+    /// Optional path to an OpenAPI 3.x JSON contract alongside SPEC.md
+    #[arg(long)]
+    pub openapi: Option<std::path::PathBuf>,
 
     #[arg(short, long, default_value = "8080")]
     pub port: u16,
@@ -78,6 +115,10 @@ pub enum Commands {
         /// Path to the service specification
         #[arg(short, long, default_value = "./SPEC.md")]
         spec: std::path::PathBuf,
+
+        /// Optional path to an OpenAPI 3.x JSON contract alongside SPEC.md
+        #[arg(long)]
+        openapi: Option<std::path::PathBuf>,
 
         /// Output directory for exported verified artifacts
         #[arg(short, long, default_value = "./dist")]
@@ -118,6 +159,10 @@ pub enum Commands {
         /// Path to the operator-controlled service specification
         #[arg(short, long)]
         spec: Option<std::path::PathBuf>,
+
+        /// Optional path to an OpenAPI 3.x JSON contract alongside SPEC.md
+        #[arg(long)]
+        openapi: Option<std::path::PathBuf>,
         /// Also expose the active application over HTTP on this port
         #[arg(long)]
         http_port: Option<u16>,
@@ -177,6 +222,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Some(Commands::Export {
             spec: spec_path,
+            openapi: openapi_path,
             out_dir,
             cache_dir,
             no_cache,
@@ -184,14 +230,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }) => {
             initialize_tracing(verbose);
 
-            let spec_text = tokio::fs::read_to_string(&spec_path)
-                .await
-                .map_err(|error| {
-                    anyhow::anyhow!("Failed to read SPEC at {}: {error}", spec_path.display())
-                })?;
-            let spec = ServiceSpec::parse(&spec_text).map_err(|error| {
-                anyhow::anyhow!("Failed to parse SPEC at {}: {error}", spec_path.display())
-            })?;
+            let (spec, spec_text) =
+                load_spec_with_openapi(&spec_path, openapi_path.as_deref()).await?;
 
             let synthesizer = Synthesizer::new(LlmConfig::from_env_deferred_key()?)?;
             let cache = if no_cache {
@@ -270,6 +310,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Some(Commands::Mcp {
             spec: spec_path,
+            openapi: openapi_path,
             http_port,
             http_bind,
             cache_dir,
@@ -280,16 +321,13 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             initialize_tracing(verbose);
 
             let spec = match spec_path {
-                Some(path) => {
-                    let spec_text = tokio::fs::read_to_string(&path).await.map_err(|error| {
-                        anyhow::anyhow!("Failed to read SPEC at {}: {error}", path.display())
-                    })?;
-                    let spec = ServiceSpec::parse(&spec_text).map_err(|error| {
-                        anyhow::anyhow!("Failed to parse SPEC at {}: {error}", path.display())
-                    })?;
-                    Some((spec, spec_text))
+                Some(path) => Some(load_spec_with_openapi(&path, openapi_path.as_deref()).await?),
+                None => {
+                    if openapi_path.is_some() {
+                        anyhow::bail!("--openapi requires --spec");
+                    }
+                    None
                 }
-                None => None,
             };
             tracing::info!(
                 service = spec
@@ -313,14 +351,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         None => {
             initialize_tracing(cli.verbose);
 
-            let spec_text = tokio::fs::read_to_string(&cli.spec)
-                .await
-                .map_err(|error| {
-                    anyhow::anyhow!("Failed to read SPEC at {}: {error}", cli.spec.display())
-                })?;
-            let spec = ServiceSpec::parse(&spec_text).map_err(|error| {
-                anyhow::anyhow!("Failed to parse SPEC at {}: {error}", cli.spec.display())
-            })?;
+            let (spec, spec_text) =
+                load_spec_with_openapi(&cli.spec, cli.openapi.as_deref()).await?;
 
             tracing::info!(
                 service = %spec.name,
@@ -528,6 +560,7 @@ mod tests {
         match cli.command {
             Some(Commands::Mcp {
                 spec,
+                openapi: _,
                 http_port,
                 http_bind,
                 cache_dir,

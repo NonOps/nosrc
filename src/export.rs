@@ -31,6 +31,8 @@ pub struct ExportManifest {
     pub spec_sha256: String,
     pub module_hash: String,
     pub component_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openapi_sha256: Option<String>,
     pub trusted_assertions_count: usize,
     pub generated_assertions_count: usize,
     pub rationale: Option<String>,
@@ -152,12 +154,22 @@ pub fn export_artifacts_with_policy(
     write_artifact(staging_path, "assertions.json", &assertions_json)?;
     write_artifact(staging_path, "component.wasm", component_bytes)?;
 
+    let openapi_sha256 = if let Some(openapi) = &spec.openapi {
+        write_artifact(staging_path, "openapi.json", openapi.raw_json.as_bytes())?;
+        Some(crate::hex_lower(Sha256::digest(
+            openapi.raw_json.as_bytes(),
+        )))
+    } else {
+        None
+    };
+
     let manifest = ExportManifest {
         abi_version: EXPORT_ABI_VERSION.to_string(),
         service_name: spec.name.clone(),
         spec_sha256: crate::hex_lower(Sha256::digest(spec_text.as_bytes())),
         module_hash: module_hash.to_string(),
         component_sha256: crate::hex_lower(Sha256::digest(component_bytes)),
+        openapi_sha256,
         trusted_assertions_count: policy.trusted_assertions.len(),
         generated_assertions_count: output.assertions.len(),
         rationale: output.rationale.clone(),
@@ -305,5 +317,30 @@ mod tests {
         )
         .is_err());
         assert_eq!(std::fs::read_to_string(out_file).unwrap(), "keep");
+    }
+
+    #[test]
+    fn exports_openapi_json_and_digest_when_present() {
+        let temp = tempfile::tempdir().unwrap();
+        let out_dir = temp.path().join("dist_openapi");
+        let (mut spec, output, component_bytes) = fixture();
+        let openapi = crate::spec::openapi::OpenApiContract::from_service_spec(&spec);
+        spec = spec.with_openapi(openapi);
+
+        let path = export_artifacts(
+            &out_dir,
+            &spec,
+            SPEC_TEXT,
+            &output,
+            &component_bytes,
+            "mock_hash_123",
+            &[],
+        )
+        .unwrap();
+
+        assert!(path.join("openapi.json").exists());
+        let manifest: ExportManifest =
+            serde_json::from_slice(&std::fs::read(path.join("manifest.json")).unwrap()).unwrap();
+        assert!(manifest.openapi_sha256.is_some());
     }
 }

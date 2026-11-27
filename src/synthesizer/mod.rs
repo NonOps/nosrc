@@ -436,10 +436,16 @@ impl Synthesizer {
 
         let prompt = self.build_system_prompt();
         let temperature = self.config.temperature.to_bits().to_be_bytes();
-        let fields: [&[u8]; 7] = [
+        let openapi_bytes = spec
+            .openapi
+            .as_ref()
+            .map(|o| o.raw_json.as_bytes())
+            .unwrap_or(b"");
+        let fields: [&[u8]; 8] = [
             b"nosrc-synthesis-cache-v1",
             b"synthesis-output-schema-v1",
             spec.raw_markdown.as_bytes(),
+            openapi_bytes,
             self.config.base_url.as_bytes(),
             self.config.model.as_bytes(),
             &temperature,
@@ -557,6 +563,13 @@ Assertions must cover every endpoint's documented success response and at least 
             "Implement the following service specification. The `## Examples` section is illustrative only; it is not acceptance policy. Operator verification cases are intentionally withheld and will be enforced independently by the host.\n\n```markdown\n{}\n```\n",
             visible_spec
         );
+
+        if let Some(openapi) = &spec.openapi {
+            user_prompt.push_str(&format!(
+                "\n## OpenAPI Contract (authoritative for routes, methods, parameters, status codes, and JSON schemas)\n```json\n{}\n```\n",
+                openapi.raw_json
+            ));
+        }
 
         if !historical_regressions.is_empty() {
             let regressions_json = serde_json::to_string_pretty(historical_regressions)

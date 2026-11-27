@@ -33,6 +33,7 @@ pub struct ActiveGeneration {
 /// Shared ingress state holding the active handler generation and bounded admission gates.
 pub struct IngressState {
     pub active_generation: ArcSwap<Option<ActiveGeneration>>,
+    openapi_json: ArcSwap<Option<String>>,
     admission: Arc<Semaphore>,
     // Global across generations: per-handler mutexes cannot prevent overlap after a hot swap.
     execution: Arc<Semaphore>,
@@ -46,6 +47,7 @@ impl IngressState {
     pub fn new() -> Self {
         Self {
             active_generation: ArcSwap::from_pointee(None),
+            openapi_json: ArcSwap::from_pointee(None),
             admission: Arc::new(Semaphore::new(MAX_ADMITTED_REQUESTS)),
             execution: Arc::new(Semaphore::new(1)),
             execution_timeout: DEFAULT_GUEST_EXECUTION_TIMEOUT,
@@ -61,6 +63,10 @@ impl IngressState {
     /// alone never makes an uninitialized MCP-first runtime ready.
     pub fn set_listener_ready(&self, ready: bool) {
         self.readiness.store(ready, Ordering::Release);
+    }
+
+    pub fn set_openapi_json(&self, json: Option<String>) {
+        self.openapi_json.store(Arc::new(json));
     }
 
     /// Atomically activates a candidate only after compilation and verification succeed.
@@ -99,6 +105,24 @@ async fn readyz(State(state): State<Arc<IngressState>>) -> StatusCode {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
+    }
+}
+
+async fn openapi_spec(State(state): State<Arc<IngressState>>) -> impl IntoResponse {
+    if let Some(json) = state.openapi_json.load().as_ref().as_ref() {
+        (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            json.clone(),
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            "{\"error\":\"no OpenAPI contract is active\"}".to_string(),
+        )
+            .into_response()
     }
 }
 
@@ -251,6 +275,7 @@ pub fn build_ingress_router(state: Arc<IngressState>) -> Router {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/_nosrc/status", get(runtime_status))
+        .route("/openapi.json", get(openapi_spec))
         .fallback(any(handle_http_request))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(middleware::from_fn_with_state(
@@ -1184,5 +1209,29 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
         assert_eq!(response.headers()["x-nosrc-error"], "MethodNotAllowed");
+    }
+
+    #[tokio::test]
+    async fn openapi_endpoint_returns_404_when_unset_and_200_when_set() {
+        let state = Arc::new(IngressState::new());
+        let app = build_ingress_router(state.clone());
+
+        let req_unset = Request::builder()
+            .method(Method::GET)
+            .uri("/openapi.json")
+            .body(Body::empty())
+            .unwrap();
+        let resp_unset = app.clone().oneshot(req_unset).await.unwrap();
+        assert_eq!(resp_unset.status(), StatusCode::NOT_FOUND);
+
+        state.set_openapi_json(Some(r#"{"openapi":"3.0.3","paths":{}}"#.to_string()));
+        let req_set = Request::builder()
+            .method(Method::GET)
+            .uri("/openapi.json")
+            .body(Body::empty())
+            .unwrap();
+        let resp_set = app.oneshot(req_set).await.unwrap();
+        assert_eq!(resp_set.status(), StatusCode::OK);
+        assert_eq!(resp_set.headers()["content-type"], "application/json");
     }
 }

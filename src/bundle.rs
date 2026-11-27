@@ -331,6 +331,7 @@ mod tests {
             spec_sha256: "a".repeat(64),
             module_hash: component_hash.clone(),
             component_sha256: component_hash,
+            openapi_sha256: None,
             trusted_assertions_count: 1,
             generated_assertions_count: 1,
             rationale: Some("test bundle".into()),
