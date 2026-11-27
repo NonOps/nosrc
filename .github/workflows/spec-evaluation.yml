@@ -35,6 +35,33 @@ jobs:
           key: test-profile-v1
           cache-on-failure: true
 
+      - name: Record benchmark environment
+        run: |
+          mkdir -p target/spec-evaluation
+          {
+            echo '{'
+            echo '  "commit": "${{ github.sha }}",'
+            echo '  "runner": "${{ runner.os }} / ${{ runner.arch }}",'
+            echo '  "kernel": "'"$(uname -srmo)"'",'
+            echo '  "cpu_model": "'"$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^[[:space:]]*//' | sed 's/"/\\"/g')"'",'
+            echo '  "logical_cpus": '"$(nproc)"','
+            echo '  "rustc": "'"$(rustc --version)"'",'
+            echo '  "cargo": "'"$(cargo --version)"'",'
+            echo '  "profile": "test (cargo test default profile)",'
+            echo '  "test_threads": 1'
+            echo '}'
+          } > target/spec-evaluation/environment.json
+          cat target/spec-evaluation/environment.json
+
       - name: Run offline and mock-provider corpus
         # This name filter selects deterministic corpus tests only; live_provider_evaluation is never run in required CI.
         run: cargo test --bin nosrc spec_evaluation -- --ignored --test-threads=1
+
+      - name: Upload reproducible benchmark reports
+        if: always() && hashFiles('target/spec-evaluation/*.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: spec-evaluation-baseline
+          path: target/spec-evaluation/*.json
+          if-no-files-found: error
+          retention-days: 90
