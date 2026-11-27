@@ -589,3 +589,65 @@ async fn closing_mcp_stdin_stops_shared_http_and_process() {
         "shared HTTP listener remained open after the MCP client disconnected"
     );
 }
+
+#[tokio::test]
+async fn stdio_protocol_rejects_mistyped_tool_arguments() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nosrc"))
+        .arg("mcp")
+        .arg("--no-cache")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("failed to start nosrc MCP server");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let mut stdout = BufReader::new(stdout).lines();
+
+    let initialized = send_request(
+        &mut stdin,
+        &mut stdout,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": { "name": "nosrc-invalid-input-test", "version": "0.1.0" }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(initialized["id"], 1);
+    send_notification(
+        &mut stdin,
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    )
+    .await;
+
+    let response = send_request(
+        &mut stdin,
+        &mut stdout,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "prepare_app",
+                "arguments": { "source": "direct_js", "js_code": 42 }
+            }
+        }),
+    )
+    .await;
+    assert!(
+        response.get("error").is_some()
+            || response.pointer("/result/isError") == Some(&Value::Bool(true)),
+        "mistyped MCP tool arguments were not rejected: {response}"
+    );
+
+    child.kill().await.unwrap();
+    let _ = child.wait().await;
+}

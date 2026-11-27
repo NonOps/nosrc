@@ -503,4 +503,128 @@ mod tests {
             }
         }
     }
+
+    #[tokio::test]
+    async fn bundle_artifact_reader_enforces_exact_size_boundaries() {
+        let directory = tempfile::tempdir().unwrap();
+        let limits = [
+            ("manifest.json", MAX_MANIFEST_BYTES),
+            ("handler.js", MAX_HANDLER_BYTES),
+            ("component.wasm", MAX_COMPONENT_BYTES),
+            ("assertions.json", MAX_ASSERTIONS_BYTES),
+            ("SPEC.md", MAX_SPEC_BYTES),
+        ];
+
+        for (name, limit) in limits {
+            let path = directory.path().join(name);
+            let file = fs::File::create(&path).unwrap();
+            file.set_len(limit).unwrap();
+            let accepted = read_bundle_file(directory.path(), name, limit).unwrap();
+            assert_eq!(accepted.len() as u64, limit, "{name} at exact limit");
+
+            let file = OpenOptions::new().write(true).open(&path).unwrap();
+            file.set_len(limit + 1).unwrap();
+            let error = read_bundle_file(directory.path(), name, limit).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("exceeds"),
+                "{name} limit+1 should be rejected: {error:#}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejects_symlinked_bundle_root() {
+        use std::os::unix::fs::symlink;
+
+        let real_bundle = tempfile::tempdir().unwrap();
+        write_valid_bundle(real_bundle.path()).await;
+        let parent = tempfile::tempdir().unwrap();
+        let linked_bundle = parent.path().join("bundle");
+        symlink(real_bundle.path(), &linked_bundle).unwrap();
+
+        let error = load_and_verify(&linked_bundle).err().unwrap();
+        assert!(error.to_string().contains("must be a real directory"));
+    }
+
+    #[tokio::test]
+    async fn load_and_verify_rejects_oversized_artifacts_before_serving() {
+        let limits = [
+            ("manifest.json", MAX_MANIFEST_BYTES),
+            ("handler.js", MAX_HANDLER_BYTES),
+            ("component.wasm", MAX_COMPONENT_BYTES),
+            ("assertions.json", MAX_ASSERTIONS_BYTES),
+            ("SPEC.md", MAX_SPEC_BYTES),
+        ];
+
+        for (name, limit) in limits {
+            let directory = tempfile::tempdir().unwrap();
+            write_valid_bundle(directory.path()).await;
+
+            if name == "SPEC.md" {
+                let manifest_path = directory.path().join("manifest.json");
+                let mut manifest: ExportManifest =
+                    serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+                manifest.policy_mode = "draft".into();
+                manifest.trusted_assertions_count = 0;
+                fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+                let assertions_path = directory.path().join("assertions.json");
+                let mut assertions: ExportAssertions =
+                    serde_json::from_slice(&fs::read(&assertions_path).unwrap()).unwrap();
+                assertions.trusted_assertions.clear();
+                fs::write(&assertions_path, serde_json::to_vec(&assertions).unwrap()).unwrap();
+                fs::write(directory.path().join("SPEC.md"), "# Draft SPEC\n").unwrap();
+            }
+
+            let path = directory.path().join(name);
+            OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_len(limit + 1)
+                .unwrap();
+
+            let error = load_and_verify(directory.path()).err().unwrap();
+            let message = format!("{error:#}");
+            assert!(
+                message.contains(name) && message.contains("exceeds"),
+                "{name} should be rejected by the production bundle loader before serving: {message}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejects_symlinked_optional_spec_artifact() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        write_valid_bundle(directory.path()).await;
+
+        let manifest_path = directory.path().join("manifest.json");
+        let mut manifest: ExportManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest.policy_mode = "draft".into();
+        manifest.trusted_assertions_count = 0;
+        let spec_text = "# Agent draft SPEC\n";
+        manifest.spec_sha256 = crate::hex_lower(Sha256::digest(spec_text.as_bytes()));
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+        let assertions_path = directory.path().join("assertions.json");
+        let mut assertions: ExportAssertions =
+            serde_json::from_slice(&fs::read(&assertions_path).unwrap()).unwrap();
+        assertions.trusted_assertions.clear();
+        fs::write(&assertions_path, serde_json::to_vec(&assertions).unwrap()).unwrap();
+
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        fs::write(outside.path(), spec_text).unwrap();
+        symlink(outside.path(), directory.path().join("SPEC.md")).unwrap();
+
+        let error = load_and_verify(directory.path()).err().unwrap();
+        assert!(
+            format!("{error:#}").contains("Failed to open bundle artifact"),
+            "unexpected symlink rejection: {error:#}"
+        );
+    }
 }
