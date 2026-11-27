@@ -40,7 +40,8 @@ The optional `mcp --http-port` mode also opens an HTTP application listener in t
 - Component handles, table elements, instances, tables, and memories are bounded.
 - Active HTTP connection limit: 128; the accept loop closes connections above the cap before spawning per-connection tasks.
 - HTTP request body limit: 1 MiB.
-- Serialized guest response envelope limit: 1 MiB.
+- Complete serialized guest response envelope limit: 1 MiB, including headers and WIT overhead; the body alone does not receive a separate 1 MiB allowance.
+- `/healthz` is a process-liveness endpoint. `/readyz` reports ready only after the HTTP listener has bound and a verified handler generation is active; MCP-first shared HTTP mode remains unready until activation.
 - LLM serialized request limit: 2 MiB.
 - LLM connect timeout: 10 seconds; total request timeout: 120 seconds.
 - LLM success response limit: 4 MiB; error response limit: 8 KiB.

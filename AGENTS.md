@@ -33,15 +33,15 @@ Do not add a persistence backend or claim persistence is wired into the request 
 
 - No subcommand: HTTP runtime. Default SPEC `./SPEC.md`, port `8080`, bind `127.0.0.1`, cache directory `./.nosrc-cache`.
 - `nosrc export`: verifies and exports `handler.js`, `component.wasm`, `assertions.json`, and `manifest.json`; does not start HTTP ingress. It stages the complete bundle in a temporary sibling directory and publishes it by rename; the destination must not already exist.
-- `nosrc serve --bundle PATH`: validates an exported bundle, recompiles its component, reruns both assertion suites, and starts HTTP ingress without LLM credentials or provider access. It does not load a SPEC; the bundle and its unsigned assertion/manifest files are operator-controlled inputs.
+- `nosrc serve --bundle PATH`: validates an exported bundle, recompiles its component, reruns both assertion suites and the fixed host-owned ABI probes, then starts HTTP ingress without LLM credentials or provider access. It does not load a SPEC; the bundle and its unsigned assertion/manifest files are operator-controlled inputs.
 - `nosrc mcp`: local stdio MCP process by default. With `--http-port`, it also starts HTTP ingress in the same process; MCP activation and rollback update the generation served by that listener. `--export-root` (default `./.nosrc-exports`) confines `export_app` to single directory names beneath the configured root. MCP-first candidates cannot be activated until an operator SPEC is loaded.
 
 See `docs/CLI.md` for exact flags and environment variables, and `docs/ARTIFACTS.md` before changing exported files or manifest fields.
 
 ## 5. Security and execution rules
 
-- The handler ABI is `handle(requestJson: string) -> responseJson: string`.
-- The current WIT world exposes no guest imports or host capabilities beyond the handler export.
+- The handler ABI is WIT v2 (`nosrc:runtime@2.0.0`): `handle(request: request) -> response`. Request bodies are authoritative `list<u8>` with an optional host-validated UTF-8 `body-text`; headers retain byte values and repeated occurrences; response bodies use the explicit `text(string)` or `bytes(list<u8>)` variant. Do not document or generate the retired JSON-string ABI.
+- The current WIT v2 world exports only the typed HTTP handler; the guest receives no host imports or ambient capabilities.
 - Do not add ambient host access or rely on WASI stubs as a security boundary.
 - Any future outbound HTTP feature must defend against DNS rebinding and redirect-based SSRF, including IPv4/IPv6 private, loopback, link-local, and metadata ranges.
 - Any future database feature must use parameterized operations and enforce query, result, row-count, and execution-time bounds.

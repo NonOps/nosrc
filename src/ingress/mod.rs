@@ -55,8 +55,9 @@ impl IngressState {
         }
     }
 
-    pub fn readiness_handle(&self) -> Arc<AtomicBool> {
-        self.readiness.clone()
+    /// Records whether the HTTP listener has successfully bound and is ready to accept traffic.
+    pub fn set_listener_ready(&self, ready: bool) {
+        self.readiness.store(ready, Ordering::Release);
     }
 
     /// Atomically activates a candidate only after compilation and verification succeed.
@@ -426,7 +427,7 @@ mod tests {
             StatusCode::SERVICE_UNAVAILABLE
         );
 
-        state.readiness.store(true, Ordering::Release);
+        state.set_listener_ready(true);
         let request = Request::builder()
             .uri("/readyz")
             .body(Body::empty())
@@ -456,7 +457,7 @@ mod tests {
             StatusCode::OK
         );
 
-        state.readiness.store(false, Ordering::Release);
+        state.set_listener_ready(false);
         let request = Request::builder()
             .uri("/readyz")
             .body(Body::empty())

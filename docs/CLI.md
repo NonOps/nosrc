@@ -25,6 +25,10 @@ Example:
 cargo run -- --spec ./examples/minimal/SPEC.md --bind 127.0.0.1 --port 8080 --verbose
 ```
 
+## HTTP health and readiness
+
+The HTTP runtime exposes `GET /healthz` for process liveness, `GET /readyz` for readiness (listener bound and a verified generation active), and `GET /_nosrc/status` for generation and telemetry status. In MCP-first shared-HTTP mode, `/readyz` remains unavailable until an operator-approved generation is activated.
+
 ## Runtime resource budgets
 
 Operators may lower the guest execution budgets with environment variables. Unset values use the hard ceiling as the default; values above the ceiling, zero, empty values, and non-integers fail startup with the offending variable and accepted range.
@@ -114,7 +118,7 @@ cargo run -- serve --bundle ./dist [OPTIONS]
 | `--verbose`, `-v` | off | Enable nosrc DEBUG diagnostics |
 | `--shutdown-timeout SECONDS` | `30` | Maximum time to drain in-flight HTTP connections after SIGINT or (on Unix) SIGTERM; also settable with `NOSRC_SHUTDOWN_TIMEOUT_SECS` |
 
-This mode does not read `SPEC.md`, require `LLM_API_KEY`, synthesize code, or contact a model provider. It validates the component digest and manifest fields, checks bounded regular bundle files, compiles the component, and reruns the assertion suites in separate candidate instances according to the manifest's `policy_mode`. The listener starts only after all checks pass. The manifest is unsigned; these checks do not authenticate the bundle or protect against an attacker who can replace the component, assertions, and manifest together. Artifact symlinks/reparse points are rejected on Unix and Windows; other operating-system targets fail closed because safe no-follow file opening is unavailable.
+This mode does not read `SPEC.md`, require `LLM_API_KEY`, synthesize code, or contact a model provider. It validates the component digest and manifest fields, checks bounded regular bundle files, compiles the component, reruns the assertion suites in separate candidate instances according to the manifest's `policy_mode`, and runs the fixed host-owned ABI probes on another disposable instance. The listener starts only after all checks pass. The manifest is unsigned; these checks do not authenticate the bundle or protect against an attacker who can replace the component, assertions, and manifest together. Artifact symlinks/reparse points are rejected on Unix and Windows; other operating-system targets fail closed because safe no-follow file opening is unavailable.
 
 Example:
 

@@ -38,6 +38,7 @@ pub async fn serve(
     let (http_task, http_shutdown_tx) = if let Some((bind, port)) = http_listener {
         let listener = tokio::net::TcpListener::bind((bind, port)).await?;
         let address = listener.local_addr()?;
+        ingress_state.set_listener_ready(true);
         let app = crate::ingress::build_ingress_router(ingress_state);
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         tracing::info!(%address, "nosrc MCP and HTTP interfaces share one application lifecycle");
