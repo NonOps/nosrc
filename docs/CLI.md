@@ -11,6 +11,7 @@ cargo run -- [OPTIONS]
 | Option | Default | Description |
 |---|---|---|
 | `--spec PATH`, `-s PATH` | `./SPEC.md` | Operator service specification |
+| `--openapi PATH` | none | Optional OpenAPI 3.x JSON contract alongside `SPEC.md` |
 | `--port PORT`, `-p PORT` | `8080` | HTTP listen port |
 | `--bind IP` | `127.0.0.1` | Listen address; external exposure must be explicit |
 | `--verbose`, `-v` | off | Enable nosrc DEBUG diagnostics |
@@ -55,6 +56,7 @@ cargo run -- export [OPTIONS]
 | Option | Default | Description |
 |---|---|---|
 | `--spec PATH`, `-s PATH` | `./SPEC.md` | Operator service specification |
+| `--openapi PATH` | none | Optional OpenAPI 3.x JSON contract alongside `SPEC.md` |
 | `--out-dir PATH`, `-o PATH` | `./dist` | Destination directory |
 | `--cache-dir PATH` | `./.nosrc-cache` | Local content-addressed artifact cache |
 | `--no-cache` | off | Bypass cache reads and writes |

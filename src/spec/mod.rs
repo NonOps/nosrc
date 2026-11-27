@@ -1,7 +1,10 @@
+pub mod openapi;
+
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 use crate::error::HostAbiError;
+use openapi::OpenApiContract;
 
 /// Declarative service specification parsed from `SPEC.md`
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -13,6 +16,8 @@ pub struct ServiceSpec {
     pub endpoints: Vec<SpecEndpoint>,
     pub verification: Vec<SpecVerification>,
     pub raw_markdown: String,
+    #[serde(default)]
+    pub openapi: Option<OpenApiContract>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -522,7 +527,28 @@ impl ServiceSpec {
             endpoints,
             verification,
             raw_markdown: markdown.to_string(),
+            openapi: None,
         })
+    }
+
+    /// Attach an OpenAPI 3.x contract to this specification, populate any
+    /// verification cases that do not already declare a `response_json_schema`,
+    /// and append synthesized negative contract checks (405, 400-422).
+    pub fn with_openapi(mut self, openapi: OpenApiContract) -> Self {
+        for case in &mut self.verification {
+            if case.response_json_schema.is_none() {
+                if let Some(status) = case.expected_status {
+                    if case.expected_status_max.is_none() {
+                        case.response_json_schema =
+                            openapi.response_schema(&case.method, &case.path, status);
+                    }
+                }
+            }
+        }
+        let negative_cases = openapi.synthesize_negative_cases(&self.verification);
+        self.verification.extend(negative_cases);
+        self.openapi = Some(openapi);
+        self
     }
 }
 
