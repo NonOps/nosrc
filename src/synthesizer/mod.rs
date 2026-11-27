@@ -66,6 +66,9 @@ impl LlmConfig {
         validate_base_url(&base_url)?;
 
         let model = lookup("LLM_MODEL").unwrap_or_else(|| "gpt-4o-mini".to_string());
+        if model.trim().is_empty() {
+            return Err(EngineError::Internal("LLM_MODEL must not be empty".into()));
+        }
 
         Ok(Self {
             api_key,
@@ -78,6 +81,13 @@ impl LlmConfig {
 
 fn missing_api_key_error() -> EngineError {
     EngineError::Internal("Missing required environment variable LLM_API_KEY".into())
+}
+
+/// Keep reqwest's builder details out of diagnostics: they can contain proxy credentials.
+fn client_build_error<E>(_error: E) -> EngineError {
+    EngineError::Internal(
+        "Failed to initialize LLM HTTP client; check HTTP(S)_PROXY and TLS configuration".into(),
+    )
 }
 
 /// Reject provider URLs that would send the API key over an unencrypted, non-loopback connection.
@@ -398,20 +408,22 @@ pub struct Synthesizer {
 }
 
 impl Synthesizer {
-    pub fn new(config: LlmConfig) -> Self {
+    pub fn new(config: LlmConfig) -> Result<Self, EngineError> {
         Self::with_request_timeout(config, LLM_REQUEST_TIMEOUT)
     }
 
-    fn with_request_timeout(config: LlmConfig, request_timeout: Duration) -> Self {
-        Self {
-            config,
-            client: reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::limited(3))
-                .connect_timeout(LLM_CONNECT_TIMEOUT)
-                .timeout(request_timeout)
-                .build()
-                .unwrap_or_default(),
-        }
+    fn with_request_timeout(
+        config: LlmConfig,
+        request_timeout: Duration,
+    ) -> Result<Self, EngineError> {
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::limited(3))
+            .connect_timeout(LLM_CONNECT_TIMEOUT)
+            .timeout(request_timeout)
+            .build()
+            .map_err(client_build_error)?;
+
+        Ok(Self { config, client })
     }
 
     /// Identity for inputs that can change model-generated output.
@@ -714,11 +726,13 @@ mod tests {
             model: "model-a".into(),
             temperature: 0.1,
         };
-        let synthesizer = Synthesizer::new(config.clone());
+        let synthesizer =
+            Synthesizer::new(config.clone()).expect("valid test HTTP client configuration");
         let changed_model = Synthesizer::new(LlmConfig {
             model: "model-b".into(),
             ..config
-        });
+        })
+        .expect("valid test HTTP client configuration");
         let output = SynthesisOutput {
             handler_code: "export function handle() { return '{}'; }".into(),
             code_format: "javascript".into(),
@@ -835,6 +849,20 @@ mod tests {
     }
 
     #[test]
+    fn client_initialization_failures_are_reported_with_actionable_context() {
+        let error = client_build_error("injected reqwest builder failure");
+        assert!(error
+            .to_string()
+            .contains("Failed to initialize LLM HTTP client"));
+        assert!(error
+            .to_string()
+            .contains("HTTP(S)_PROXY and TLS configuration"));
+        assert!(!error
+            .to_string()
+            .contains("injected reqwest builder failure"));
+    }
+
+    #[test]
     fn debug_output_redacts_api_key() {
         let config = LlmConfig {
             api_key: "sk-super-secret".into(),
@@ -859,6 +887,12 @@ mod tests {
         assert!(config.api_key.is_empty());
         assert_eq!(config.base_url, "https://api.openai.com/v1");
         assert_eq!(config.model, "gpt-4o-mini");
+
+        let blank_model = env_from(&[("LLM_API_KEY", "k"), ("LLM_MODEL", "  ")]);
+        assert!(LlmConfig::from_lookup(&blank_model, true)
+            .unwrap_err()
+            .to_string()
+            .contains("LLM_MODEL must not be empty"));
 
         let keyed = env_from(&[("LLM_API_KEY", "k"), ("LLM_MODEL", "x")]);
         let config = LlmConfig::from_lookup(&keyed, true).unwrap();
@@ -918,7 +952,8 @@ mod tests {
             base_url: "http://127.0.0.1:1/v1".into(),
             model: "m".into(),
             temperature: 0.0,
-        });
+        })
+        .expect("valid test HTTP client configuration");
         let spec = ServiceSpec::parse(include_str!("../../examples/minimal/SPEC.md")).unwrap();
         let error = synthesizer.synthesize(&spec, &[]).await.unwrap_err();
         assert!(error.to_string().contains("LLM_API_KEY"));
@@ -1025,6 +1060,7 @@ mod tests {
             },
             timeout,
         )
+        .expect("valid test HTTP client configuration")
     }
 
     fn test_spec() -> ServiceSpec {

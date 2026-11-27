@@ -417,7 +417,8 @@ async fn spec_evaluation_mock_provider_runs_the_real_synthesis_componentization_
         base_url,
         model: "nosrc-evaluation-mock".into(),
         temperature: 0.0,
-    });
+    })
+    .expect("valid test HTTP client configuration");
     let mut entries = Vec::with_capacity(CORPUS.len());
 
     for (slug, spec_text, _) in CORPUS {
@@ -481,7 +482,8 @@ async fn spec_evaluation_mock_provider_exercises_verification_repair_and_replace
         base_url,
         model: "nosrc-evaluation-repair-mock".into(),
         temperature: 0.0,
-    });
+    })
+    .expect("valid test HTTP client configuration");
     let (slug, spec_text, _) = CORPUS
         .iter()
         .find(|(slug, _, _)| *slug == "normalize-json")
@@ -528,7 +530,8 @@ async fn spec_evaluation_mock_provider_exercises_verification_repair_and_replace
 #[ignore = "requires LLM_API_KEY and optional LLM_BASE_URL/LLM_MODEL; writes a live evaluation report"]
 async fn live_provider_evaluation_writes_a_redacted_json_report() {
     let synthesizer =
-        Synthesizer::new(LlmConfig::from_env().expect("valid live LLM environment configuration"));
+        Synthesizer::new(LlmConfig::from_env().expect("valid live LLM environment configuration"))
+            .expect("valid live LLM HTTP client configuration");
     let mut entries = Vec::with_capacity(CORPUS.len());
 
     for (slug, spec_text, _) in CORPUS {
